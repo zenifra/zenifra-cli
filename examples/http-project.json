@@ -1,0 +1,24 @@
+{
+  "type_project": "http",
+  "image": {
+    "url": "nginxinc/nginx-unprivileged:latest",
+    "is_public": true
+  },
+  "instances": 1,
+  "storage": {
+    "persistent": false,
+    "capacity": 1
+  },
+  "envs": [],
+  "port": 8080,
+  "network_access": {
+    "ingress_white_list": [
+      {
+        "cidr": "0.0.0.0/0",
+        "description": "Public access"
+      }
+    ],
+    "ingress_black_list": []
+  },
+  "custom_domains": []
+}
