@@ -4,6 +4,15 @@ CLI oficial da Zenifra para autenticar, selecionar organizacao, listar projetos 
 
 ## Uso local
 
+Instale pelo npm:
+
+```bash
+npm install -g @zenifra/cli
+zenifra --help
+```
+
+Para desenvolvimento local:
+
 ```bash
 npm link
 zenifra --help
@@ -88,3 +97,34 @@ Para reduzir impacto de vazamento, configure IPs permitidos na criacao da API ke
 ## Exemplo de projeto HTTP
 
 Use `examples/http-project.json` como base para `zenifra projects create`.
+
+## Publicacao no npm
+
+Este pacote e publicado pelo GitHub Actions usando npm Trusted Publishing. O pacote precisa existir no npm antes de configurar Trusted Publishing.
+
+### Primeiro publish
+
+Como `@zenifra/cli` e um pacote scoped publico, faca o primeiro publish autenticado no npm:
+
+```bash
+npm login
+npm publish --access public
+```
+
+### Releases seguintes
+
+1. Em npmjs.com, configure o pacote `@zenifra/cli` com Trusted Publisher:
+   - Organization/user: `zenifra`
+   - Repository: `zenifra-cli`
+   - Workflow filename: `publish.yml`
+   - Environment: `npm`
+   - Allowed action: `npm publish`
+2. Garanta que o repositorio GitHub esteja publico para gerar provenance automatica.
+3. Crie uma release tag semver:
+
+```bash
+npm version patch
+git push origin main --follow-tags
+```
+
+Tags `v*` disparam `.github/workflows/publish.yml`, que roda `npm ci`, `npm run check`, `npm test`, `npm pack --dry-run` e `npm publish --access public`.
