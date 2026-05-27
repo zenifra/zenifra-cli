@@ -365,7 +365,7 @@ async function readSession() {
 
 async function writeSession(session) {
   await mkdir(dirname(SESSION_FILE), { recursive: true });
-  await writeFile(SESSION_FILE, `${JSON.stringify(session, null, 2)}\n`, 'utf8');
+  await writeFile(SESSION_FILE, `${JSON.stringify(session, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   await chmod(SESSION_FILE, 0o600).catch(() => undefined);
 }
 

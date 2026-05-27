@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -311,4 +311,18 @@ test('project image and instances commands call their project operation endpoint
       { method: 'PATCH', url: '/v1/project/proj_1/instances', body: { instances: 3 } },
     ]);
   });
+});
+
+test('auth api-key stores the local session file with owner-only permissions', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+
+  try {
+    const result = await runCli(['auth', 'api-key', '--key', apiKey], { configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    const mode = (await stat(join(configDir, 'session.json'))).mode & 0o777;
+    assert.equal(mode, 0o600);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
 });
