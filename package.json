@@ -28,6 +28,7 @@
     "README.md"
   ],
   "scripts": {
-    "check": "node --check bin/zenifra.mjs"
+    "check": "node --check bin/zenifra.mjs",
+    "test": "node --test"
   }
 }

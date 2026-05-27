@@ -30,6 +30,18 @@ Usage:
   zenifra org set [--org <id>]
   zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb>]
   zenifra projects create --name <name> --plan <plan> --payment-mode <mode> --config <json|@file> [--description <text>] [--org <id>] [--json]
+  zenifra project info --project <id> [--json]
+  zenifra project url --project <id> [--json]
+  zenifra project logs --project <id> [--instance <id>] [--json]
+  zenifra project metrics --project <id> [--instance <id>] [--json]
+  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]
+  zenifra project image set --project <id> --image <image> [--json]
+  zenifra project envs --project <id> [--json] [--show-values]
+  zenifra project env add --project <id> --name <name> --value <value> [--json]
+  zenifra project env update --project <id> --name <name> --value <value> [--json]
+  zenifra project env remove --project <id> --name <name> [--json]
+  zenifra project instances --project <id> [--json]
+  zenifra project instances set --project <id> --count <n> [--json]
   zenifra builds --project <id> [--page <n>] [--limit <n>] [--branch <name>] [--status <status>] [--json]
   zenifra deployments --project <id> [--page <n>] [--limit <n>] [--branch <name>] [--status <status>] [--json]
   zenifra deploy --project <id> [--branch <name>] [--commit-sha <sha>] [--json]
@@ -280,6 +292,66 @@ function buildIdOf(build) {
   return build?.id || build?._id || build?.build_id || '';
 }
 
+function requireProjectId(flags) {
+  if (!flags.project) throw new CliError('Informe --project <id>.');
+  return String(flags.project);
+}
+
+function maskEnvValue(value) {
+  if (value === undefined || value === null) return '';
+  return '********';
+}
+
+function envsForOutput(envs, { showValues = false } = {}) {
+  return asArray(envs).map((env) => ({
+    ...env,
+    value: showValues ? env.value : maskEnvValue(env.value),
+  }));
+}
+
+function printEnvs(envs, flags) {
+  const output = envsForOutput(envs, { showValues: Boolean(flags.showValues) });
+  if (flags.json) return printJson(output);
+  printTable(output, [
+    { label: 'Nome', value: (env) => env.name || '-' },
+    { label: 'Valor', value: (env) => env.value || '-' },
+  ]);
+}
+
+function printProject(project) {
+  const url = projectUrlOf(project);
+  const rows = [
+    { label: 'ID', value: projectIdOf(project) || '-' },
+    { label: 'Nome', value: project.name || '-' },
+    { label: 'Status', value: project.status || '-' },
+    { label: 'Tipo', value: project.type_project || '-' },
+    { label: 'Plano', value: project.plan || '-' },
+    { label: 'URL', value: url || '-' },
+    { label: 'Imagem', value: project.image || '-' },
+    { label: 'Instancias', value: project.instances ?? '-' },
+    { label: 'Instancias atuais', value: project.additional_info?.current_instances ?? '-' },
+  ];
+
+  for (const row of rows) {
+    process.stdout.write(`${row.label}: ${row.value}\n`);
+  }
+}
+
+function projectUrlOf(project) {
+  const domain = project?.domain || project?.url || '';
+  if (!domain) return '';
+  return /^https?:\/\//i.test(domain) ? domain : `https://${domain}`;
+}
+
+function printLogs(logs, flags) {
+  if (flags.json) return printJson(logs);
+  if (Array.isArray(logs)) {
+    process.stdout.write(`${logs.filter(Boolean).join('\n')}\n`);
+    return;
+  }
+  process.stdout.write(`${logs || ''}${String(logs || '').endsWith('\n') ? '' : '\n'}`);
+}
+
 async function getOrganizations(session, flags) {
   requireUserSession(session, 'Listar organizacoes');
   return asArray(unwrapData(await request(session, flags, 'GET', '/organizations')));
@@ -481,6 +553,179 @@ async function handleProjectCreate(session, flags) {
   if (project.api_key) process.stdout.write(`API key: ${project.api_key}\n`);
 }
 
+async function getProject(session, flags, projectId, orgId) {
+  return unwrapData(await request(session, flags, 'GET', `/project/${projectId}`, { orgId }));
+}
+
+async function handleProjectInfo(session, flags) {
+  const projectId = requireProjectId(flags);
+  const orgId = await resolveOrgId(session, flags);
+  const project = await getProject(session, flags, projectId, orgId);
+
+  if (flags.json) return printJson(project);
+  printProject({ ...project, id: projectId });
+}
+
+async function handleProjectUrl(session, flags) {
+  const projectId = requireProjectId(flags);
+  const orgId = await resolveOrgId(session, flags);
+  const project = await getProject(session, flags, projectId, orgId);
+  const url = projectUrlOf(project);
+  const payload = {
+    project_id: projectId,
+    url,
+    domain: project.domain || null,
+    custom_domains: project.custom_domains || [],
+  };
+
+  if (flags.json) return printJson(payload);
+  if (!url) throw new CliError('Projeto nao possui URL disponivel.');
+  process.stdout.write(`${url}\n`);
+}
+
+async function handleProjectLogs(session, flags) {
+  const projectId = requireProjectId(flags);
+  const orgId = await resolveOrgId(session, flags);
+  const query = buildQuery(flags, ['instance']);
+  const logs = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/logs${query}`, { orgId }));
+
+  printLogs(logs, flags);
+}
+
+async function handleProjectMetrics(session, flags) {
+  const projectId = requireProjectId(flags);
+  const orgId = await resolveOrgId(session, flags);
+  const query = buildQuery(flags, ['instance']);
+  const metrics = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/metrics${query}`, { orgId }));
+
+  if (flags.json) return printJson(metrics);
+  if (Array.isArray(metrics)) {
+    return printTable(metrics, [
+      { label: 'Instancia', value: (metric) => metric.instance || '-' },
+      { label: 'Tipo', value: (metric) => metric.type || '-' },
+      { label: 'CPU', value: (metric) => metric.cpu ?? '-' },
+      { label: 'Memoria', value: (metric) => metric.memory ?? '-' },
+    ]);
+  }
+  printJson(metrics);
+}
+
+async function handleProjectNetwork(session, flags) {
+  const projectId = requireProjectId(flags);
+  const orgId = await resolveOrgId(session, flags);
+  const view = String(flags.view || 'summary');
+  const allowedViews = new Set(['summary', 'status-codes', 'routes', 'user-agents', 'request-events', 'source-ips']);
+
+  if (!allowedViews.has(view)) {
+    throw new CliError('View de rede invalida. Use summary, status-codes, routes, user-agents, request-events ou source-ips.');
+  }
+
+  const data = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/metrics/network/${view}`, { orgId }));
+  if (flags.json) return printJson(data);
+  printJson(data);
+}
+
+async function handleProjectImageSet(session, flags) {
+  const projectId = requireProjectId(flags);
+  const image = flags.image || await prompt('Imagem');
+  if (!image) throw new CliError('Informe --image <image>.');
+
+  const orgId = await resolveOrgId(session, flags);
+  const payload = await request(session, flags, 'PATCH', `/project/${projectId}/image`, {
+    orgId,
+    body: { image: String(image) },
+  });
+
+  if (flags.json) return printJson(payload);
+  process.stdout.write('Imagem atualizada com sucesso.\n');
+}
+
+async function getProjectEnvs(session, flags, projectId, orgId) {
+  return asArray(unwrapData(await request(session, flags, 'GET', `/project/${projectId}/envs`, { orgId })));
+}
+
+async function patchProjectEnvs(session, flags, projectId, orgId, envs) {
+  return request(session, flags, 'PATCH', `/project/${projectId}/envs`, {
+    orgId,
+    body: { envs },
+  });
+}
+
+async function handleProjectEnvs(session, flags) {
+  const projectId = requireProjectId(flags);
+  const orgId = await resolveOrgId(session, flags);
+  const envs = await getProjectEnvs(session, flags, projectId, orgId);
+
+  printEnvs(envs, flags);
+}
+
+async function handleProjectEnvMutation(session, flags, action) {
+  const projectId = requireProjectId(flags);
+  const name = String(flags.name || '').trim();
+  if (!name) throw new CliError('Informe --name <name>.');
+
+  const needsValue = action === 'add' || action === 'update';
+  const value = needsValue ? String(flags.value ?? await promptHidden('Valor')) : undefined;
+  if (needsValue && !value) throw new CliError('Informe --value <value>.');
+
+  const orgId = await resolveOrgId(session, flags);
+  const envs = await getProjectEnvs(session, flags, projectId, orgId);
+  const existingIndex = envs.findIndex((env) => env.name === name);
+
+  if (action === 'add' && existingIndex !== -1) {
+    throw new CliError(`Env ${name} ja existe. Use "zenifra project env update".`);
+  }
+
+  if ((action === 'update' || action === 'remove') && existingIndex === -1) {
+    throw new CliError(`Env ${name} nao existe.`);
+  }
+
+  const nextEnvs = [...envs];
+  if (action === 'add') nextEnvs.push({ name, value });
+  if (action === 'update') nextEnvs[existingIndex] = { ...nextEnvs[existingIndex], name, value };
+  if (action === 'remove') nextEnvs.splice(existingIndex, 1);
+
+  const payload = await patchProjectEnvs(session, flags, projectId, orgId, nextEnvs);
+
+  if (flags.json) {
+    return printJson({
+      status: payload.status || 'success',
+      message: payload.message || 'updated with success',
+      envs: envsForOutput(nextEnvs),
+    });
+  }
+
+  process.stdout.write(`Env ${name} ${action === 'remove' ? 'removida' : 'atualizada'} com sucesso.\n`);
+}
+
+async function handleProjectInstances(session, flags) {
+  const projectId = requireProjectId(flags);
+  const orgId = await resolveOrgId(session, flags);
+  const instances = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/instances`, { orgId }));
+
+  if (flags.json) return printJson(instances);
+  printTable(asArray(instances), [
+    { label: 'Instancia', value: (instance) => instance.instance || instance.name || '-' },
+  ]);
+}
+
+async function handleProjectInstancesSet(session, flags) {
+  const projectId = requireProjectId(flags);
+  const instances = Number(flags.count);
+  if (!Number.isInteger(instances) || instances <= 0) {
+    throw new CliError('Informe --count <n> com um inteiro positivo.');
+  }
+
+  const orgId = await resolveOrgId(session, flags);
+  const payload = await request(session, flags, 'PATCH', `/project/${projectId}/instances`, {
+    orgId,
+    body: { instances },
+  });
+
+  if (flags.json) return printJson(payload);
+  process.stdout.write(`Quantidade de instancias atualizada para ${instances}.\n`);
+}
+
 function buildQuery(flags, allowedKeys) {
   const params = new URLSearchParams();
   for (const key of allowedKeys) {
@@ -588,6 +833,18 @@ async function main() {
   if (command === 'org' && subcommand === 'set') return handleOrgSet(session, flags);
   if (command === 'projects' && subcommand === 'create') return handleProjectCreate(session, flags);
   if (command === 'projects') return handleProjects(session, flags);
+  if (command === 'project' && subcommand === 'info') return handleProjectInfo(session, flags);
+  if (command === 'project' && subcommand === 'url') return handleProjectUrl(session, flags);
+  if (command === 'project' && subcommand === 'logs') return handleProjectLogs(session, flags);
+  if (command === 'project' && subcommand === 'metrics') return handleProjectMetrics(session, flags);
+  if (command === 'project' && subcommand === 'network') return handleProjectNetwork(session, flags);
+  if (command === 'project' && subcommand === 'image' && positional[2] === 'set') return handleProjectImageSet(session, flags);
+  if (command === 'project' && subcommand === 'envs') return handleProjectEnvs(session, flags);
+  if (command === 'project' && subcommand === 'env' && positional[2] === 'add') return handleProjectEnvMutation(session, flags, 'add');
+  if (command === 'project' && subcommand === 'env' && positional[2] === 'update') return handleProjectEnvMutation(session, flags, 'update');
+  if (command === 'project' && subcommand === 'env' && positional[2] === 'remove') return handleProjectEnvMutation(session, flags, 'remove');
+  if (command === 'project' && subcommand === 'instances' && positional[2] === 'set') return handleProjectInstancesSet(session, flags);
+  if (command === 'project' && subcommand === 'instances') return handleProjectInstances(session, flags);
   if (command === 'builds') return handleDeployments(session, flags);
   if (command === 'deployments') return handleDeployments(session, flags);
   if (command === 'deploy' && subcommand === 'watch') return handleDeployWatch(session, flags);

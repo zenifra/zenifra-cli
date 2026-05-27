@@ -26,6 +26,18 @@ zenifra orgs
 zenifra org set
 zenifra projects --type http
 zenifra projects create --name <name> --plan free --payment-mode hourly --config @examples/http-project.json
+zenifra project info --project <project-id>
+zenifra project url --project <project-id>
+zenifra project logs --project <project-id> --instance <instance-id>
+zenifra project metrics --project <project-id> --instance <instance-id>
+zenifra project network --project <project-id> --view summary
+zenifra project image set --project <project-id> --image ghcr.io/zenifra/app:tag
+zenifra project envs --project <project-id>
+zenifra project env add --project <project-id> --name NODE_ENV --value production
+zenifra project env update --project <project-id> --name NODE_ENV --value staging
+zenifra project env remove --project <project-id> --name NODE_ENV
+zenifra project instances --project <project-id>
+zenifra project instances set --project <project-id> --count 3
 zenifra builds --project <project-id>
 zenifra deployments --project <project-id>
 zenifra deploy --project <project-id> --branch main
@@ -41,6 +53,9 @@ zenifra deploy watch --project <project-id> --build <build-id>
 - Override de sessao: `ZENIFRA_CONFIG_DIR=/path/custom`
 
 Todos os comandos de listagem aceitam `--json`.
+
+Valores de variaveis de ambiente sao mascarados por padrao, inclusive em `--json`.
+Use `--show-values` apenas quando precisar inspecionar os valores completos.
 
 ## Automacao com API key
 
