@@ -41,7 +41,7 @@ async function withServer(handler) {
   };
 }
 
-async function runCli(args, { apiBase, configDir }) {
+async function runCli(args, { apiBase = 'http://127.0.0.1:1/v1', configDir } = {}) {
   const child = spawn(process.execPath, [cliPath, ...args], {
     cwd: resolve('.'),
     env: {
@@ -60,6 +60,106 @@ async function runCli(args, { apiBase, configDir }) {
   const code = await new Promise((resolvePromise) => child.on('close', resolvePromise));
   return { code, stdout, stderr };
 }
+
+test('global help shows the command index and points to command-specific help', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli(['--help'], { configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Zenifra CLI/);
+    assert.match(result.stdout, /zenifra help <command>/);
+    assert.match(result.stdout, /project logs/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('subcommand help is specific and does not require authentication', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli(['project', 'logs', '--help'], { configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Usage:\n  zenifra project logs --project <id>/);
+    assert.match(result.stdout, /Description:/);
+    assert.match(result.stdout, /Examples:/);
+    assert.match(result.stdout, /Example output:/);
+    assert.doesNotMatch(result.stdout, /zenifra auth login \[--api-base/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('help command resolves compound commands with examples and JSON output', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli(['help', 'project', 'env', 'add'], { configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Usage:\n  zenifra project env add --project <id> --name <name> --value <value>/);
+    assert.match(result.stdout, /--name <name>/);
+    assert.match(result.stdout, /zenifra project env add --project/);
+    assert.match(result.stdout, /Example JSON output:/);
+    assert.match(result.stdout, /\*\*\*\*\*\*\*\*/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('unknown help command fails with a clear message', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli(['help', 'project', 'missing'], { configDir });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Ajuda nao encontrada para: project missing/);
+    assert.match(result.stderr, /zenifra help <command>/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('every routed command has command-specific help', async () => {
+  const commands = [
+    ['auth', 'login'],
+    ['auth', 'api-key'],
+    ['auth', 'logout'],
+    ['orgs'],
+    ['org', 'set'],
+    ['projects'],
+    ['projects', 'create'],
+    ['project', 'info'],
+    ['project', 'url'],
+    ['project', 'logs'],
+    ['project', 'metrics'],
+    ['project', 'network'],
+    ['project', 'image', 'set'],
+    ['project', 'envs'],
+    ['project', 'env', 'add'],
+    ['project', 'env', 'update'],
+    ['project', 'env', 'remove'],
+    ['project', 'instances'],
+    ['project', 'instances', 'set'],
+    ['builds'],
+    ['deployments'],
+    ['deploy'],
+    ['deploy', 'watch'],
+  ];
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+
+  try {
+    for (const command of commands) {
+      const result = await runCli([...command, '--help'], { configDir });
+      assert.equal(result.code, 0, `${command.join(' ')}\n${result.stderr}`);
+      assert.match(result.stdout, new RegExp(`zenifra ${command.join(' ')}`));
+      assert.match(result.stdout, /Examples:/);
+      assert.doesNotMatch(result.stdout, /Environment:\n  ZENIFRA_API_URL/);
+    }
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
 
 async function withCliServer(handler, callback) {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));

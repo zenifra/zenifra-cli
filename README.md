@@ -7,12 +7,20 @@ CLI oficial da Zenifra para autenticar, selecionar organizacao, listar projetos 
 ```bash
 npm link
 zenifra --help
+zenifra help project logs
 ```
 
 Ou sem link:
 
 ```bash
 node bin/zenifra.mjs --help
+```
+
+Cada comando tem ajuda especifica com exemplos de uso e retorno:
+
+```bash
+zenifra project logs --help
+zenifra help project env add
 ```
 
 ## Comandos

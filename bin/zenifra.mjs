@@ -23,6 +23,7 @@ function usage() {
   return `Zenifra CLI
 
 Usage:
+  zenifra help <command>
   zenifra auth login [--api-base <url>] [--code <code>]
   zenifra auth api-key --key <znf_key> [--api-base <url>]
   zenifra auth logout
@@ -51,7 +52,271 @@ Environment:
   ZENIFRA_API_URL     Override API base URL.
   ZENIFRA_CONFIG_DIR  Override local session directory.
   ZENIFRA_API_KEY     Use a global organization API key for automation.
+
+Run "zenifra help <command>" or "zenifra <command> --help" for command-specific usage, examples, and output.
 `;
+}
+
+const HELP_SPECS = [
+  {
+    command: 'auth login',
+    usage: 'zenifra auth login [--api-base <url>] [--code <code>]',
+    description: 'Autentica um usuario Zenifra e salva a sessao local.',
+    flags: [
+      '--api-base <url>  Usa uma API diferente da producao.',
+      '--code <code>     Informa o codigo de desafio sem prompt interativo.',
+    ],
+    examples: ['zenifra auth login', 'zenifra auth login --code 123456'],
+    output: 'Login realizado com sucesso.',
+    notes: ['Exige email, senha e, quando habilitado, codigo de desafio.'],
+  },
+  {
+    command: 'auth api-key',
+    usage: 'zenifra auth api-key --key <znf_key> [--api-base <url>]',
+    description: 'Salva uma API key organizacional para comandos de automacao.',
+    flags: ['--key <znf_key>   API key organizacional.', '--api-base <url>  Usa uma API diferente da producao.'],
+    examples: ['zenifra auth api-key --key znf_0123456789abcdef01234567_abcd...'],
+    output: 'API key salva com sucesso. Ela sera usada em comandos de automacao.',
+    notes: ['API keys ja carregam a organizacao e nao exigem "zenifra org set".'],
+  },
+  {
+    command: 'auth logout',
+    usage: 'zenifra auth logout',
+    description: 'Remove a sessao local do CLI.',
+    examples: ['zenifra auth logout'],
+    output: 'Sessao removida.',
+  },
+  {
+    command: 'orgs',
+    usage: 'zenifra orgs [--json]',
+    description: 'Lista organizacoes disponiveis para o usuario autenticado.',
+    flags: ['--json  Imprime a resposta em JSON.'],
+    examples: ['zenifra orgs', 'zenifra orgs --json'],
+    output: 'ID                        Nome        Role   Status\n507f1f77bcf86cd799439011  Minha org   owner  active',
+    jsonOutput: '[{"_id":"507f1f77bcf86cd799439011","name":"Minha org","role":"owner","status":"active"}]',
+  },
+  {
+    command: 'org set',
+    usage: 'zenifra org set [--org <id>]',
+    description: 'Seleciona a organizacao ativa para comandos com sessao de usuario.',
+    flags: ['--org <id>  Define a organizacao sem prompt interativo.'],
+    examples: ['zenifra org set', 'zenifra org set --org 507f1f77bcf86cd799439011'],
+    output: 'Organizacao ativa: 507f1f77bcf86cd799439011',
+  },
+  {
+    command: 'projects',
+    usage: 'zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb>]',
+    description: 'Lista projetos da organizacao ativa ou da API key.',
+    flags: ['--json  Imprime a resposta em JSON.', '--org <id>  Usa uma organizacao especifica com sessao de usuario.', '--type <type>  Filtra por tipo de projeto.'],
+    examples: ['zenifra projects --type http', 'zenifra projects --json'],
+    output: 'ID                        Nome     Status   Plano   Tipo\n507f1f77bcf86cd799439012  api-web  running  free    http',
+    jsonOutput: '[{"id":"507f1f77bcf86cd799439012","name":"api-web","status":"running","type_project":"http"}]',
+  },
+  {
+    command: 'projects create',
+    usage: 'zenifra projects create --name <name> --plan <plan> --payment-mode <mode> --config <json|@file> [--description <text>] [--org <id>] [--json]',
+    description: 'Cria um projeto usando um payload de configuracao JSON.',
+    flags: ['--name <name>          Nome do projeto.', '--plan <plan>          Plano do projeto.', '--payment-mode <mode>  Modo de pagamento.', '--config <json|@file>  JSON inline ou arquivo.', '--description <text>   Descricao opcional.', '--json                 Imprime a resposta em JSON.'],
+    examples: ['zenifra projects create --name api-web --plan free --payment-mode hourly --config @examples/http-project.json'],
+    output: 'Projeto criado: 507f1f77bcf86cd799439012\nDominio: api-web.client.zenifra.com',
+    jsonOutput: '{"status":"success","data":{"id":"507f1f77bcf86cd799439012","name":"api-web"}}',
+  },
+  {
+    command: 'project info',
+    usage: 'zenifra project info --project <id> [--json]',
+    description: 'Mostra dados principais de um projeto.',
+    flags: ['--project <id>  ID do projeto.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project info --project 507f1f77bcf86cd799439012'],
+    output: 'Nome: api-web\nStatus: running\nURL: https://api-web.client.zenifra.com\nInstancias: 2',
+    jsonOutput: '{"name":"api-web","status":"running","domain":"api-web.client.zenifra.com","instances":2}',
+  },
+  {
+    command: 'project url',
+    usage: 'zenifra project url --project <id> [--json]',
+    description: 'Imprime a URL publica principal do projeto.',
+    flags: ['--project <id>  ID do projeto.', '--json          Inclui dominio e custom domains em JSON.'],
+    examples: ['zenifra project url --project 507f1f77bcf86cd799439012'],
+    output: 'https://api-web.client.zenifra.com',
+    jsonOutput: '{"project_id":"507f1f77bcf86cd799439012","url":"https://api-web.client.zenifra.com","domain":"api-web.client.zenifra.com","custom_domains":[]}',
+  },
+  {
+    command: 'project logs',
+    usage: 'zenifra project logs --project <id> [--instance <id>] [--json]',
+    description: 'Mostra snapshot dos logs de runtime do projeto.',
+    flags: ['--project <id>   ID do projeto.', '--instance <id>  Filtra uma instancia.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra project logs --project 507f1f77bcf86cd799439012', 'zenifra project logs --project 507f1f77bcf86cd799439012 --instance web-1'],
+    output: 'server started\nGET /health 200',
+    jsonOutput: '"server started\\nGET /health 200"',
+    notes: ['Nao faz streaming continuo; retorna o snapshot disponibilizado pela API.'],
+  },
+  {
+    command: 'project metrics',
+    usage: 'zenifra project metrics --project <id> [--instance <id>] [--json]',
+    description: 'Mostra CPU, memoria e dados basicos de rede do projeto.',
+    flags: ['--project <id>   ID do projeto.', '--instance <id>  Filtra uma instancia.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra project metrics --project 507f1f77bcf86cd799439012 --instance web-1'],
+    output: 'Instancia  Tipo         CPU  Memoria\nweb-1      application  0.2  64',
+    jsonOutput: '{"type":"application","instance":"web-1","cpu":0.2,"memory":64,"network":{"requests":120}}',
+  },
+  {
+    command: 'project network',
+    usage: 'zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]',
+    description: 'Mostra analytics de rede para projetos HTTP.',
+    flags: ['--project <id>  ID do projeto.', '--view <view>   Visao de rede. Padrao: summary.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project network --project 507f1f77bcf86cd799439012 --view summary'],
+    output: '{"requests":120,"bytes_received":4096,"bytes_sent":8192}',
+    jsonOutput: '{"requests":120,"bytes_received":4096,"bytes_sent":8192}',
+  },
+  {
+    command: 'project image set',
+    usage: 'zenifra project image set --project <id> --image <image> [--json]',
+    description: 'Atualiza a imagem de deploy do projeto.',
+    flags: ['--project <id>  ID do projeto.', '--image <image> Imagem completa.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project image set --project 507f1f77bcf86cd799439012 --image ghcr.io/zenifra/app:1.2.3'],
+    output: 'Imagem atualizada com sucesso.',
+    jsonOutput: '{"status":"success","message":"updated with success"}',
+  },
+  {
+    command: 'project envs',
+    usage: 'zenifra project envs --project <id> [--json] [--show-values]',
+    description: 'Lista variaveis de ambiente do projeto.',
+    flags: ['--project <id>  ID do projeto.', '--json          Imprime a resposta em JSON.', '--show-values   Mostra valores completos. Use com cuidado.'],
+    examples: ['zenifra project envs --project 507f1f77bcf86cd799439012'],
+    output: 'Nome      Valor\nNODE_ENV  ********',
+    jsonOutput: '[{"name":"NODE_ENV","value":"********"}]',
+    notes: ['Valores sao mascarados por padrao, inclusive em JSON.'],
+  },
+  {
+    command: 'project env add',
+    usage: 'zenifra project env add --project <id> --name <name> --value <value> [--json]',
+    description: 'Adiciona uma variavel de ambiente ao projeto.',
+    flags: ['--project <id>  ID do projeto.', '--name <name>   Nome da variavel.', '--value <value> Valor da variavel.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project env add --project 507f1f77bcf86cd799439012 --name NODE_ENV --value production'],
+    output: 'Env NODE_ENV atualizada com sucesso.',
+    jsonOutput: '{"status":"success","message":"updated with success","envs":[{"name":"NODE_ENV","value":"********"}]}',
+    notes: ['Falha se a variavel ja existir. Use update para alterar.'],
+  },
+  {
+    command: 'project env update',
+    usage: 'zenifra project env update --project <id> --name <name> --value <value> [--json]',
+    description: 'Atualiza uma variavel de ambiente existente.',
+    flags: ['--project <id>  ID do projeto.', '--name <name>   Nome da variavel.', '--value <value> Novo valor.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project env update --project 507f1f77bcf86cd799439012 --name NODE_ENV --value staging'],
+    output: 'Env NODE_ENV atualizada com sucesso.',
+    jsonOutput: '{"status":"success","message":"updated with success","envs":[{"name":"NODE_ENV","value":"********"}]}',
+    notes: ['Falha se a variavel nao existir.'],
+  },
+  {
+    command: 'project env remove',
+    usage: 'zenifra project env remove --project <id> --name <name> [--json]',
+    description: 'Remove uma variavel de ambiente existente.',
+    flags: ['--project <id>  ID do projeto.', '--name <name>   Nome da variavel.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project env remove --project 507f1f77bcf86cd799439012 --name NODE_ENV'],
+    output: 'Env NODE_ENV removida com sucesso.',
+    jsonOutput: '{"status":"success","message":"updated with success","envs":[]}',
+    notes: ['Falha se a variavel nao existir.'],
+  },
+  {
+    command: 'project instances',
+    usage: 'zenifra project instances --project <id> [--json]',
+    description: 'Lista instancias/pods do projeto.',
+    flags: ['--project <id>  ID do projeto.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project instances --project 507f1f77bcf86cd799439012'],
+    output: 'Instancia\nweb-1',
+    jsonOutput: '[{"instance":"web-1"}]',
+  },
+  {
+    command: 'project instances set',
+    usage: 'zenifra project instances set --project <id> --count <n> [--json]',
+    description: 'Atualiza a quantidade de instancias do projeto.',
+    flags: ['--project <id>  ID do projeto.', '--count <n>     Quantidade desejada.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project instances set --project 507f1f77bcf86cd799439012 --count 3'],
+    output: 'Quantidade de instancias atualizada para 3.',
+    jsonOutput: '{"status":"success","message":"project instances changed with success"}',
+  },
+  {
+    command: 'builds',
+    usage: 'zenifra builds --project <id> [--page <n>] [--limit <n>] [--branch <name>] [--status <status>] [--json]',
+    description: 'Lista builds GitHub de um projeto.',
+    flags: ['--project <id>   ID do projeto.', '--page <n>      Pagina.', '--limit <n>     Itens por pagina.', '--branch <name> Filtra branch.', '--status <status> Filtra status.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra builds --project 507f1f77bcf86cd799439012 --status success'],
+    output: 'Build                     Status   Branch  Commit\nbuild_123                 success  main    abc123',
+    jsonOutput: '[{"id":"build_123","status":"success","branch":"main","commit_sha":"abc123"}]',
+  },
+  {
+    command: 'deployments',
+    usage: 'zenifra deployments --project <id> [--page <n>] [--limit <n>] [--branch <name>] [--status <status>] [--json]',
+    description: 'Alias para listar builds/deployments GitHub de um projeto.',
+    flags: ['--project <id>   ID do projeto.', '--page <n>      Pagina.', '--limit <n>     Itens por pagina.', '--branch <name> Filtra branch.', '--status <status> Filtra status.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra deployments --project 507f1f77bcf86cd799439012'],
+    output: 'Build                     Status   Branch  Commit\nbuild_123                 success  main    abc123',
+    jsonOutput: '[{"id":"build_123","status":"success","branch":"main","commit_sha":"abc123"}]',
+  },
+  {
+    command: 'deploy',
+    usage: 'zenifra deploy --project <id> [--branch <name>] [--commit-sha <sha>] [--json]',
+    description: 'Dispara um deploy GitHub para o projeto.',
+    flags: ['--project <id>    ID do projeto.', '--branch <name>  Branch a publicar.', '--commit-sha <sha> Commit especifico.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra deploy --project 507f1f77bcf86cd799439012 --branch main'],
+    output: 'Deploy iniciado: build_123',
+    jsonOutput: '{"status":"success","data":{"build_id":"build_123"}}',
+  },
+  {
+    command: 'deploy watch',
+    usage: 'zenifra deploy watch --project <id> --build <id> [--interval <seconds>] [--timeout <seconds>] [--json]',
+    description: 'Acompanha um build ate status terminal.',
+    flags: ['--project <id>        ID do projeto.', '--build <id>          ID do build.', '--interval <seconds>  Intervalo de polling. Padrao: 5.', '--timeout <seconds>   Timeout total. Padrao: 900.', '--json                Imprime cada resposta em JSON.'],
+    examples: ['zenifra deploy watch --project 507f1f77bcf86cd799439012 --build build_123'],
+    output: '[2026-05-27T12:00:00.000Z] build build_123: building\n[2026-05-27T12:00:05.000Z] build build_123: success',
+    jsonOutput: '{"id":"build_123","status":"success"}',
+  },
+];
+
+const HELP_BY_COMMAND = new Map(HELP_SPECS.map((spec) => [spec.command, spec]));
+
+function formatHelp(spec) {
+  const sections = [
+    `Zenifra CLI - ${spec.command}`,
+    '',
+    'Usage:',
+    `  ${spec.usage}`,
+    '',
+    'Description:',
+    `  ${spec.description}`,
+  ];
+
+  if (spec.flags?.length) {
+    sections.push('', 'Flags:', ...spec.flags.map((flag) => `  ${flag}`));
+  }
+
+  sections.push('', 'Examples:', ...spec.examples.map((example) => `  ${example}`));
+  sections.push('', 'Example output:', spec.output.split('\n').map((line) => `  ${line}`).join('\n'));
+
+  if (spec.jsonOutput) {
+    sections.push('', 'Example JSON output:', `  ${spec.jsonOutput}`);
+  }
+
+  if (spec.notes?.length) {
+    sections.push('', 'Notes:', ...spec.notes.map((note) => `  ${note}`));
+  }
+
+  return `${sections.join('\n')}\n`;
+}
+
+function helpKeyFromPositionals(positionals) {
+  return positionals.filter((value) => value !== 'help').join(' ').trim();
+}
+
+function commandHelp(positionals) {
+  const key = helpKeyFromPositionals(positionals);
+  if (!key) return usage();
+
+  const spec = HELP_BY_COMMAND.get(key);
+  if (!spec) {
+    throw new CliError(`Ajuda nao encontrada para: ${key}. Use "zenifra help <command>".`);
+  }
+
+  return formatHelp(spec);
 }
 
 function parseArgs(argv) {
@@ -819,8 +1084,18 @@ async function main() {
   const [command, subcommand] = positional;
   const session = await readSession();
 
-  if (!command || flags.help || command === 'help') {
+  if (command === 'help') {
+    process.stdout.write(commandHelp(positional.slice(1)));
+    return;
+  }
+
+  if (!command) {
     process.stdout.write(usage());
+    return;
+  }
+
+  if (flags.help) {
+    process.stdout.write(commandHelp(positional));
     return;
   }
 
