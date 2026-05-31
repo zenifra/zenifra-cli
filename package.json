@@ -1,13 +1,13 @@
 {
   "name": "@zenifra/cli",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "Official Zenifra command line interface.",
   "type": "module",
   "license": "MIT",
   "homepage": "https://zenifra.com/",
   "repository": {
     "type": "git",
-    "url": "https://github.com/zenifra/zenifra-cli.git"
+    "url": "git+https://github.com/zenifra/zenifra-cli.git"
   },
   "publishConfig": {
     "access": "public"
@@ -20,7 +20,7 @@
     "cloud"
   ],
   "bin": {
-    "zenifra": "./bin/zenifra.mjs"
+    "zenifra": "bin/zenifra.mjs"
   },
   "engines": {
     "node": ">=18"
