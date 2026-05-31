@@ -1,14 +1,10 @@
 {
-  "type_project": "http",
-  "image": {
-    "url": "docker.io/nginx:perl",
-    "is_public": true
-  },
-  "port": 80,
+  "type_project": "postgresql",
+  "version": "17",
   "instances": 1,
   "storage": {
-    "persistent": false,
-    "capacity": 1
+    "persistent": true,
+    "capacity": 10
   },
   "envs": [],
   "network_access": {

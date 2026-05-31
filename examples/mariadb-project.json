@@ -1,14 +1,10 @@
 {
-  "type_project": "http",
-  "image": {
-    "url": "docker.io/nginx:perl",
-    "is_public": true
-  },
-  "port": 80,
-  "instances": 1,
+  "type_project": "mariadb",
+  "version": "11",
+  "instances": 3,
   "storage": {
-    "persistent": false,
-    "capacity": 1
+    "persistent": true,
+    "capacity": 10
   },
   "envs": [],
   "network_access": {

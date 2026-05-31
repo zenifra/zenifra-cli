@@ -1,0 +1,35 @@
+{
+  "type_project": "http",
+  "github": {
+    "repository_owner": "zenifra",
+    "repository_name": "zenifra-cli",
+    "branch": "main",
+    "runtime": "nodejs",
+    "version": "24",
+    "auto_deploy": true,
+    "start_command": "npm start",
+    "pre_build_command": null,
+    "build_command": "npm run build"
+  },
+  "port": 3000,
+  "instances": 1,
+  "storage": {
+    "persistent": false,
+    "capacity": 1
+  },
+  "envs": [
+    {
+      "name": "NODE_ENV",
+      "value": "production"
+    }
+  ],
+  "network_access": {
+    "ingress_white_list": [
+      {
+        "cidr": "0.0.0.0/0",
+        "description": "Allow all"
+      }
+    ],
+    "ingress_black_list": []
+  }
+}

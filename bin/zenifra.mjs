@@ -8,9 +8,79 @@ import process from 'node:process';
 import readline from 'node:readline/promises';
 
 const DEFAULT_API_BASE_URL = 'https://api.zenifra.com/v1';
+const DOCS_BASE_URL = 'https://docs.zenifra.com/pt';
+const DOCS_RUNTIME_URL = `${DOCS_BASE_URL}/docs/runtime`;
+const DOCS_CREATE_HTTP_URL = `${DOCS_BASE_URL}/docs/how-use-zenifra/http/how-to-create-a-http-project-at-zenifra-via-console`;
+const DOCS_CREATE_POSTGRESQL_URL = `${DOCS_BASE_URL}/docs/how-use-zenifra/database/how-to-create-a-postgresql-project-at-zenifra-via-console`;
+const DOCS_CREATE_MARIADB_URL = `${DOCS_BASE_URL}/docs/how-use-zenifra/database/how-to-create-a-mariadb-project-at-zenifra-via-console`;
+const DOCS_CONFIGURATION_URL = `${DOCS_BASE_URL}/docs/configuration`;
+const DOCS_DATABASE_CONFIGURATION_URL = `${DOCS_BASE_URL}/docs/database/configuration/configuration`;
+const DOCS_PAYMENTS_URL = `${DOCS_BASE_URL}/docs/payments/payments`;
 const SESSION_DIR = process.env.ZENIFRA_CONFIG_DIR || join(homedir(), '.config', 'zenifra-cli');
 const SESSION_FILE = join(SESSION_DIR, 'session.json');
+const PROFILES_FILE = join(SESSION_DIR, 'profiles.json');
+const PROFILE_STORE_VERSION = 1;
+const DEFAULT_PROFILE_NAME = 'default';
 const FINAL_BUILD_STATUSES = new Set(['success', 'failed']);
+const ALLOWED_PLAN_VALUES = new Set([
+  'free',
+  'static',
+  'basic',
+  'premium',
+  'premium_plus',
+  'business',
+  'deep_learning_basic',
+  'deep_learning_premium',
+  'db-free',
+  'db-starter',
+  'db-basic',
+  'db-premium',
+  'db-enterprise',
+]);
+const ALLOWED_PAYMENT_MODE_VALUES = new Set(['hourly', 'monthly', 'yearly']);
+const ALLOWED_TYPE_PROJECT_VALUES = new Set(['http', 'postgresql', 'mariadb']);
+const ALLOWED_RUNTIME_VALUES = new Set(['nodejs', 'python']);
+const GITHUB_RUNTIME_VERSIONS = {
+  nodejs: ['24', '22', '20'],
+  python: ['3.13', '3.12', '3.11'],
+};
+const ALLOWED_POSTGRESQL_VERSIONS = ['15', '16', '17', '18'];
+const ALLOWED_MARIADB_VERSIONS = ['10', '11'];
+const DEFAULT_HTTP_NETWORK_ACCESS = {
+  ingress_white_list: [{ cidr: '0.0.0.0/0', description: 'Allow all' }],
+  ingress_black_list: [],
+};
+const WIZARD_HTTP_PLAN_OPTIONS = [
+  'free',
+  'static',
+  'basic',
+  'premium',
+  'premium_plus',
+  'business',
+  'deep_learning_basic',
+  'deep_learning_premium',
+];
+const WIZARD_DATABASE_PLAN_OPTIONS = [
+  'db-basic',
+  'db-premium',
+  'db-starter',
+  'db-enterprise',
+  'db-free',
+];
+const WIZARD_PAYMENT_MODE_OPTIONS = ['hourly', 'monthly', 'yearly'];
+const WIZARD_TYPE_PROJECT_OPTIONS = ['http', 'postgresql', 'mariadb'];
+let promptInterface;
+let pipedInputPromise;
+let pipedInputIndex = 0;
+const ANSI = {
+  reset: '\u001b[0m',
+  bold: '\u001b[1m',
+  dim: '\u001b[2m',
+  cyan: '\u001b[36m',
+  green: '\u001b[32m',
+  yellow: '\u001b[33m',
+  red: '\u001b[31m',
+};
 
 class CliError extends Error {
   constructor(message, exitCode = 1) {
@@ -24,13 +94,21 @@ function usage() {
 
 Usage:
   zenifra help <command>
-  zenifra auth login [--api-base <url>] [--code <code>]
-  zenifra auth api-key --key <znf_key> [--api-base <url>]
-  zenifra auth logout
+  zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>]
+  zenifra auth api-key --key <znf_key> [--profile <name>] [--api-base <url>]
+  zenifra auth logout [--profile <name>]
+  zenifra profile list [--json]
+  zenifra profile show [<name>] [--json]
+  zenifra profile add [--name <name>] [--description <text>] [--api-base <url>] [--mode <api-key|login>] [--key <znf_key>] [--json]
+  zenifra profile edit <name> [--description <text>] [--api-base <url>] [--json]
+  zenifra profile use <name> [--json]
+  zenifra profile remove <name> [--json]
   zenifra orgs [--json]
   zenifra org set [--org <id>]
+  zenifra plans [--type <all|http|database|storage>] [--json]
+  zenifra create project
+  zenifra create project --name <name> --plan <plan> --payment-mode <mode> --config <json|@file> [--description <text>] [--org <id>] [--json]
   zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb>]
-  zenifra projects create --name <name> --plan <plan> --payment-mode <mode> --config <json|@file> [--description <text>] [--org <id>] [--json]
   zenifra project info --project <id> [--json]
   zenifra project url --project <id> [--json]
   zenifra project logs --project <id> [--instance <id>] [--json]
@@ -50,7 +128,7 @@ Usage:
 
 Environment:
   ZENIFRA_API_URL     Override API base URL.
-  ZENIFRA_CONFIG_DIR  Override local session directory.
+  ZENIFRA_CONFIG_DIR  Override local profile directory.
   ZENIFRA_API_KEY     Use a global organization API key for automation.
 
 Run "zenifra help <command>" or "zenifra <command> --help" for command-specific usage, examples, and output.
@@ -59,32 +137,112 @@ Run "zenifra help <command>" or "zenifra <command> --help" for command-specific 
 
 const HELP_SPECS = [
   {
+    command: 'auth',
+    usage: 'zenifra auth\n  zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>]\n  zenifra auth api-key --key <znf_key> [--profile <name>] [--api-base <url>]\n  zenifra auth logout [--profile <name>]',
+    description: 'Gerencia a autenticacao dos perfis locais da CLI.',
+    examples: ['zenifra auth', 'zenifra auth login --profile staging', 'zenifra auth api-key --profile prod --key znf_0123456789abcdef01234567_abcd...'],
+    output: 'Zenifra CLI - auth',
+    notes: ['Use "zenifra help auth login", "zenifra help auth api-key" ou "zenifra help auth logout" para detalhes de cada subcomando.'],
+  },
+  {
     command: 'auth login',
-    usage: 'zenifra auth login [--api-base <url>] [--code <code>]',
-    description: 'Autentica um usuario Zenifra e salva a sessao local.',
+    usage: 'zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>]',
+    description: 'Autentica um usuario Zenifra no perfil ativo ou em um perfil especifico.',
     flags: [
+      '--profile <name>  Atualiza ou cria o perfil informado e o torna ativo.',
       '--api-base <url>  Usa uma API diferente da producao.',
       '--code <code>     Informa o codigo de desafio sem prompt interativo.',
     ],
-    examples: ['zenifra auth login', 'zenifra auth login --code 123456'],
+    examples: ['zenifra auth login', 'zenifra auth login --profile staging --code 123456'],
     output: 'Login realizado com sucesso.',
     notes: ['Exige email, senha e, quando habilitado, codigo de desafio.'],
   },
   {
     command: 'auth api-key',
-    usage: 'zenifra auth api-key --key <znf_key> [--api-base <url>]',
-    description: 'Salva uma API key organizacional para comandos de automacao.',
-    flags: ['--key <znf_key>   API key organizacional.', '--api-base <url>  Usa uma API diferente da producao.'],
-    examples: ['zenifra auth api-key --key znf_0123456789abcdef01234567_abcd...'],
+    usage: 'zenifra auth api-key --key <znf_key> [--profile <name>] [--api-base <url>]',
+    description: 'Salva uma API key organizacional no perfil ativo ou em um perfil especifico.',
+    flags: ['--key <znf_key>      API key organizacional.', '--profile <name>  Atualiza ou cria o perfil informado e o torna ativo.', '--api-base <url>   Usa uma API diferente da producao.'],
+    examples: ['zenifra auth api-key --key znf_0123456789abcdef01234567_abcd...', 'zenifra auth api-key --profile prod --key znf_0123456789abcdef01234567_abcd...'],
     output: 'API key salva com sucesso. Ela sera usada em comandos de automacao.',
     notes: ['API keys ja carregam a organizacao e nao exigem "zenifra org set".'],
   },
   {
     command: 'auth logout',
-    usage: 'zenifra auth logout',
-    description: 'Remove a sessao local do CLI.',
-    examples: ['zenifra auth logout'],
-    output: 'Sessao removida.',
+    usage: 'zenifra auth logout [--profile <name>]',
+    description: 'Remove a autenticacao do perfil ativo ou do perfil informado.',
+    flags: ['--profile <name>  Limpa outro perfil sem trocar o perfil ativo.'],
+    examples: ['zenifra auth logout', 'zenifra auth logout --profile staging'],
+    output: 'Autenticacao removida do perfil active.',
+  },
+  {
+    command: 'profile',
+    usage: 'zenifra profile\n  zenifra profile list [--json]\n  zenifra profile show [<name>] [--json]\n  zenifra profile add [--name <name>] [--description <text>] [--api-base <url>] [--mode <api-key|login>] [--key <znf_key>] [--json]\n  zenifra profile edit <name> [--description <text>] [--api-base <url>] [--json]\n  zenifra profile use <name> [--json]\n  zenifra profile remove <name> [--json]',
+    description: 'Gerencia perfis de ambiente locais, incluindo API base, descricao e credenciais.',
+    examples: ['zenifra profile', 'zenifra profile list', 'zenifra profile add --name staging --description Homologacao --api-base https://api-stg.zenifra.com/v1 --mode api-key --key znf_0123...'],
+    output: 'Zenifra CLI - profile',
+    notes: ['Use "zenifra help profile <subcomando>" para detalhes de list, show, add, edit, use e remove.'],
+  },
+  {
+    command: 'profile list',
+    usage: 'zenifra profile list [--json]',
+    description: 'Lista os perfis locais configurados e indica o perfil ativo.',
+    flags: ['--json  Imprime a resposta em JSON.'],
+    examples: ['zenifra profile list', 'zenifra profile list --json'],
+    output: 'Nome      Tipo         API base                      Ativo  Descricao\nprod      api_key      https://api.zenifra.com/v1    yes    Producao\nstaging   access_token https://api-stg.zenifra.com/v1 no     Homologacao',
+    jsonOutput: '[{"name":"prod","auth_mode":"api_key","api_base_url":"https://api.zenifra.com/v1","active":true}]',
+  },
+  {
+    command: 'profile show',
+    usage: 'zenifra profile show [<name>] [--json]',
+    description: 'Mostra os detalhes do perfil ativo ou de um perfil especifico.',
+    flags: ['--json  Imprime a resposta em JSON.'],
+    examples: ['zenifra profile show', 'zenifra profile show staging --json'],
+    output: 'Nome: prod\nDescricao: Producao\nTipo: api_key\nAPI base: https://api.zenifra.com/v1\nAPI key: znf_0123...FGHI',
+    jsonOutput: '{"name":"prod","description":"Producao","auth_mode":"api_key","api_base_url":"https://api.zenifra.com/v1","active":true}',
+  },
+  {
+    command: 'profile add',
+    usage: 'zenifra profile add [--name <name>] [--description <text>] [--api-base <url>] [--mode <api-key|login>] [--key <znf_key>] [--json]',
+    description: 'Cria um novo perfil e opcionalmente autentica via API key ou login de usuario.',
+    flags: ['--name <name>          Nome do perfil.', '--description <text>   Descricao opcional.', '--api-base <url>       API base do perfil.', '--mode <mode>          api-key ou login.', '--key <znf_key>        API key para modo api-key.', '--json                 Imprime a resposta em JSON.'],
+    examples: ['zenifra profile add --name staging --description Homologacao --api-base https://api-stg.zenifra.com/v1 --mode api-key --key znf_0123...', 'zenifra profile add'],
+    output: 'Perfil staging salvo e definido como ativo.',
+    jsonOutput: '{"name":"staging","auth_mode":"api_key","active":true}',
+  },
+  {
+    command: 'profile edit',
+    usage: 'zenifra profile edit <name> [--description <text>] [--api-base <url>] [--json]',
+    description: 'Atualiza descricao e API base de um perfil existente.',
+    flags: ['--description <text>  Nova descricao.', '--api-base <url>      Nova API base.', '--json                Imprime a resposta em JSON.'],
+    examples: ['zenifra profile edit staging --description Homologacao interna', 'zenifra profile edit prod --api-base https://api.zenifra.com/v1 --json'],
+    output: 'Perfil staging atualizado.',
+    jsonOutput: '{"name":"staging","description":"Homologacao interna"}',
+  },
+  {
+    command: 'profile use',
+    usage: 'zenifra profile use <name> [--json]',
+    description: 'Define o perfil ativo para os proximos comandos.',
+    flags: ['--json  Imprime a resposta em JSON.'],
+    examples: ['zenifra profile use staging', 'zenifra profile use prod --json'],
+    output: 'Perfil ativo: staging',
+    jsonOutput: '{"active_profile":"staging"}',
+  },
+  {
+    command: 'profile remove',
+    usage: 'zenifra profile remove <name> [--json]',
+    description: 'Remove um perfil local que nao esteja ativo.',
+    flags: ['--json  Imprime a resposta em JSON.'],
+    examples: ['zenifra profile remove staging'],
+    output: 'Perfil staging removido.',
+    jsonOutput: '{"removed":"staging"}',
+  },
+  {
+    command: 'org',
+    usage: 'zenifra org\n  zenifra org set [--org <id>]',
+    description: 'Agrupa comandos relacionados a organizacao ativa da sessao de usuario.',
+    examples: ['zenifra org', 'zenifra org set', 'zenifra org set --org 507f1f77bcf86cd799439011'],
+    output: 'Zenifra CLI - org',
+    notes: ['Use "zenifra help org set" para detalhes do seletor de organizacao.'],
   },
   {
     command: 'orgs',
@@ -104,6 +262,15 @@ const HELP_SPECS = [
     output: 'Organizacao ativa: 507f1f77bcf86cd799439011',
   },
   {
+    command: 'plans',
+    usage: 'zenifra plans [--type <all|http|database|storage>] [--json]',
+    description: 'Lista os catalogos publicos de preco de planos HTTP, banco e armazenamento.',
+    flags: ['--type <type>  Filtra o catalogo: all, http, database ou storage.', '--json         Imprime a resposta em JSON.'],
+    examples: ['zenifra plans', 'zenifra plans --type http', 'zenifra plans --type storage --json'],
+    output: 'HTTP\nPlano  Hora     Mes      Ano      Recursos\nfree   R$ 0,00  R$ 0,00  R$ 0,00  1 GB Armazenamento Efemero',
+    jsonOutput: '{"http":[{"plan":"free","prices":{"hourly":0,"monthly":0,"yearly":0},"features":["1 GB Armazenamento Efemero"]}],"database":[],"storage":[]}',
+  },
+  {
     command: 'projects',
     usage: 'zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb>]',
     description: 'Lista projetos da organizacao ativa ou da API key.',
@@ -113,13 +280,22 @@ const HELP_SPECS = [
     jsonOutput: '[{"id":"507f1f77bcf86cd799439012","name":"api-web","status":"running","type_project":"http"}]',
   },
   {
-    command: 'projects create',
-    usage: 'zenifra projects create --name <name> --plan <plan> --payment-mode <mode> --config <json|@file> [--description <text>] [--org <id>] [--json]',
-    description: 'Cria um projeto usando um payload de configuracao JSON.',
+    command: 'create project',
+    usage: 'zenifra create project\n  zenifra create project --name <name> --plan <plan> --payment-mode <mode> --config <json|@file> [--description <text>] [--org <id>] [--json]',
+    description: 'Cria um projeto via wizard interativo ou via payload de configuracao JSON.',
     flags: ['--name <name>          Nome do projeto.', '--plan <plan>          Plano do projeto.', '--payment-mode <mode>  Modo de pagamento.', '--config <json|@file>  JSON inline ou arquivo.', '--description <text>   Descricao opcional.', '--json                 Imprime a resposta em JSON.'],
-    examples: ['zenifra projects create --name api-web --plan free --payment-mode hourly --config @examples/http-project.json'],
-    output: 'Projeto criado: 507f1f77bcf86cd799439012\nDominio: api-web.client.zenifra.com',
+    examples: ['zenifra create project', 'zenifra create project --name api-web --plan free --payment-mode hourly --config @examples/http-project.json'],
+    output: 'Campo    Valor\n-------  --------------------------------------\nProjeto  507f1f77bcf86cd799439012\nDominio  https://api-web.client.zenifra.com',
     jsonOutput: '{"status":"success","data":{"id":"507f1f77bcf86cd799439012","name":"api-web"}}',
+    notes: ['Sem flags de criacao, a CLI abre um wizard guiado com docs, exemplos e indicacao de campos obrigatorios.'],
+  },
+  {
+    command: 'project',
+    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
+    description: 'Agrupa comandos operacionais e de introspecao sobre um projeto especifico.',
+    examples: ['zenifra project', 'zenifra project info --project proj_1', 'zenifra project env add --project proj_1 --name NODE_ENV --value production'],
+    output: 'Zenifra CLI - project',
+    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, url, logs, metrics, network, image, envs e instances.'],
   },
   {
     command: 'project info',
@@ -319,6 +495,18 @@ function commandHelp(positionals) {
   return formatHelp(spec);
 }
 
+function isRemovedProjectsCreate(positionals) {
+  return positionals[0] === 'projects' && positionals[1] === 'create';
+}
+
+function removedProjectsCreateMessage() {
+  return 'Comando removido. Use "zenifra create project". Veja "zenifra help create project" ou "zenifra create project --help".';
+}
+
+function isNamespaceCommand(command) {
+  return ['auth', 'profile', 'project', 'org'].includes(command);
+}
+
 function parseArgs(argv) {
   const positional = [];
   const flags = {};
@@ -351,11 +539,71 @@ function parseArgs(argv) {
   return { positional, flags };
 }
 
-async function readSession() {
-  if (!existsSync(SESSION_FILE)) {
-    return {};
-  }
+function emptyProfileStore() {
+  return {
+    version: PROFILE_STORE_VERSION,
+    activeProfile: null,
+    profiles: {},
+  };
+}
 
+function normalizeApiBaseUrl(value) {
+  return String(value || DEFAULT_API_BASE_URL).replace(/\/$/, '');
+}
+
+function normalizeProfileName(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) {
+    throw new CliError('Nome de perfil obrigatorio.');
+  }
+  if (!/^[a-z0-9._-]+$/.test(normalized)) {
+    throw new CliError('Nome de perfil invalido. Use apenas letras, numeros, ponto, underscore e hifen.');
+  }
+  return normalized;
+}
+
+function isRecord(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function normalizeProfileRecord(name, profile = {}) {
+  return {
+    name,
+    description: profile.description ? String(profile.description) : '',
+    authMode: profile.authMode === 'access_token' ? 'access_token' : 'api_key',
+    apiBaseUrl: normalizeApiBaseUrl(profile.apiBaseUrl),
+    apiKey: profile.apiKey ? String(profile.apiKey) : undefined,
+    accessToken: profile.accessToken ? String(profile.accessToken) : undefined,
+    selectedOrganizationId: profile.selectedOrganizationId ? String(profile.selectedOrganizationId) : undefined,
+    updatedAt: profile.updatedAt ? String(profile.updatedAt) : undefined,
+  };
+}
+
+function sanitizeProfileStore(store) {
+  const next = emptyProfileStore();
+  if (!isRecord(store)) return next;
+  next.version = PROFILE_STORE_VERSION;
+  const rawProfiles = isRecord(store.profiles) ? store.profiles : {};
+  for (const [rawName, rawProfile] of Object.entries(rawProfiles)) {
+    const name = normalizeProfileName(rawName);
+    next.profiles[name] = normalizeProfileRecord(name, rawProfile);
+  }
+  if (store.activeProfile && next.profiles[normalizeProfileName(store.activeProfile)]) {
+    next.activeProfile = normalizeProfileName(store.activeProfile);
+  }
+  return next;
+}
+
+async function writeProfileStore(store) {
+  const normalized = sanitizeProfileStore(store);
+  await mkdir(dirname(PROFILES_FILE), { recursive: true });
+  await writeFile(PROFILES_FILE, `${JSON.stringify(normalized, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  await chmod(PROFILES_FILE, 0o600).catch(() => undefined);
+  return normalized;
+}
+
+async function readLegacySession() {
+  if (!existsSync(SESSION_FILE)) return null;
   try {
     return JSON.parse(await readFile(SESSION_FILE, 'utf8'));
   } catch {
@@ -363,29 +611,147 @@ async function readSession() {
   }
 }
 
-async function writeSession(session) {
-  await mkdir(dirname(SESSION_FILE), { recursive: true });
-  await writeFile(SESSION_FILE, `${JSON.stringify(session, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  await chmod(SESSION_FILE, 0o600).catch(() => undefined);
+async function migrateLegacySession() {
+  const legacy = await readLegacySession();
+  if (!legacy) {
+    return emptyProfileStore();
+  }
+  const store = emptyProfileStore();
+  const migratedProfile = normalizeProfileRecord(DEFAULT_PROFILE_NAME, {
+    description: 'Perfil migrado automaticamente do session.json legado.',
+    authMode: legacy.accessToken ? 'access_token' : 'api_key',
+    apiBaseUrl: legacy.apiBaseUrl || DEFAULT_API_BASE_URL,
+    apiKey: legacy.apiKey,
+    accessToken: legacy.accessToken,
+    selectedOrganizationId: legacy.selectedOrganizationId,
+    updatedAt: legacy.updatedAt || new Date().toISOString(),
+  });
+  store.profiles[DEFAULT_PROFILE_NAME] = migratedProfile;
+  store.activeProfile = DEFAULT_PROFILE_NAME;
+  return writeProfileStore(store);
+}
+
+async function readProfileStore() {
+  if (existsSync(PROFILES_FILE)) {
+    try {
+      return sanitizeProfileStore(JSON.parse(await readFile(PROFILES_FILE, 'utf8')));
+    } catch {
+      throw new CliError(`Store de perfis invalido em ${PROFILES_FILE}. Corrija o arquivo ou remova-o para recriar.`);
+    }
+  }
+  return migrateLegacySession();
+}
+
+function buildSession(store) {
+  const activeName = store.activeProfile && store.profiles[store.activeProfile] ? store.activeProfile : null;
+  const activeProfile = activeName ? store.profiles[activeName] : {};
+  return {
+    ...activeProfile,
+    __store: store,
+    __profileName: activeName,
+  };
+}
+
+async function readSession() {
+  return buildSession(await readProfileStore());
+}
+
+function getStore(session) {
+  return session.__store || emptyProfileStore();
+}
+
+function getProfileName(session) {
+  return session.__profileName || null;
+}
+
+function getProfileRecord(session, explicitName) {
+  const store = getStore(session);
+  const name = explicitName ? normalizeProfileName(explicitName) : getProfileName(session);
+  if (!name) return null;
+  return store.profiles[name] ? { name, profile: store.profiles[name], store } : null;
+}
+
+async function persistSession(session) {
+  const store = getStore(session);
+  const profileName = getProfileName(session);
+  if (!profileName) {
+    return writeProfileStore(store);
+  }
+  store.profiles[profileName] = normalizeProfileRecord(profileName, session);
+  if (!store.activeProfile || store.activeProfile === profileName) {
+    store.activeProfile = profileName;
+  }
+  const normalized = await writeProfileStore(store);
+  session.__store = normalized;
+  session.__profileName = profileName;
+  return normalized;
+}
+
+function buildProfileSession(store, profileName) {
+  const name = normalizeProfileName(profileName);
+  const profile = store.profiles[name] || normalizeProfileRecord(name, { apiBaseUrl: DEFAULT_API_BASE_URL });
+  return {
+    ...profile,
+    __store: store,
+    __profileName: name,
+  };
+}
+
+function ensureProfile(session, requestedName, { activate = false } = {}) {
+  const store = getStore(session);
+  const profileName = requestedName ? normalizeProfileName(requestedName) : getProfileName(session) || DEFAULT_PROFILE_NAME;
+  if (!store.profiles[profileName]) {
+    store.profiles[profileName] = normalizeProfileRecord(profileName, { apiBaseUrl: DEFAULT_API_BASE_URL });
+  }
+  if (activate || !store.activeProfile) {
+    store.activeProfile = profileName;
+  }
+  session.__store = store;
+  if (activate) {
+    session.__profileName = profileName;
+  }
+  return buildProfileSession(store, profileName);
+}
+
+function requireExistingProfile(session, requestedName) {
+  const profileName = normalizeProfileName(requestedName || getProfileName(session));
+  const store = getStore(session);
+  if (!store.profiles[profileName]) {
+    throw new CliError(`Perfil nao encontrado: ${profileName}`);
+  }
+  return buildProfileSession(store, profileName);
+}
+
+function activateProfileSession(session, profileName) {
+  const store = getStore(session);
+  const name = normalizeProfileName(profileName);
+  if (!store.profiles[name]) {
+    throw new CliError(`Perfil nao encontrado: ${name}`);
+  }
+  const next = buildProfileSession({ ...store, activeProfile: name }, name);
+  Object.assign(session, next);
+  session.__store.activeProfile = name;
+  return session;
+}
+
+function profileApiBaseUrl(profile, flags) {
+  return normalizeApiBaseUrl(flags.apiBase || process.env.ZENIFRA_API_URL || profile?.apiBaseUrl || DEFAULT_API_BASE_URL);
 }
 
 function apiBaseUrl(session, flags) {
-  return String(flags.apiBase || process.env.ZENIFRA_API_URL || session.apiBaseUrl || DEFAULT_API_BASE_URL).replace(/\/$/, '');
+  return profileApiBaseUrl(session, flags);
 }
 
 function resolveCredential(session) {
   if (process.env.ZENIFRA_API_KEY) {
     return { token: process.env.ZENIFRA_API_KEY, type: 'api_key', source: 'env' };
   }
-
   if (session.apiKey) {
-    return { token: session.apiKey, type: 'api_key', source: 'session' };
+    return { token: session.apiKey, type: 'api_key', source: 'profile' };
   }
-
   if (session.accessToken) {
-    return { token: session.accessToken, type: 'user', source: 'session' };
+    return { token: session.accessToken, type: 'user', source: 'profile' };
   }
-
   return null;
 }
 
@@ -394,23 +760,361 @@ function hasApiKeyCredential(session) {
 }
 
 function requireUserSession(session, action) {
-  if (session.accessToken) {
-    return;
-  }
-
+  if (session.accessToken) return;
   if (hasApiKeyCredential(session)) {
     throw new CliError(`${action} exige login de usuario. A API key global ja define a organizacao para comandos de automacao.`);
   }
-
   throw new CliError('Voce precisa fazer login primeiro: zenifra auth login');
 }
 
 async function prompt(question, defaultValue) {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const separator = question.trimEnd().endsWith('>') ? ' ' : ': ';
+  if (!process.stdin.isTTY) {
+    if (!pipedInputPromise) {
+      pipedInputPromise = (async () => {
+        const chunks = [];
+        for await (const chunk of process.stdin) chunks.push(chunk);
+        return Buffer.concat(chunks).toString('utf8').replace(/\r\n/g, '\n').split('\n');
+      })();
+    }
+    const suffix = defaultValue ? ` (${defaultValue})` : '';
+    process.stdout.write(`${question}${suffix}${separator}`);
+    const lines = await pipedInputPromise;
+    if (pipedInputIndex >= lines.length) {
+      throw new CliError('Entrada interativa incompleta para o wizard.');
+    }
+    const answer = lines[pipedInputIndex] ?? '';
+    pipedInputIndex += 1;
+    process.stdout.write('\n');
+    return answer.trim() || defaultValue || '';
+  }
+
+  if (!promptInterface) {
+    promptInterface = readline.createInterface({ input: process.stdin, output: process.stdout });
+  }
   const suffix = defaultValue ? ` (${defaultValue})` : '';
-  const answer = await rl.question(`${question}${suffix}: `);
-  rl.close();
+  const answer = await promptInterface.question(`${question}${suffix}${separator}`);
   return answer.trim() || defaultValue || '';
+}
+
+function shouldUseAnsi() {
+  return Boolean(process.stdout.isTTY && !process.env.NO_COLOR);
+}
+
+function tone(value, color) {
+  return shouldUseAnsi() ? `${ANSI[color]}${value}${ANSI.reset}` : value;
+}
+
+function toneDim(value) {
+  return shouldUseAnsi() ? `${ANSI.dim}${value}${ANSI.reset}` : value;
+}
+
+function estimateWizardTotal(state = {}) {
+  const typeProject = state.typeProject;
+  if (!typeProject) return 18;
+
+  let total = 6;
+  if (typeProject === 'http') {
+    total += 3;
+
+    if (state.plan !== 'free') {
+      total += 2;
+      if (state.httpStoragePersistent) total += 1;
+    }
+
+    total += 1;
+    if (state.envs?.enabled) total += state.envs.count * 3;
+
+    if (state.httpSource === 'github') {
+      total += 9;
+    } else if (state.httpSource === 'oci') {
+      total += 2;
+      if (state.httpImagePublic === false) {
+        total += 1;
+        if (state.httpImageAuthType === 'username_password') total += 2;
+        if (state.httpImageAuthType === 'aws') total += 4;
+      }
+    } else {
+      total += 1;
+    }
+
+    if (state.planAllowsBlockIp) {
+      total += 2;
+      if (state.whitelist?.enabled) total += state.whitelist.count * 3;
+      if (state.blacklist?.enabled) total += state.blacklist.count * 3;
+    }
+
+    if (state.planAllowsSubdomain) total += 1;
+    return total;
+  }
+
+  if (typeProject === 'postgresql') {
+    total += 2;
+    if (state.plan !== 'db-free') total += 1;
+    return total;
+  }
+
+  if (typeProject === 'mariadb') {
+    total += 2;
+    return total;
+  }
+
+  return 18;
+}
+
+function createWizardUi(state = {}) {
+  return { step: 0, total: estimateWizardTotal(state), state };
+}
+
+function refreshWizardTotal(ui) {
+  ui.total = Math.max(ui.step, estimateWizardTotal(ui.state));
+  return ui.total;
+}
+
+function nextWizardStep(ui) {
+  refreshWizardTotal(ui);
+  ui.step += 1;
+  if (ui.step > ui.total) ui.total = ui.step;
+  return ui.step;
+}
+
+function isHelpRequest(value) {
+  return ['?', 'help', 'ajuda'].includes(normalizeFreeText(value));
+}
+
+function formatInlineOptions(options, maxVisible = 4) {
+  const values = options.map((option, index) => `${index + 1}=${option.value}`);
+  if (values.length <= maxVisible) return values.join(' ');
+  return `${values.slice(0, maxVisible - 1).join(' ')} ... ${values.at(-1)}`;
+}
+
+function printWizardFieldHelp({ label, required = false, examples = [], docs, allowedValues = [], options = [] }) {
+  process.stdout.write(`\n${tone(`Ajuda: ${label}`, 'cyan')}\n`);
+  process.stdout.write(`  obrigatorio: ${required ? 'sim' : 'nao'}\n`);
+  if (allowedValues.length) process.stdout.write(`  valores: ${allowedValues.join(', ')}\n`);
+  if (options.length) process.stdout.write(`  opcoes: ${options.map((option, index) => `${index + 1}=${option.value}`).join(' | ')}\n`);
+  if (examples.length) process.stdout.write(`  exemplo: ${examples.join(' | ')}\n`);
+  if (docs) process.stdout.write(`  docs: ${docs}\n`);
+}
+
+function buildWizardPromptLine({ ui, label, required = false, examples = [], options = [], kind = 'text', fixedValue = null }) {
+  const step = nextWizardStep(ui);
+  const stepText = toneDim(`[${step}/${ui.total}]`);
+  const requiredText = required ? tone('*', 'yellow') : '';
+  let suffix = '';
+
+  if (kind === 'boolean') suffix = toneDim('[s/n]');
+  else if (kind === 'select') suffix = toneDim(`[${formatInlineOptions(options)}]`);
+  else if (fixedValue !== null) suffix = toneDim(`[fixo=${fixedValue}]`);
+  else if (examples.length) suffix = toneDim(`(ex: ${examples[0]})`);
+
+  return `${stepText} ${tone(label, 'bold')}${requiredText}${suffix ? ` ${suffix}` : ''} >`;
+}
+
+function isAffirmative(value) {
+  return ['s', 'sim', 'y', 'yes'].includes(normalizeFreeText(value));
+}
+
+function isNegative(value) {
+  return ['n', 'nao', 'não', 'no'].includes(normalizeFreeText(value));
+}
+
+function parsePositiveInteger(value) {
+  const number = Number(String(value).trim());
+  if (!Number.isInteger(number) || number <= 0) return null;
+  return number;
+}
+
+function parseOptionalNullableCommand(value) {
+  const normalized = normalizeFreeText(value);
+  if (!normalized) return null;
+  if (normalized === 'none' || normalized === 'null') return null;
+  return String(value).trim();
+}
+
+function hasWizardCreateInput(flags) {
+  return !flags.name && !flags.plan && !flags.paymentMode && !flags.config && !flags.description;
+}
+
+async function promptWizardText({ label, required = false, examples = [], docs, allowedValues = [], normalize, validate, emptyValue = '' }) {
+  while (true) {
+    const answer = await prompt(buildWizardPromptLine({
+      ui: promptWizardText.ui,
+      label,
+      required,
+      examples,
+      kind: 'text',
+    }));
+
+    if (isHelpRequest(answer)) {
+      printWizardFieldHelp({ label, required, examples, docs, allowedValues });
+      promptWizardText.ui.step -= 1;
+      continue;
+    }
+
+    if (!answer) {
+      if (!required) return emptyValue;
+      process.stdout.write(`${tone('valor obrigatorio.', 'red')}\n`);
+      promptWizardText.ui.step -= 1;
+      continue;
+    }
+
+    const normalized = normalize ? normalize(answer) : String(answer).trim();
+    const error = validate ? validate(normalized, answer) : null;
+    if (error) {
+      process.stdout.write(`${tone(`valor invalido: ${error}`, 'red')}\n`);
+      promptWizardText.ui.step -= 1;
+      continue;
+    }
+    return normalized;
+  }
+}
+
+async function promptWizardSecret({ label, required = false, examples = [], docs, allowedValues = [] }) {
+  while (true) {
+    const promptLine = buildWizardPromptLine({
+      ui: promptWizardSecret.ui,
+      label,
+      required,
+      examples,
+      kind: 'text',
+    });
+    const answer = String(await promptHidden(promptLine)).trim();
+    if (isHelpRequest(answer)) {
+      printWizardFieldHelp({ label, required, examples, docs, allowedValues });
+      promptWizardSecret.ui.step -= 1;
+      continue;
+    }
+    if (!answer) {
+      if (!required) return '';
+      process.stdout.write(`${tone('valor obrigatorio.', 'red')}\n`);
+      promptWizardSecret.ui.step -= 1;
+      continue;
+    }
+    return answer;
+  }
+}
+
+async function promptWizardBoolean({ label, docs, examples = ['sim', 'nao'] }) {
+  while (true) {
+    const answer = await prompt(buildWizardPromptLine({
+      ui: promptWizardBoolean.ui,
+      label,
+      required: true,
+      examples,
+      kind: 'boolean',
+    }));
+    if (isHelpRequest(answer)) {
+      printWizardFieldHelp({ label, required: true, examples, docs });
+      promptWizardBoolean.ui.step -= 1;
+      continue;
+    }
+    if (isAffirmative(answer)) return true;
+    if (isNegative(answer)) return false;
+    process.stdout.write(`${tone('valor invalido: responda com "s" ou "n".', 'red')}\n`);
+    promptWizardBoolean.ui.step -= 1;
+  }
+}
+
+async function promptWizardSelect({ label, options, docs, examples = [] }) {
+  while (true) {
+    const allowedValues = options.map((option) => option.value);
+    const answer = await prompt(buildWizardPromptLine({
+      ui: promptWizardSelect.ui,
+      label,
+      required: true,
+      examples,
+      kind: 'select',
+      options,
+    }));
+    if (isHelpRequest(answer)) {
+      printWizardFieldHelp({ label, required: true, examples, docs, allowedValues, options });
+      promptWizardSelect.ui.step -= 1;
+      continue;
+    }
+    const numericIndex = Number(answer);
+    if (Number.isInteger(numericIndex) && numericIndex >= 1 && numericIndex <= options.length) {
+      return options[numericIndex - 1].value;
+    }
+    const normalized = normalizeFreeText(answer);
+    const found = options.find((option) => normalizeFreeText(option.value) === normalized);
+    if (found) return found.value;
+    process.stdout.write(`${tone(`valor invalido: escolha um item entre ${options.map((_, index) => index + 1).join(', ')} ou um dos valores aceitos.`, 'red')}\n`);
+    promptWizardSelect.ui.step -= 1;
+  }
+}
+
+async function promptWizardNumber({ label, docs, examples = [], min = 1, max = Number.MAX_SAFE_INTEGER, fixedValue = null }) {
+  while (true) {
+    const allowedValues = fixedValue === null ? [] : [String(fixedValue)];
+    const answer = await prompt(buildWizardPromptLine({
+      ui: promptWizardNumber.ui,
+      label,
+      required: true,
+      examples,
+      kind: 'number',
+      fixedValue,
+    }));
+    if (isHelpRequest(answer)) {
+      printWizardFieldHelp({ label, required: true, examples, docs, allowedValues });
+      promptWizardNumber.ui.step -= 1;
+      continue;
+    }
+    const value = parsePositiveInteger(answer);
+    if (value === null) {
+      process.stdout.write(`${tone('valor invalido: informe um inteiro positivo.', 'red')}\n`);
+      promptWizardNumber.ui.step -= 1;
+      continue;
+    }
+    if (value < min || value > max || (fixedValue !== null && value !== fixedValue)) {
+      process.stdout.write(`${tone(`valor invalido: informe um inteiro entre ${min} e ${max}${fixedValue !== null ? ` e igual a ${fixedValue}` : ''}.`, 'red')}\n`);
+      promptWizardNumber.ui.step -= 1;
+      continue;
+    }
+    return value;
+  }
+}
+
+async function promptWizardPairs({ introLabel, itemLabels, docs, examples = [], stateKey = '' }) {
+  const items = [];
+  const ui = promptWizardBoolean.ui;
+  const wantsAny = await promptWizardBoolean({ label: introLabel, docs, examples: ['sim', 'nao'] });
+  if (stateKey) ui.state[stateKey] = { enabled: wantsAny, count: wantsAny ? 1 : 0 };
+  if (!wantsAny) return items;
+
+  while (true) {
+    const item = {};
+    for (const field of itemLabels) {
+      item[field.key] = await promptWizardText(field);
+    }
+    items.push(item);
+    const addMore = await promptWizardBoolean({ label: 'Deseja adicionar mais um item?', docs, examples: ['sim', 'nao'] });
+    if (!addMore) break;
+    if (stateKey) ui.state[stateKey].count += 1;
+  }
+
+  return items;
+}
+
+function closePromptResources() {
+  if (promptInterface) {
+    promptInterface.close();
+    promptInterface = undefined;
+  }
+  if (process.stdin.isTTY) {
+    process.stdin.removeAllListeners('data');
+    process.stdin.removeAllListeners('keypress');
+    process.stdin.pause();
+    if (typeof process.stdin.setRawMode === 'function') {
+      try {
+        process.stdin.setRawMode(false);
+      } catch {
+        // ignore cleanup failures when stdin is already detached
+      }
+    }
+  }
+  pipedInputPromise = undefined;
+  pipedInputIndex = 0;
 }
 
 async function promptHidden(question) {
@@ -448,7 +1152,8 @@ async function promptHidden(question) {
       value += char;
     };
 
-    process.stdout.write(`${question}: `);
+    const separator = question.trimEnd().endsWith('>') ? ' ' : ': ';
+    process.stdout.write(`${question}${separator}`);
     stdin.setRawMode(true);
     stdin.resume();
     stdin.on('data', onData);
@@ -574,6 +1279,13 @@ function envsForOutput(envs, { showValues = false } = {}) {
   }));
 }
 
+function formatPublicUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return `https://${raw}`;
+}
+
 function printEnvs(envs, flags) {
   const output = envsForOutput(envs, { showValues: Boolean(flags.showValues) });
   if (flags.json) return printJson(output);
@@ -634,7 +1346,7 @@ async function resolveOrgId(session, flags, { interactive = true } = {}) {
   }
   if (organizations.length === 1) {
     session.selectedOrganizationId = idOf(organizations[0]);
-    await writeSession(session);
+    await persistSession(session);
     return session.selectedOrganizationId;
   }
 
@@ -650,15 +1362,16 @@ async function resolveOrgId(session, flags, { interactive = true } = {}) {
   }
 
   session.selectedOrganizationId = idOf(selected);
-  await writeSession(session);
+  await persistSession(session);
   return session.selectedOrganizationId;
 }
 
 async function handleLogin(session, flags) {
+  const targetSession = ensureProfile(session, flags.profile, { activate: Boolean(flags.profile) || !getProfileName(session) });
   const email = String(flags.email || await prompt('Email'));
   const password = String(flags.password || await promptHidden('Senha'));
 
-  const loginPayload = await request(session, flags, 'PATCH', '/authentication', {
+  const loginPayload = await request(targetSession, flags, 'PATCH', '/authentication', {
     tokenRequired: false,
     body: { email, password },
   });
@@ -685,7 +1398,7 @@ async function handleLogin(session, flags) {
       : `Codigo de verificacao${destination}`;
     const code = String(flags.code || flags.totp || await prompt(label));
 
-    payload = await request(session, flags, 'POST', '/authentication/challenge/verify', {
+    payload = await request(targetSession, flags, 'POST', '/authentication/challenge/verify', {
       tokenRequired: false,
       body: {
         challenge_token: challengeToken,
@@ -700,15 +1413,18 @@ async function handleLogin(session, flags) {
   }
 
   const nextSession = {
-    ...session,
+    ...targetSession,
     accessToken,
     apiKey: undefined,
-    apiBaseUrl: apiBaseUrl(session, flags),
-    selectedOrganizationId: session.selectedOrganizationId,
+    authMode: 'access_token',
+    apiBaseUrl: apiBaseUrl(targetSession, flags),
+    selectedOrganizationId: targetSession.selectedOrganizationId,
     updatedAt: new Date().toISOString(),
   };
 
-  await writeSession(nextSession);
+  nextSession.__store.activeProfile = nextSession.__profileName;
+  await persistSession(nextSession);
+  Object.assign(session, buildSession(nextSession.__store));
   process.stdout.write('Login realizado com sucesso.\n');
 }
 
@@ -719,22 +1435,178 @@ async function handleApiKeyLogin(session, flags) {
     throw new CliError('API key invalida. As API keys globais da Zenifra comecam com "znf_".');
   }
 
+  const targetSession = ensureProfile(session, flags.profile, { activate: Boolean(flags.profile) || !getProfileName(session) });
   const nextSession = {
-    ...session,
+    ...targetSession,
     accessToken: undefined,
     selectedOrganizationId: undefined,
     apiKey,
-    apiBaseUrl: apiBaseUrl(session, flags),
+    authMode: 'api_key',
+    apiBaseUrl: apiBaseUrl(targetSession, flags),
     updatedAt: new Date().toISOString(),
   };
 
-  await writeSession(nextSession);
+  nextSession.__store.activeProfile = nextSession.__profileName;
+  await persistSession(nextSession);
+  Object.assign(session, buildSession(nextSession.__store));
   process.stdout.write('API key salva com sucesso. Ela sera usada em comandos de automacao.\n');
 }
 
-async function handleLogout() {
-  await rm(SESSION_FILE, { force: true });
-  process.stdout.write('Sessao removida.\n');
+async function handleLogout(session, flags) {
+  const targetName = flags.profile || getProfileName(session);
+  if (!targetName) {
+    throw new CliError('Nenhum perfil ativo configurado. Crie um perfil com "zenifra profile add" ou autentique com "zenifra auth login".');
+  }
+  const target = requireExistingProfile(session, targetName);
+  target.accessToken = undefined;
+  target.apiKey = undefined;
+  target.selectedOrganizationId = undefined;
+  target.authMode = 'api_key';
+  target.updatedAt = new Date().toISOString();
+  await persistSession(target);
+  if (target.__profileName === getProfileName(session)) {
+    Object.assign(session, buildSession(target.__store));
+  }
+  process.stdout.write(`Autenticacao removida do perfil ${target.__profileName}.\n`);
+}
+
+function maskApiKey(value) {
+  if (!value) return '-';
+  if (value.length <= 12) return '********';
+  return `${value.slice(0, 8)}...${value.slice(-4)}`;
+}
+
+function profileOutput(profile, activeName) {
+  return {
+    name: profile.name,
+    description: profile.description || '',
+    auth_mode: profile.accessToken ? 'access_token' : profile.apiKey ? 'api_key' : profile.authMode || 'api_key',
+    api_base_url: profile.apiBaseUrl || DEFAULT_API_BASE_URL,
+    selected_organization_id: profile.selectedOrganizationId,
+    has_api_key: Boolean(profile.apiKey),
+    has_access_token: Boolean(profile.accessToken),
+    api_key_masked: maskApiKey(profile.apiKey),
+    active: profile.name === activeName,
+    updated_at: profile.updatedAt,
+  };
+}
+
+async function handleProfileList(session, flags) {
+  const store = getStore(session);
+  const profiles = Object.values(store.profiles)
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((profile) => profileOutput(profile, store.activeProfile));
+
+  if (flags.json) return printJson(profiles);
+  printTable(profiles, [
+    { label: 'Nome', value: (profile) => profile.name },
+    { label: 'Tipo', value: (profile) => profile.auth_mode },
+    { label: 'API base', value: (profile) => profile.api_base_url },
+    { label: 'Ativo', value: (profile) => (profile.active ? 'yes' : 'no') },
+    { label: 'Descricao', value: (profile) => profile.description || '-' },
+  ]);
+}
+
+async function handleProfileShow(session, flags, positional = []) {
+  const targetName = positional[2] || flags.name || getProfileName(session);
+  if (!targetName) {
+    throw new CliError('Nenhum perfil ativo configurado.');
+  }
+  const target = requireExistingProfile(session, targetName);
+  const output = profileOutput(target, target.__store.activeProfile);
+
+  if (flags.json) return printJson(output);
+  process.stdout.write(`Nome: ${output.name}\n`);
+  process.stdout.write(`Descricao: ${output.description || '-'}\n`);
+  process.stdout.write(`Tipo: ${output.auth_mode}\n`);
+  process.stdout.write(`API base: ${output.api_base_url}\n`);
+  process.stdout.write(`Ativo: ${output.active ? 'sim' : 'nao'}\n`);
+  process.stdout.write(`API key: ${output.api_key_masked}\n`);
+  process.stdout.write(`Token de login: ${output.has_access_token ? 'salvo' : '-'}\n`);
+  process.stdout.write(`Organizacao ativa: ${output.selected_organization_id || '-'}\n`);
+}
+
+async function handleProfileUse(session, flags, positional = []) {
+  const targetName = positional[2] || flags.name;
+  if (!targetName) throw new CliError('Informe o nome do perfil: zenifra profile use <name>.');
+  activateProfileSession(session, targetName);
+  await writeProfileStore(getStore(session));
+  if (flags.json) return printJson({ active_profile: getProfileName(session) });
+  process.stdout.write(`Perfil ativo: ${getProfileName(session)}\n`);
+}
+
+async function promptProfileAddInput(flags) {
+  const name = normalizeProfileName(flags.name || await prompt('Nome do perfil'));
+  const description = String(flags.description ?? await prompt('Descricao do perfil'));
+  const apiBase = normalizeApiBaseUrl(flags.apiBase || await prompt('API base', DEFAULT_API_BASE_URL));
+  const mode = normalizeFreeText(String(flags.mode || await prompt('Modo do perfil', 'api-key')));
+  if (!['api-key', 'login'].includes(mode)) {
+    throw new CliError('Modo de perfil invalido. Use "api-key" ou "login".');
+  }
+  return { name, description, apiBase, mode };
+}
+
+async function handleProfileAdd(session, flags) {
+  const { name, description, apiBase, mode } = await promptProfileAddInput(flags);
+  const targetSession = ensureProfile(session, name, { activate: true });
+  targetSession.description = description;
+  targetSession.apiBaseUrl = apiBase;
+  if (mode === 'api-key') {
+    const apiKey = String(flags.key || await promptHidden('API key Zenifra'));
+    if (!apiKey.startsWith('znf_')) {
+      throw new CliError('API key invalida. As API keys globais da Zenifra comecam com "znf_".');
+    }
+    targetSession.apiKey = apiKey;
+    targetSession.accessToken = undefined;
+    targetSession.selectedOrganizationId = undefined;
+    targetSession.authMode = 'api_key';
+    targetSession.updatedAt = new Date().toISOString();
+    await persistSession(targetSession);
+    Object.assign(session, buildSession(targetSession.__store));
+  } else {
+    targetSession.description = description;
+    targetSession.apiBaseUrl = apiBase;
+    targetSession.updatedAt = new Date().toISOString();
+    await persistSession(targetSession);
+    Object.assign(session, buildSession(targetSession.__store));
+    await handleLogin(session, { ...flags, profile: name, apiBase });
+  }
+  const output = profileOutput(requireExistingProfile(session, name), getStore(session).activeProfile);
+  if (flags.json) return printJson(output);
+  process.stdout.write(`Perfil ${name} salvo e definido como ativo.\n`);
+}
+
+async function handleProfileEdit(session, flags, positional = []) {
+  const targetName = positional[2] || flags.name;
+  if (!targetName) throw new CliError('Informe o nome do perfil: zenifra profile edit <name>.');
+  const target = requireExistingProfile(session, targetName);
+  target.description = String(flags.description ?? await prompt('Descricao do perfil', target.description || ''));
+  target.apiBaseUrl = normalizeApiBaseUrl(flags.apiBase || await prompt('API base', target.apiBaseUrl || DEFAULT_API_BASE_URL));
+  target.updatedAt = new Date().toISOString();
+  await persistSession(target);
+  if (target.__profileName === getProfileName(session)) {
+    Object.assign(session, buildSession(target.__store));
+  }
+  const output = profileOutput(target, target.__store.activeProfile);
+  if (flags.json) return printJson(output);
+  process.stdout.write(`Perfil ${target.__profileName} atualizado.\n`);
+}
+
+async function handleProfileRemove(session, flags, positional = []) {
+  const targetName = positional[2] || flags.name;
+  if (!targetName) throw new CliError('Informe o nome do perfil: zenifra profile remove <name>.');
+  const normalizedName = normalizeProfileName(targetName);
+  const store = getStore(session);
+  if (!store.profiles[normalizedName]) {
+    throw new CliError(`Perfil nao encontrado: ${normalizedName}`);
+  }
+  if (store.activeProfile === normalizedName) {
+    throw new CliError('Nao e permitido remover o perfil ativo. Use "zenifra profile use <name>" para trocar antes.');
+  }
+  delete store.profiles[normalizedName];
+  session.__store = await writeProfileStore(store);
+  if (flags.json) return printJson({ removed: normalizedName });
+  process.stdout.write(`Perfil ${normalizedName} removido.\n`);
 }
 
 async function handleOrgs(session, flags) {
@@ -753,7 +1625,7 @@ async function handleOrgSet(session, flags) {
 
   if (flags.org) {
     session.selectedOrganizationId = String(flags.org);
-    await writeSession(session);
+    await persistSession(session);
     process.stdout.write(`Organizacao ativa: ${session.selectedOrganizationId}\n`);
     return;
   }
@@ -793,29 +1665,830 @@ async function parseConfig(input) {
   }
 }
 
+function normalizeFreeText(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function normalizePlan(value) {
+  const raw = normalizeFreeText(value);
+  if (!raw) return '';
+
+  const normalized = raw
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  const aliases = new Map([
+    ['premium_plus', 'premium_plus'],
+    ['premiumplus', 'premium_plus'],
+    ['deep_learning_basic', 'deep_learning_basic'],
+    ['deeplearningbasic', 'deep_learning_basic'],
+    ['deep_learning_premium', 'deep_learning_premium'],
+    ['deeplearningpremium', 'deep_learning_premium'],
+    ['db_free', 'db-free'],
+    ['dbfree', 'db-free'],
+    ['db_starter', 'db-starter'],
+    ['dbstarter', 'db-starter'],
+    ['db_basic', 'db-basic'],
+    ['dbbasic', 'db-basic'],
+    ['db_premium', 'db-premium'],
+    ['dbpremium', 'db-premium'],
+    ['db_enterprise', 'db-enterprise'],
+    ['dbenterprise', 'db-enterprise'],
+  ]);
+
+  if (aliases.has(normalized)) return aliases.get(normalized);
+  if (ALLOWED_PLAN_VALUES.has(normalized)) return normalized;
+  return normalized;
+}
+
+function normalizePaymentMode(value) {
+  const raw = normalizeFreeText(value);
+  const aliases = new Map([
+    ['hourly', 'hourly'],
+    ['por hora', 'hourly'],
+    ['hora', 'hourly'],
+    ['monthly', 'monthly'],
+    ['month', 'monthly'],
+    ['mensal', 'monthly'],
+    ['por mes', 'monthly'],
+    ['por mês', 'monthly'],
+    ['yearly', 'yearly'],
+    ['annual', 'yearly'],
+    ['anual', 'yearly'],
+    ['por ano', 'yearly'],
+  ]);
+  return aliases.get(raw) || raw;
+}
+
+function normalizeTypeProject(value) {
+  const raw = normalizeFreeText(value);
+  const aliases = new Map([
+    ['http', 'http'],
+    ['api', 'http'],
+    ['site', 'http'],
+    ['postgres', 'postgresql'],
+    ['postgresql', 'postgresql'],
+    ['mariadb', 'mariadb'],
+    ['maria db', 'mariadb'],
+  ]);
+  return aliases.get(raw) || raw;
+}
+
+function normalizeRuntime(value) {
+  const raw = normalizeFreeText(value);
+  const aliases = new Map([
+    ['node', 'nodejs'],
+    ['nodejs', 'nodejs'],
+    ['node.js', 'nodejs'],
+    ['python', 'python'],
+  ]);
+  return aliases.get(raw) || raw;
+}
+
+function wizardPlanOptionsForTypeProject(typeProject) {
+  if (typeProject === 'http') return WIZARD_HTTP_PLAN_OPTIONS;
+  if (typeProject === 'postgresql') return WIZARD_DATABASE_PLAN_OPTIONS;
+  if (typeProject === 'mariadb') return WIZARD_DATABASE_PLAN_OPTIONS.filter((value) => value !== 'db-free');
+  return WIZARD_HTTP_PLAN_OPTIONS;
+}
+
+function sortWizardOptions(values, preferredOrder) {
+  const order = new Map(preferredOrder.map((value, index) => [value, index]));
+  return [...values].sort((left, right) => (order.get(left) ?? Number.MAX_SAFE_INTEGER) - (order.get(right) ?? Number.MAX_SAFE_INTEGER));
+}
+
+function getPlanFeatures(planCatalog, planId) {
+  return Array.isArray(planCatalog)
+    ? planCatalog.find((plan) => plan?.plan === planId)?.features || []
+    : [];
+}
+
+function planHasFeature(planCatalog, planId, snippet) {
+  return getPlanFeatures(planCatalog, planId).some((feature) => String(feature).includes(snippet));
+}
+
+function isSubdomainCustomizable(planCatalog, planId) {
+  return planHasFeature(planCatalog, planId, 'Sub-domínio HTTP personalizado');
+}
+
+function isIpAccessEnabled(planCatalog, planId) {
+  return planHasFeature(planCatalog, planId, 'Bloqueio de IPs');
+}
+
+function getMaxReplicasFromFeatures(features) {
+  const replicaFeature = features.find((feature) => /réplicas?/i.test(String(feature)));
+  if (!replicaFeature) return 5;
+  const match = String(replicaFeature).match(/até\s+(\d+)/i) || String(replicaFeature).match(/(\d+)\s+réplicas?/i);
+  return match ? Number(match[1]) : 5;
+}
+
+function requireWizardCatalogArray(value, label) {
+  if (!Array.isArray(value)) {
+    throw new CliError(`Falha ao carregar ${label} para o wizard. Tente novamente mais tarde.`);
+  }
+  return value;
+}
+
+function requireWizardCatalogObject(value, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new CliError(`Falha ao carregar ${label} para o wizard. Tente novamente mais tarde.`);
+  }
+  return value;
+}
+
+async function fetchWizardCatalogs(session, flags) {
+  const httpPlans = requireWizardCatalogArray(
+    unwrapData(await request(session, flags, 'GET', '/project/plans')),
+    'os planos HTTP',
+  );
+  const availableInstances = requireWizardCatalogObject(
+    unwrapData(await request(session, flags, 'GET', '/projects/available')),
+    'as instancias disponiveis',
+  );
+  const databasePlans = requireWizardCatalogArray(
+    unwrapData(await request(session, flags, 'GET', '/project/database/plans')),
+    'os planos de banco',
+  );
+
+  return { httpPlans, availableInstances, databasePlans };
+}
+
+function normalizePlansCatalogType(value) {
+  const normalized = normalizeFreeText(value || 'all');
+  if (!normalized || normalized === 'all') return 'all';
+  if (normalized === 'http') return 'http';
+  if (['database', 'db', 'postgresql', 'mariadb'].includes(normalized)) return 'database';
+  if (normalized === 'storage') return 'storage';
+  return null;
+}
+
+function formatBrl(value) {
+  const number = Number(value ?? 0);
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  }).format(Number.isFinite(number) ? number : 0);
+}
+
+function humanizeStorageName(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return { storage: '-', type: '-' };
+
+  const normalized = normalizeFreeText(raw)
+    .replaceAll('ê', 'e')
+    .replaceAll('_', ' ');
+  const gbMatch = normalized.match(/(\d+)\s*gb/);
+  const size = gbMatch ? `${gbMatch[1]} GB` : raw;
+
+  if (normalized.includes('persistente')) {
+    return { storage: size, type: 'Persistente' };
+  }
+  if (normalized.includes('efemero')) {
+    return { storage: size, type: 'Efemero' };
+  }
+
+  return { storage: raw, type: '-' };
+}
+
+async function fetchPlansCatalogs(session, flags, type) {
+  if (type === 'http') {
+    return {
+      http: requireWizardCatalogArray(
+        unwrapData(await request(session, flags, 'GET', '/project/plans', { tokenRequired: false })),
+        'os planos HTTP',
+      ),
+      database: [],
+      storage: [],
+    };
+  }
+
+  if (type === 'database') {
+    return {
+      http: [],
+      database: requireWizardCatalogArray(
+        unwrapData(await request(session, flags, 'GET', '/project/database/plans', { tokenRequired: false })),
+        'os planos de banco',
+      ),
+      storage: [],
+    };
+  }
+
+  if (type === 'storage') {
+    return {
+      http: [],
+      database: [],
+      storage: requireWizardCatalogArray(
+        unwrapData(await request(session, flags, 'GET', '/project/storage/plans', { tokenRequired: false })),
+        'os planos de storage',
+      ),
+    };
+  }
+
+  const [httpPayload, databasePayload, storagePayload] = await Promise.all([
+    request(session, flags, 'GET', '/project/plans', { tokenRequired: false }),
+    request(session, flags, 'GET', '/project/database/plans', { tokenRequired: false }),
+    request(session, flags, 'GET', '/project/storage/plans', { tokenRequired: false }),
+  ]);
+
+  return {
+    http: requireWizardCatalogArray(unwrapData(httpPayload), 'os planos HTTP'),
+    database: requireWizardCatalogArray(unwrapData(databasePayload), 'os planos de banco'),
+    storage: requireWizardCatalogArray(unwrapData(storagePayload), 'os planos de storage'),
+  };
+}
+
+function printPlansCatalogs(payload, type) {
+  if (type === 'all' || type === 'http') {
+    process.stdout.write('HTTP\n');
+    printTable(asArray(payload.http), [
+      { label: 'Plano', value: (plan) => plan.plan || '-' },
+      { label: 'Hora', value: (plan) => formatBrl(plan.prices?.hourly) },
+      { label: 'Mes', value: (plan) => formatBrl(plan.prices?.monthly) },
+      { label: 'Ano', value: (plan) => formatBrl(plan.prices?.yearly) },
+      { label: 'Recursos', value: (plan) => asArray(plan.features).join(', ') || '-' },
+    ]);
+  }
+
+  if (type === 'all' || type === 'database') {
+    if (type === 'all') process.stdout.write('\n');
+    process.stdout.write('PostgreSQL / MariaDB\n');
+    printTable(asArray(payload.database), [
+      { label: 'Plano', value: (plan) => plan.plan || '-' },
+      { label: 'Hora', value: (plan) => formatBrl(plan.prices?.hourly) },
+      { label: 'Mes', value: (plan) => formatBrl(plan.prices?.monthly) },
+      { label: 'Ano', value: (plan) => formatBrl(plan.prices?.yearly) },
+      { label: 'Recursos', value: (plan) => asArray(plan.features).join(', ') || '-' },
+    ]);
+  }
+
+  if (type === 'all' || type === 'storage') {
+    if (type === 'all') process.stdout.write('\n');
+    process.stdout.write('Armazenamento\n');
+    printTable(asArray(payload.storage), [
+      { label: 'Storage', value: (storage) => humanizeStorageName(storage.storage).storage },
+      { label: 'Tipo', value: (storage) => humanizeStorageName(storage.storage).type },
+      { label: 'Hora', value: (storage) => formatBrl(storage.prices?.hourly) },
+      { label: 'Mes', value: (storage) => formatBrl(storage.prices?.monthly) },
+      { label: 'Ano', value: (storage) => formatBrl(storage.prices?.yearly) },
+    ]);
+  }
+}
+
+async function handlePlans(session, flags) {
+  const type = normalizePlansCatalogType(flags.type);
+  if (!type) {
+    throw new CliError('Tipo de catalogo invalido. Valores aceitos: all, http, database, storage.');
+  }
+
+  const payload = await fetchPlansCatalogs(session, flags, type);
+  if (flags.json) return printJson(payload);
+  printPlansCatalogs(payload, type);
+}
+
+function formatAllowedValues(values) {
+  return [...values].join(', ');
+}
+
+function validateCreateInput({ plan, paymentMode, config }) {
+  const nextPlan = normalizePlan(plan);
+  if (!nextPlan || !ALLOWED_PLAN_VALUES.has(nextPlan)) {
+    throw new CliError(`Plano invalido: "${plan}". Valores aceitos: ${formatAllowedValues(ALLOWED_PLAN_VALUES)}. Docs: ${DOCS_CREATE_HTTP_URL}`);
+  }
+
+  const nextPaymentMode = normalizePaymentMode(paymentMode);
+  if (!nextPaymentMode || !ALLOWED_PAYMENT_MODE_VALUES.has(nextPaymentMode)) {
+    throw new CliError(`Modo de pagamento invalido: "${paymentMode}". Valores aceitos: ${formatAllowedValues(ALLOWED_PAYMENT_MODE_VALUES)}. Docs: ${DOCS_PAYMENTS_URL}`);
+  }
+
+  const nextTypeProject = normalizeTypeProject(config?.type_project);
+  if (!nextTypeProject || !ALLOWED_TYPE_PROJECT_VALUES.has(nextTypeProject)) {
+    throw new CliError(`type_project invalido: "${config?.type_project}". Valores aceitos: ${formatAllowedValues(ALLOWED_TYPE_PROJECT_VALUES)}. Docs: ${DOCS_CREATE_HTTP_URL}`);
+  }
+
+  const nextConfig = { ...config, type_project: nextTypeProject };
+  if (nextTypeProject === 'http' && nextConfig.github) {
+    const nextRuntime = normalizeRuntime(nextConfig.github.runtime);
+    if (!nextRuntime || !ALLOWED_RUNTIME_VALUES.has(nextRuntime)) {
+      throw new CliError(`Runtime invalido: "${nextConfig.github.runtime || ''}". Valores aceitos: ${formatAllowedValues(ALLOWED_RUNTIME_VALUES)}. Docs: ${DOCS_RUNTIME_URL}`);
+    }
+    nextConfig.github = { ...nextConfig.github, runtime: nextRuntime };
+  }
+
+  return {
+    plan: nextPlan,
+    paymentMode: nextPaymentMode,
+    config: nextConfig,
+  };
+}
+
+function maskWizardSummary(value, key = '') {
+  if (Array.isArray(value)) return value.map((item) => maskWizardSummary(item, key));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([entryKey, entryValue]) => [
+      entryKey,
+      /token|secret|password|access_key/i.test(entryKey) ? '********' : maskWizardSummary(entryValue, entryKey),
+    ]));
+  }
+  if (typeof value === 'string' && /token|secret|password|access_key/i.test(key)) return '********';
+  return value;
+}
+
+function printWizardSummary(payload) {
+  const masked = maskWizardSummary(payload);
+  const lines = [
+    '',
+    tone('Resumo da criacao', 'green'),
+    `  projeto: ${masked.name} | plano: ${masked.plan} | pagamento: ${masked.payment_mode}`,
+    `  tipo: ${masked.config.type_project}`,
+  ];
+
+  if (masked.description) lines.push(`  descricao: ${masked.description}`);
+
+  if (masked.config.type_project === 'http') {
+    lines.push(`  http: porta ${masked.config.port} | instancias ${masked.config.instances} | storage ${masked.config.storage.capacity}Gi (${masked.config.storage.persistent ? 'persistente' : 'efemero'})`);
+    if (masked.config.github) {
+      lines.push(`  github: ${masked.config.github.repository_owner}/${masked.config.github.repository_name}@${masked.config.github.branch} | runtime ${masked.config.github.runtime}@${masked.config.github.version}`);
+    } else if (masked.config.image) {
+      lines.push(`  imagem: ${masked.config.image.url} | publica: ${masked.config.image.is_public ? 'sim' : 'nao'}`);
+    }
+  }
+
+  if (masked.config.type_project === 'postgresql' || masked.config.type_project === 'mariadb') {
+    lines.push(`  banco: versao ${masked.config.version} | instancias ${masked.config.instances} | storage ${masked.config.storage.capacity}Gi`);
+  }
+
+  process.stdout.write(`${lines.join('\n')}\n`);
+}
+
+async function buildHttpGithubConfig() {
+  const repository_owner = await promptWizardText({
+    label: 'Repository owner',
+    required: true,
+    examples: ['zenifra'],
+    docs: DOCS_RUNTIME_URL,
+  });
+
+  const repository_name = await promptWizardText({
+    label: 'Repository name',
+    required: true,
+    examples: ['zenifra-cli'],
+    docs: DOCS_RUNTIME_URL,
+  });
+
+  const branch = await promptWizardText({
+    label: 'Branch',
+    required: true,
+    examples: ['main'],
+    docs: DOCS_RUNTIME_URL,
+  });
+
+  const runtime = await promptWizardText({
+    label: 'Runtime',
+    required: true,
+    examples: ['nodejs', 'python'],
+    docs: DOCS_RUNTIME_URL,
+    allowedValues: [...ALLOWED_RUNTIME_VALUES],
+    normalize: normalizeRuntime,
+    validate: (value) => (ALLOWED_RUNTIME_VALUES.has(value) ? null : 'use nodejs ou python'),
+  });
+
+  const version = await promptWizardSelect({
+    label: 'Versao do runtime',
+    docs: DOCS_RUNTIME_URL,
+    examples: GITHUB_RUNTIME_VERSIONS[runtime],
+    options: GITHUB_RUNTIME_VERSIONS[runtime].map((value) => ({ value })),
+  });
+
+  const auto_deploy = await promptWizardBoolean({
+    label: 'Auto deploy',
+    docs: DOCS_RUNTIME_URL,
+    examples: ['sim', 'nao'],
+  });
+
+  const start_command = await promptWizardText({
+    label: 'Start command',
+    required: true,
+    examples: runtime === 'nodejs' ? ['npm start'] : ['python main.py'],
+    docs: DOCS_RUNTIME_URL,
+  });
+
+  const preBuildCommand = await promptWizardText({
+    label: 'Pre build command',
+    examples: ['npm run prisma:generate', 'poetry install'],
+    docs: DOCS_RUNTIME_URL,
+    emptyValue: null,
+  });
+
+  const buildCommandRaw = await promptWizardText({
+    label: 'Build command',
+    examples: ['npm run build', 'none'],
+    docs: DOCS_RUNTIME_URL,
+    emptyValue: null,
+    normalize: (value) => parseOptionalNullableCommand(value),
+  });
+
+  return {
+    repository_owner,
+    repository_name,
+    branch,
+    runtime,
+    version,
+    auto_deploy,
+    start_command,
+    pre_build_command: preBuildCommand,
+    build_command: buildCommandRaw,
+  };
+}
+
+async function buildHttpImageConfig() {
+  const isPublic = await promptWizardBoolean({
+    label: 'Imagem publica',
+    docs: DOCS_CREATE_HTTP_URL,
+    examples: ['sim', 'nao'],
+  });
+  promptWizardBoolean.ui.state.httpImagePublic = isPublic;
+
+  const image = {
+    url: await promptWizardText({
+      label: 'Image URL',
+      required: true,
+      examples: ['ghcr.io/zenifra/app:1.0.0', 'registry.example.com/team/api:2026-05-30'],
+      docs: DOCS_CREATE_HTTP_URL,
+    }),
+    is_public: isPublic,
+  };
+
+  if (isPublic) return image;
+
+  const authType = await promptWizardSelect({
+    label: 'Tipo de autenticacao da imagem',
+    docs: DOCS_CREATE_HTTP_URL,
+    examples: ['username_password', 'aws'],
+    options: [
+      { value: 'username_password', description: 'usuario e token do registry' },
+      { value: 'aws', description: 'credenciais ECR/registry AWS' },
+    ],
+  });
+  promptWizardSelect.ui.state.httpImageAuthType = authType;
+
+  if (authType === 'username_password') {
+    image.authentication = {
+      auth_type: 'username_password',
+      username: await promptWizardText({
+        label: 'Username do registry',
+        required: true,
+        examples: ['docker-user'],
+        docs: DOCS_CREATE_HTTP_URL,
+      }),
+      token: await promptWizardSecret({
+        label: 'Token do registry',
+        required: true,
+        examples: ['ghp_xxx'],
+        docs: DOCS_CREATE_HTTP_URL,
+      }),
+    };
+    return image;
+  }
+
+  image.authentication = {
+    auth_type: 'aws',
+    aws: {
+      access_key_id: await promptWizardSecret({
+        label: 'AWS access key id',
+        required: true,
+        examples: ['AKIA...'],
+        docs: DOCS_CREATE_HTTP_URL,
+      }),
+      secret_access_key: await promptWizardSecret({
+        label: 'AWS secret access key',
+        required: true,
+        examples: ['secret'],
+        docs: DOCS_CREATE_HTTP_URL,
+      }),
+      region: await promptWizardText({
+        label: 'AWS region',
+        required: true,
+        examples: ['us-east-1'],
+        docs: DOCS_CREATE_HTTP_URL,
+      }),
+      account_id: await promptWizardText({
+        label: 'AWS account id',
+        required: true,
+        examples: ['123456789012'],
+        docs: DOCS_CREATE_HTTP_URL,
+      }),
+    },
+  };
+  return image;
+}
+
+async function buildHttpConfig({ plan, httpPlans, availableInstances }) {
+  const source = await promptWizardSelect({
+    label: 'Origem do deploy HTTP',
+    docs: DOCS_CREATE_HTTP_URL,
+    examples: ['github', 'oci'],
+    options: [
+      { value: 'github', description: 'build a partir de repositorio GitHub' },
+      { value: 'oci', description: 'imagem OCI pronta' },
+    ],
+  });
+  promptWizardSelect.ui.state.httpSource = source;
+
+  const port = await promptWizardNumber({
+    label: 'Porta da aplicacao',
+    docs: DOCS_CREATE_HTTP_URL,
+    examples: ['3000', '8080'],
+    min: 1,
+    max: 65665,
+  });
+
+  const instances = await promptWizardNumber({
+    label: 'Quantidade de instancias',
+    docs: DOCS_CREATE_HTTP_URL,
+    examples: ['1', '2', '3'],
+    min: 1,
+    max: Math.max(1, Number(availableInstances?.[plan] || 1)),
+  });
+
+  let storage;
+  if (plan === 'free') {
+    storage = { persistent: false, capacity: 1 };
+    promptWizardBoolean.ui.state.httpStoragePersistent = false;
+  } else {
+    const persistent = await promptWizardBoolean({
+      label: 'Storage persistente',
+      docs: DOCS_CONFIGURATION_URL,
+      examples: ['sim', 'nao'],
+    });
+    promptWizardBoolean.ui.state.httpStoragePersistent = persistent;
+
+    storage = {
+      persistent,
+      ...(persistent ? {
+        dir_path_to_persist: await promptWizardText({
+          label: 'Diretorio persistente',
+          required: true,
+          examples: ['/data'],
+          docs: DOCS_CONFIGURATION_URL,
+        }),
+      } : {}),
+      capacity: await promptWizardNumber({
+        label: 'Capacidade de storage (Gi)',
+        docs: DOCS_CONFIGURATION_URL,
+        examples: ['1', '5', '10'],
+        min: 1,
+        max: 250,
+      }),
+    };
+  }
+
+  const envs = await promptWizardPairs({
+    introLabel: 'Deseja adicionar variaveis de ambiente?',
+    docs: DOCS_CONFIGURATION_URL,
+    examples: ['sim', 'nao'],
+    stateKey: 'envs',
+    itemLabels: [
+      { key: 'name', label: 'Nome da env', required: true, examples: ['NODE_ENV'], docs: DOCS_CONFIGURATION_URL },
+      { key: 'value', label: 'Valor da env', required: true, examples: ['production'], docs: DOCS_CONFIGURATION_URL },
+    ],
+  });
+
+  const allowBlockIp = isIpAccessEnabled(httpPlans, plan);
+  const customWhitelist = allowBlockIp
+    ? await promptWizardPairs({
+      introLabel: 'Deseja configurar whitelist personalizada de entrada?',
+      docs: DOCS_CONFIGURATION_URL,
+      examples: ['sim', 'nao'],
+      stateKey: 'whitelist',
+      itemLabels: [
+        { key: 'cidr', label: 'CIDR liberado', required: true, examples: ['10.0.0.0/24'], docs: DOCS_CONFIGURATION_URL },
+        { key: 'description', label: 'Descricao da whitelist', required: true, examples: ['office'], docs: DOCS_CONFIGURATION_URL },
+      ],
+    })
+    : [];
+
+  const ingress_black_list = allowBlockIp
+    ? await promptWizardPairs({
+      introLabel: 'Deseja adicionar blacklist de entrada?',
+      docs: DOCS_CONFIGURATION_URL,
+      examples: ['sim', 'nao'],
+      stateKey: 'blacklist',
+      itemLabels: [
+        { key: 'cidr', label: 'CIDR bloqueado', required: true, examples: ['192.168.0.0/24'], docs: DOCS_CONFIGURATION_URL },
+        { key: 'description', label: 'Descricao da blacklist', required: true, examples: ['bloqueio temporario'], docs: DOCS_CONFIGURATION_URL },
+      ],
+    })
+    : [];
+
+  const subdomain = isSubdomainCustomizable(httpPlans, plan)
+    ? await promptWizardText({
+      label: 'Subdomain personalizado',
+      examples: ['minha-api'],
+      docs: DOCS_CONFIGURATION_URL,
+    })
+    : '';
+
+  return {
+    type_project: 'http',
+    ...(source === 'github' ? { github: await buildHttpGithubConfig() } : { image: await buildHttpImageConfig() }),
+    port,
+    instances,
+    storage,
+    envs,
+    ...(subdomain ? { subdomain } : {}),
+    network_access: {
+      ingress_white_list: customWhitelist.length ? customWhitelist : DEFAULT_HTTP_NETWORK_ACCESS.ingress_white_list,
+      ingress_black_list,
+    },
+  };
+}
+
+async function buildPostgresqlConfig({ plan, databasePlans }) {
+  const maxReplicas = Math.max(1, getMaxReplicasFromFeatures(getPlanFeatures(databasePlans, plan)));
+  return {
+    type_project: 'postgresql',
+    version: await promptWizardSelect({
+      label: 'Versao do PostgreSQL',
+      docs: DOCS_CREATE_POSTGRESQL_URL,
+      examples: ALLOWED_POSTGRESQL_VERSIONS,
+      options: ALLOWED_POSTGRESQL_VERSIONS.map((value) => ({ value })),
+    }),
+    instances: await promptWizardSelect({
+      label: 'Instancias do PostgreSQL',
+      docs: DOCS_CREATE_POSTGRESQL_URL,
+      examples: ['1', '2', String(maxReplicas)],
+      options: Array.from({ length: maxReplicas }, (_, index) => String(index + 1)).map((value) => ({ value })),
+    }).then((value) => Number(value)),
+    storage: {
+      persistent: true,
+      capacity: plan === 'db-free'
+        ? 1
+        : await promptWizardNumber({
+          label: 'Capacidade de storage do banco (Gi)',
+          docs: DOCS_DATABASE_CONFIGURATION_URL,
+          examples: ['1', '10', '20'],
+          min: 1,
+          max: 250,
+        }),
+    },
+    envs: [],
+    network_access: DEFAULT_HTTP_NETWORK_ACCESS,
+  };
+}
+
+async function buildMariadbConfig() {
+  return {
+    type_project: 'mariadb',
+    version: await promptWizardSelect({
+      label: 'Versao do MariaDB',
+      docs: DOCS_CREATE_MARIADB_URL,
+      examples: ALLOWED_MARIADB_VERSIONS,
+      options: ALLOWED_MARIADB_VERSIONS.map((value) => ({ value })),
+    }),
+    instances: 3,
+    storage: {
+      persistent: true,
+      capacity: await promptWizardNumber({
+        label: 'Capacidade de storage do banco (Gi)',
+        docs: DOCS_DATABASE_CONFIGURATION_URL,
+        examples: ['1', '10', '20'],
+        min: 1,
+        max: 250,
+      }),
+    },
+    envs: [],
+    network_access: DEFAULT_HTTP_NETWORK_ACCESS,
+  };
+}
+
+async function runProjectCreateWizard(session, flags) {
+  const catalogs = await fetchWizardCatalogs(session, flags);
+  const ui = createWizardUi();
+  promptWizardText.ui = ui;
+  promptWizardSecret.ui = ui;
+  promptWizardBoolean.ui = ui;
+  promptWizardSelect.ui = ui;
+  promptWizardNumber.ui = ui;
+
+  process.stdout.write(`${tone('Wizard interativo de criacao de projeto Zenifra', 'green')}\n`);
+  process.stdout.write(`${toneDim('Digite ? para ajuda detalhada em qualquer campo.')}\n`);
+
+  const name = await promptWizardText({
+    label: 'Nome do projeto',
+    required: true,
+    examples: ['api-web', 'db-app-01'],
+    docs: DOCS_CONFIGURATION_URL,
+  });
+  const description = await promptWizardText({
+    label: 'Descricao',
+    examples: ['API publica da empresa'],
+    docs: DOCS_CONFIGURATION_URL,
+  });
+  const typeProject = await promptWizardSelect({
+    label: 'Tipo do projeto',
+    docs: DOCS_CONFIGURATION_URL,
+    examples: WIZARD_TYPE_PROJECT_OPTIONS,
+    options: WIZARD_TYPE_PROJECT_OPTIONS.map((value) => ({ value })),
+  });
+  ui.state.typeProject = typeProject;
+  const planOptions = typeProject === 'http'
+    ? sortWizardOptions(catalogs.httpPlans
+      .map((plan) => plan?.plan)
+      .filter((plan) => WIZARD_HTTP_PLAN_OPTIONS.includes(plan) && Number(catalogs.availableInstances?.[plan] || 0) > 0), WIZARD_HTTP_PLAN_OPTIONS)
+    : sortWizardOptions(catalogs.databasePlans
+      .map((plan) => plan?.plan)
+      .filter((plan) => WIZARD_DATABASE_PLAN_OPTIONS.includes(plan) && (typeProject !== 'mariadb' || plan !== 'db-free')), WIZARD_DATABASE_PLAN_OPTIONS);
+  const plan = await promptWizardSelect({
+    label: 'Plano',
+    docs: typeProject === 'http' ? DOCS_CREATE_HTTP_URL : DOCS_DATABASE_CONFIGURATION_URL,
+    examples: [planOptions[0], planOptions.at(-1)],
+    options: planOptions.map((value) => ({ value })),
+  });
+  ui.state.plan = plan;
+  if (typeProject === 'http') {
+    ui.state.planAllowsBlockIp = isIpAccessEnabled(catalogs.httpPlans, plan);
+    ui.state.planAllowsSubdomain = isSubdomainCustomizable(catalogs.httpPlans, plan);
+  }
+  const paymentMode = await promptWizardSelect({
+    label: 'Modo de pagamento',
+    docs: DOCS_PAYMENTS_URL,
+    examples: WIZARD_PAYMENT_MODE_OPTIONS,
+    options: WIZARD_PAYMENT_MODE_OPTIONS.map((value) => ({ value })),
+  });
+
+  let config;
+  if (typeProject === 'http') {
+    config = await buildHttpConfig({
+      plan,
+      httpPlans: catalogs.httpPlans,
+      availableInstances: catalogs.availableInstances,
+    });
+  } else if (typeProject === 'postgresql') {
+    config = await buildPostgresqlConfig({ plan, databasePlans: catalogs.databasePlans });
+  } else {
+    config = await buildMariadbConfig();
+  }
+
+  const payload = {
+    name,
+    ...(description ? { description } : {}),
+    plan,
+    payment_mode: paymentMode,
+    config,
+  };
+
+  printWizardSummary(payload);
+  const confirmed = await promptWizardBoolean({
+    label: 'Confirmar criacao do projeto',
+    docs: typeProject === 'http' ? DOCS_CREATE_HTTP_URL : DOCS_DATABASE_CONFIGURATION_URL,
+    examples: ['sim', 'nao'],
+  });
+  if (!confirmed) return null;
+  return payload;
+}
+
 async function handleProjectCreate(session, flags) {
   const orgId = await resolveOrgId(session, flags);
-  const name = flags.name || await prompt('Nome do projeto');
-  const plan = flags.plan || await prompt('Plano', 'free');
-  const paymentMode = flags.paymentMode || await prompt('Modo de pagamento', 'hourly');
-  const config = await parseConfig(flags.config || await prompt('Config JSON ou @arquivo'));
+  const wizardPayload = hasWizardCreateInput(flags) ? await runProjectCreateWizard(session, flags) : null;
+
+  if (wizardPayload === null && hasWizardCreateInput(flags)) {
+    process.stdout.write('Operacao cancelada pelo usuario.\n');
+    return;
+  }
+
+  const name = wizardPayload?.name || flags.name || await prompt('Nome do projeto');
+  const description = wizardPayload?.description || flags.description;
+  const plan = wizardPayload?.plan || flags.plan || await prompt('Plano');
+  const paymentMode = wizardPayload?.payment_mode || flags.paymentMode || await prompt('Modo de pagamento');
+  const config = wizardPayload?.config || await parseConfig(flags.config || await prompt('Config JSON ou @arquivo'));
+  const validated = validateCreateInput({ plan, paymentMode, config });
 
   const payload = await request(session, flags, 'POST', '/project', {
     orgId,
     body: {
       name,
-      ...(flags.description ? { description: String(flags.description) } : {}),
-      plan,
-      payment_mode: paymentMode,
-      config,
+      ...(description ? { description: String(description) } : {}),
+      plan: validated.plan,
+      payment_mode: validated.paymentMode,
+      config: validated.config,
     },
   });
 
   if (flags.json) return printJson(payload);
+  if (wizardPayload) {
+    closePromptResources();
+  }
   const project = unwrapData(payload);
-  process.stdout.write(`Projeto criado: ${projectIdOf(project) || 'id indisponivel'}\n`);
-  if (project.domain) process.stdout.write(`Dominio: ${project.domain}\n`);
-  if (project.api_key) process.stdout.write(`API key: ${project.api_key}\n`);
+  const rows = [
+    { field: 'Projeto', value: projectIdOf(project) || 'id indisponivel' },
+    ...(project.domain ? [{ field: 'Dominio', value: formatPublicUrl(project.domain) }] : []),
+    ...(project.api_key ? [{ field: 'API key', value: project.api_key }] : []),
+  ];
+  process.stdout.write('\n');
+  printTable(rows, [
+    { label: 'Campo', value: (row) => row.field },
+    { label: 'Valor', value: (row) => row.value },
+  ]);
 }
 
 async function getProject(session, flags, projectId, orgId) {
@@ -1083,49 +2756,68 @@ async function main() {
   const { positional, flags } = parseArgs(process.argv.slice(2));
   const [command, subcommand] = positional;
   const session = await readSession();
+  try {
+    if (isRemovedProjectsCreate(positional)) {
+      throw new CliError(removedProjectsCreateMessage());
+    }
 
-  if (command === 'help') {
-    process.stdout.write(commandHelp(positional.slice(1)));
-    return;
+    if (command === 'help') {
+      process.stdout.write(commandHelp(positional.slice(1)));
+      return;
+    }
+
+    if (!command) {
+      process.stdout.write(usage());
+      return;
+    }
+
+    if (flags.help) {
+      process.stdout.write(commandHelp(positional));
+      return;
+    }
+
+    if (isNamespaceCommand(command) && !subcommand) {
+      process.stdout.write(commandHelp([command]));
+      return;
+    }
+
+    if (command === 'auth' && subcommand === 'login') return handleLogin(session, flags);
+    if (command === 'auth' && subcommand === 'api-key') return handleApiKeyLogin(session, flags);
+    if (command === 'auth' && subcommand === 'logout') return handleLogout(session, flags);
+    if (command === 'profile' && subcommand === 'list') return handleProfileList(session, flags);
+    if (command === 'profile' && subcommand === 'show') return handleProfileShow(session, flags, positional);
+    if (command === 'profile' && subcommand === 'add') return handleProfileAdd(session, flags);
+    if (command === 'profile' && subcommand === 'edit') return handleProfileEdit(session, flags, positional);
+    if (command === 'profile' && subcommand === 'use') return handleProfileUse(session, flags, positional);
+    if (command === 'profile' && subcommand === 'remove') return handleProfileRemove(session, flags, positional);
+    if (command === 'login') return handleLogin(session, flags);
+    if (command === 'logout') return handleLogout(session, flags);
+    if (command === 'plans') return handlePlans(session, flags);
+    if (command === 'create' && subcommand === 'project') return handleProjectCreate(session, flags);
+    if (command === 'orgs') return handleOrgs(session, flags);
+    if (command === 'org' && subcommand === 'set') return handleOrgSet(session, flags);
+    if (command === 'projects') return handleProjects(session, flags);
+    if (command === 'project' && subcommand === 'info') return handleProjectInfo(session, flags);
+    if (command === 'project' && subcommand === 'url') return handleProjectUrl(session, flags);
+    if (command === 'project' && subcommand === 'logs') return handleProjectLogs(session, flags);
+    if (command === 'project' && subcommand === 'metrics') return handleProjectMetrics(session, flags);
+    if (command === 'project' && subcommand === 'network') return handleProjectNetwork(session, flags);
+    if (command === 'project' && subcommand === 'image' && positional[2] === 'set') return handleProjectImageSet(session, flags);
+    if (command === 'project' && subcommand === 'envs') return handleProjectEnvs(session, flags);
+    if (command === 'project' && subcommand === 'env' && positional[2] === 'add') return handleProjectEnvMutation(session, flags, 'add');
+    if (command === 'project' && subcommand === 'env' && positional[2] === 'update') return handleProjectEnvMutation(session, flags, 'update');
+    if (command === 'project' && subcommand === 'env' && positional[2] === 'remove') return handleProjectEnvMutation(session, flags, 'remove');
+    if (command === 'project' && subcommand === 'instances' && positional[2] === 'set') return handleProjectInstancesSet(session, flags);
+    if (command === 'project' && subcommand === 'instances') return handleProjectInstances(session, flags);
+    if (command === 'builds') return handleDeployments(session, flags);
+    if (command === 'deployments') return handleDeployments(session, flags);
+    if (command === 'deploy' && subcommand === 'watch') return handleDeployWatch(session, flags);
+    if (command === 'deploy') return handleDeploy(session, flags);
+
+    throw new CliError(`Comando desconhecido: ${positional.join(' ')}`);
+  } finally {
+    closePromptResources();
   }
-
-  if (!command) {
-    process.stdout.write(usage());
-    return;
-  }
-
-  if (flags.help) {
-    process.stdout.write(commandHelp(positional));
-    return;
-  }
-
-  if (command === 'auth' && subcommand === 'login') return handleLogin(session, flags);
-  if (command === 'auth' && subcommand === 'api-key') return handleApiKeyLogin(session, flags);
-  if (command === 'auth' && subcommand === 'logout') return handleLogout();
-  if (command === 'login') return handleLogin(session, flags);
-  if (command === 'logout') return handleLogout();
-  if (command === 'orgs') return handleOrgs(session, flags);
-  if (command === 'org' && subcommand === 'set') return handleOrgSet(session, flags);
-  if (command === 'projects' && subcommand === 'create') return handleProjectCreate(session, flags);
-  if (command === 'projects') return handleProjects(session, flags);
-  if (command === 'project' && subcommand === 'info') return handleProjectInfo(session, flags);
-  if (command === 'project' && subcommand === 'url') return handleProjectUrl(session, flags);
-  if (command === 'project' && subcommand === 'logs') return handleProjectLogs(session, flags);
-  if (command === 'project' && subcommand === 'metrics') return handleProjectMetrics(session, flags);
-  if (command === 'project' && subcommand === 'network') return handleProjectNetwork(session, flags);
-  if (command === 'project' && subcommand === 'image' && positional[2] === 'set') return handleProjectImageSet(session, flags);
-  if (command === 'project' && subcommand === 'envs') return handleProjectEnvs(session, flags);
-  if (command === 'project' && subcommand === 'env' && positional[2] === 'add') return handleProjectEnvMutation(session, flags, 'add');
-  if (command === 'project' && subcommand === 'env' && positional[2] === 'update') return handleProjectEnvMutation(session, flags, 'update');
-  if (command === 'project' && subcommand === 'env' && positional[2] === 'remove') return handleProjectEnvMutation(session, flags, 'remove');
-  if (command === 'project' && subcommand === 'instances' && positional[2] === 'set') return handleProjectInstancesSet(session, flags);
-  if (command === 'project' && subcommand === 'instances') return handleProjectInstances(session, flags);
-  if (command === 'builds') return handleDeployments(session, flags);
-  if (command === 'deployments') return handleDeployments(session, flags);
-  if (command === 'deploy' && subcommand === 'watch') return handleDeployWatch(session, flags);
-  if (command === 'deploy') return handleDeploy(session, flags);
-
-  throw new CliError(`Comando desconhecido: ${positional.join(' ')}`);
 }
 
 main().catch((error) => {
