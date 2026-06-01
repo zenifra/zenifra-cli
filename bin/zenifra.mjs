@@ -108,7 +108,7 @@ Usage:
   zenifra plans [--type <all|http|database|storage>] [--json]
   zenifra create project
   zenifra create project --name <name> --plan <plan> --payment-mode <mode> --config <json|@file> [--description <text>] [--org <id>] [--json]
-  zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb>]
+  zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb>] [--page <n>] [--limit <n>]
   zenifra project info --project <id> [--json]
   zenifra project url --project <id> [--json]
   zenifra project logs --project <id> [--instance <id>] [--json]
@@ -272,12 +272,12 @@ const HELP_SPECS = [
   },
   {
     command: 'projects',
-    usage: 'zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb>]',
+    usage: 'zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb>] [--page <n>] [--limit <n>]',
     description: 'Lista projetos da organizacao ativa ou da API key.',
-    flags: ['--json  Imprime a resposta em JSON.', '--org <id>  Usa uma organizacao especifica com sessao de usuario.', '--type <type>  Filtra por tipo de projeto.'],
-    examples: ['zenifra projects --type http', 'zenifra projects --json'],
+    flags: ['--json       Imprime a resposta em JSON.', '--org <id>   Usa uma organizacao especifica com sessao de usuario.', '--type <type> Filtra por tipo de projeto.', '--page <n>   Pagina. Padrao: 1.', '--limit <n>  Itens por pagina. Padrao: 15.'],
+    examples: ['zenifra projects --type http --page 1 --limit 15', 'zenifra projects --json'],
     output: 'ID                        Nome     Status   Plano   Tipo\n507f1f77bcf86cd799439012  api-web  running  free    http',
-    jsonOutput: '[{"id":"507f1f77bcf86cd799439012","name":"api-web","status":"running","type_project":"http"}]',
+    jsonOutput: '{"projects":[{"id":"507f1f77bcf86cd799439012","name":"api-web","status":"running","type_project":"http"}],"pagination":{"page":1,"limit":15,"total":1,"pages":1}}',
   },
   {
     command: 'create project',
@@ -1636,7 +1636,12 @@ async function handleOrgSet(session, flags) {
 
 async function handleProjects(session, flags) {
   const orgId = await resolveOrgId(session, flags);
-  const query = buildQuery(flags, ['type']);
+  const projectFlags = {
+    ...flags,
+    page: flags.page ?? 1,
+    limit: flags.limit ?? 15,
+  };
+  const query = buildQuery(projectFlags, ['type', 'page', 'limit']);
   const data = unwrapData(await request(session, flags, 'GET', `/project${query}`, { orgId }));
   const projects = asArray(data);
 
@@ -1648,6 +1653,10 @@ async function handleProjects(session, flags) {
     { label: 'Plano', value: (project) => project.plan || '-' },
     { label: 'Tipo', value: (project) => project.type_project || project.config?.type_project || '-' },
   ]);
+  if (data?.pagination) {
+    const { page = 1, pages = 1, total = projects.length } = data.pagination;
+    process.stdout.write(`\nPagina ${page} de ${Math.max(pages, 1)} (${total} projeto(s))\n`);
+  }
 }
 
 async function parseConfig(input) {

@@ -513,8 +513,8 @@ test('legacy session is auto-migrated into the default profile', async () => {
   await withCliServer(async (req, res) => {
     assert.equal(req.headers.authorization, 'Bearer legacy_key_123');
     assert.equal(req.method, 'GET');
-    assert.equal(req.url, '/v1/project?type=http');
-    jsonResponse(res, 200, { status: 'success', data: [] });
+    assert.equal(req.url, '/v1/project?type=http&page=1&limit=15');
+    jsonResponse(res, 200, { status: 'success', data: { projects: [], pagination: { page: 1, limit: 15, total: 0, pages: 0 } } });
   }, async ({ apiBase, configDir }) => {
     await writeFile(join(configDir, 'session.json'), `${JSON.stringify({
       apiKey: 'legacy_key_123',
@@ -529,6 +529,35 @@ test('legacy session is auto-migrated into the default profile', async () => {
     assert.equal(profiles.activeProfile, 'default');
     assert.equal(profiles.profiles.default.apiKey, 'legacy_key_123');
     assert.equal(profiles.profiles.default.apiBaseUrl, apiBase);
+  });
+});
+
+test('projects command requests paginated project lists and prints pagination summary', async () => {
+  await withCliServer(async (req, res) => {
+    assert.equal(req.headers.authorization, `Bearer ${apiKey}`);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project?type=http&page=2&limit=15');
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        projects: [
+          {
+            id: '507f1f77bcf86cd799439012',
+            name: 'api-web',
+            status: 'running',
+            plan: 'free',
+            type_project: 'http',
+          },
+        ],
+        pagination: { page: 2, limit: 15, total: 31, pages: 3 },
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['projects', '--type', 'http', '--page', '2', '--limit', '15'], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /api-web/);
+    assert.match(result.stdout, /Pagina 2 de 3 \(31 projeto\(s\)\)/);
   });
 });
 
@@ -595,8 +624,8 @@ test('profile use switches the active profile used by existing commands', async 
   await withCliServer(async (req, res) => {
     assert.equal(req.headers.authorization, 'Bearer key_two');
     assert.equal(req.method, 'GET');
-    assert.equal(req.url, '/v1/project');
-    jsonResponse(res, 200, { status: 'success', data: [] });
+    assert.equal(req.url, '/v1/project?page=1&limit=15');
+    jsonResponse(res, 200, { status: 'success', data: { projects: [], pagination: { page: 1, limit: 15, total: 0, pages: 0 } } });
   }, async ({ apiBase, configDir }) => {
     await writeProfiles(configDir, {
       version: 1,
@@ -620,8 +649,8 @@ test('environment overrides win over the active profile without mutating profile
   await withCliServer(async (req, res) => {
     assert.equal(req.headers.authorization, 'Bearer env_key_override');
     assert.equal(req.method, 'GET');
-    assert.equal(req.url, '/v1/project');
-    jsonResponse(res, 200, { status: 'success', data: [] });
+    assert.equal(req.url, '/v1/project?page=1&limit=15');
+    jsonResponse(res, 200, { status: 'success', data: { projects: [], pagination: { page: 1, limit: 15, total: 0, pages: 0 } } });
   }, async ({ apiBase, configDir }) => {
     await writeProfiles(configDir, {
       version: 1,

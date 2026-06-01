@@ -56,7 +56,7 @@ zenifra create project --name <name> --plan free --payment-mode hourly --config 
 zenifra create project --name <name> --plan basic --payment-mode hourly --config @examples/http-github-project.json
 zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/postgresql-project.json
 zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/mariadb-project.json
-zenifra projects --type http
+zenifra projects --type http --page 1 --limit 15
 zenifra project info --project <project-id>
 zenifra project url --project <project-id>
 zenifra project logs --project <project-id> --instance <instance-id>
@@ -83,7 +83,7 @@ zenifra deploy watch --project <project-id> --build <build-id>
 - Store local de perfis: `~/.config/zenifra-cli/profiles.json`
 - Override do diretorio local: `ZENIFRA_CONFIG_DIR=/path/custom`
 
-Todos os comandos de listagem aceitam `--json`.
+Todos os comandos de listagem aceitam `--json`. `zenifra projects` e paginado por padrao com 15 itens por pagina; use `--page <n>` e `--limit <n>` para navegar.
 
 Para comparar custo antes de criar um projeto, use:
 
@@ -137,7 +137,7 @@ Crie uma API key global no painel da organizacao e use-a em jobs, pipelines e sc
 
 ```bash
 export ZENIFRA_API_KEY=znf_sua_chave
-zenifra projects --type http
+zenifra projects --type http --page 1 --limit 15
 zenifra deploy --project <project-id> --branch main
 ```
 
