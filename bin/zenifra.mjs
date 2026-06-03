@@ -21,7 +21,6 @@ const SESSION_FILE = join(SESSION_DIR, 'session.json');
 const PROFILES_FILE = join(SESSION_DIR, 'profiles.json');
 const PROFILE_STORE_VERSION = 1;
 const DEFAULT_PROFILE_NAME = 'default';
-const FINAL_BUILD_STATUSES = new Set(['success', 'failed']);
 const ALLOWED_PLAN_VALUES = new Set([
   'free',
   'static',
@@ -122,6 +121,7 @@ Usage:
   zenifra project instances --project <id> [--json]
   zenifra project instances set --project <id> --count <n> [--json]
   zenifra builds --project <id> [--page <n>] [--limit <n>] [--branch <name>] [--status <status>] [--json]
+  zenifra builds logs --project <id> --build <id> [--cursor <n>] [--limit <n>] [--follow] [--interval <seconds>] [--timeout <seconds>] [--json]
   zenifra deployments --project <id> [--page <n>] [--limit <n>] [--branch <name>] [--status <status>] [--json]
   zenifra deploy --project <id> [--branch <name>] [--commit-sha <sha>] [--json]
   zenifra deploy watch --project <id> --build <id> [--interval <seconds>] [--timeout <seconds>] [--json]
@@ -420,6 +420,24 @@ const HELP_SPECS = [
     jsonOutput: '[{"id":"build_123","status":"success","branch":"main","commit_sha":"abc123"}]',
   },
   {
+    command: 'builds logs',
+    usage: 'zenifra builds logs --project <id> --build <id> [--cursor <n>] [--limit <n>] [--follow] [--interval <seconds>] [--timeout <seconds>] [--json]',
+    description: 'Lê os logs de um build GitHub existente e opcionalmente acompanha novos chunks em tempo real.',
+    flags: [
+      '--project <id>        ID do projeto.',
+      '--build <id>          ID do build.',
+      '--cursor <n>          Cursor inicial. Padrao: 0.',
+      '--limit <n>           Quantidade de logs por request. Padrao: 200.',
+      '--follow              Continua em polling ate o build finalizar.',
+      '--interval <seconds>  Intervalo de polling com --follow. Padrao: 5.',
+      '--timeout <seconds>   Timeout total com --follow. Padrao: 900.',
+      '--json                Imprime a resposta em JSON.',
+    ],
+    examples: ['zenifra builds logs --project 507f1f77bcf86cd799439012 --build build_123', 'zenifra builds logs --project 507f1f77bcf86cd799439012 --build build_123 --follow'],
+    output: '[2026-05-27T12:00:00.000Z] install: npm ci\n[2026-05-27T12:00:05.000Z] build: npm run build',
+    jsonOutput: '{"logs":[{"sequence":1,"timestamp":"2026-05-27T12:00:00.000Z","level":"info","step":"install","message":"npm ci","final":false}],"next_cursor":1,"status":"running","finished":false,"truncated":false}',
+  },
+  {
     command: 'deployments',
     usage: 'zenifra deployments --project <id> [--page <n>] [--limit <n>] [--branch <name>] [--status <status>] [--json]',
     description: 'Alias para listar builds/deployments GitHub de um projeto.',
@@ -431,20 +449,35 @@ const HELP_SPECS = [
   {
     command: 'deploy',
     usage: 'zenifra deploy --project <id> [--branch <name>] [--commit-sha <sha>] [--json]',
-    description: 'Dispara um deploy GitHub para o projeto.',
+    description: 'Dispara um build/deploy GitHub para o projeto e retorna o build_id para acompanhamento posterior.',
     flags: ['--project <id>    ID do projeto.', '--branch <name>  Branch a publicar.', '--commit-sha <sha> Commit especifico.', '--json           Imprime a resposta em JSON.'],
-    examples: ['zenifra deploy --project 507f1f77bcf86cd799439012 --branch main'],
+    examples: [
+      'zenifra deploy --project 507f1f77bcf86cd799439012 --branch main',
+      'zenifra deploy watch --project 507f1f77bcf86cd799439012 --build build_123',
+    ],
     output: 'Deploy iniciado: build_123',
     jsonOutput: '{"status":"success","data":{"build_id":"build_123"}}',
+    notes: [
+      'Use o build_id retornado para acompanhar a execucao com "zenifra deploy watch --project <id> --build <build_id>".',
+      'O subcomando "deploy watch" acompanha status e logs incrementais do build ate o estado terminal.',
+    ],
   },
   {
     command: 'deploy watch',
     usage: 'zenifra deploy watch --project <id> --build <id> [--interval <seconds>] [--timeout <seconds>] [--json]',
-    description: 'Acompanha um build ate status terminal.',
+    description: 'Acompanha um build em tempo real, fazendo polling do status e imprimindo os logs incrementais do build ate o estado terminal.',
     flags: ['--project <id>        ID do projeto.', '--build <id>          ID do build.', '--interval <seconds>  Intervalo de polling. Padrao: 5.', '--timeout <seconds>   Timeout total. Padrao: 900.', '--json                Imprime cada resposta em JSON.'],
-    examples: ['zenifra deploy watch --project 507f1f77bcf86cd799439012 --build build_123'],
-    output: '[2026-05-27T12:00:00.000Z] build build_123: building\n[2026-05-27T12:00:05.000Z] build build_123: success',
-    jsonOutput: '{"id":"build_123","status":"success"}',
+    examples: [
+      'zenifra deploy watch --project 507f1f77bcf86cd799439012 --build build_123',
+      'zenifra deploy watch --project 507f1f77bcf86cd799439012 --build build_123 --interval 2',
+      'zenifra deploy watch --project 507f1f77bcf86cd799439012 --build build_123 --json',
+    ],
+    output: '[2026-05-27T12:00:00.000Z] install: npm ci\n[2026-05-27T12:00:05.000Z] build: npm run build\n[2026-05-27T12:00:09.000Z] publish: Build concluida e publicada',
+    jsonOutput: '{"sequence":1,"timestamp":"2026-05-27T12:00:00.000Z","level":"info","step":"install","message":"npm ci","final":false}',
+    notes: [
+      'Use este subcomando logo apos "zenifra deploy" para acompanhar o build pelo build_id retornado.',
+      'No modo --json, o comando imprime eventos de log em streaming, um JSON por linha.',
+    ],
   },
 ];
 
@@ -493,6 +526,12 @@ function commandHelp(positionals) {
   }
 
   return formatHelp(spec);
+}
+
+function printCommandHelpAndFail(commandKey) {
+  const positionals = Array.isArray(commandKey) ? commandKey : String(commandKey).split(' ')
+  process.stdout.write(commandHelp(positionals))
+  process.exitCode = 1
 }
 
 function isRemovedProjectsCreate(positionals) {
@@ -1262,8 +1301,18 @@ function buildIdOf(build) {
   return build?.id || build?._id || build?.build_id || '';
 }
 
-function requireProjectId(flags) {
-  if (!flags.project) throw new CliError('Informe --project <id>.');
+function buildLogLineOf(log) {
+  const timestamp = log?.timestamp ? new Date(log.timestamp).toISOString() : new Date().toISOString()
+  const step = log?.step || 'build'
+  const message = log?.message || ''
+  return `[${timestamp}] ${step}: ${message}`
+}
+
+function requireProjectId(flags, commandKey) {
+  if (!flags.project) {
+    printCommandHelpAndFail(commandKey)
+    return null
+  }
   return String(flags.project);
 }
 
@@ -1528,7 +1577,10 @@ async function handleProfileShow(session, flags, positional = []) {
 
 async function handleProfileUse(session, flags, positional = []) {
   const targetName = positional[2] || flags.name;
-  if (!targetName) throw new CliError('Informe o nome do perfil: zenifra profile use <name>.');
+  if (!targetName) {
+    printCommandHelpAndFail('profile use')
+    return
+  }
   activateProfileSession(session, targetName);
   await writeProfileStore(getStore(session));
   if (flags.json) return printJson({ active_profile: getProfileName(session) });
@@ -1578,7 +1630,10 @@ async function handleProfileAdd(session, flags) {
 
 async function handleProfileEdit(session, flags, positional = []) {
   const targetName = positional[2] || flags.name;
-  if (!targetName) throw new CliError('Informe o nome do perfil: zenifra profile edit <name>.');
+  if (!targetName) {
+    printCommandHelpAndFail('profile edit')
+    return
+  }
   const target = requireExistingProfile(session, targetName);
   target.description = String(flags.description ?? await prompt('Descricao do perfil', target.description || ''));
   target.apiBaseUrl = normalizeApiBaseUrl(flags.apiBase || await prompt('API base', target.apiBaseUrl || DEFAULT_API_BASE_URL));
@@ -1594,7 +1649,10 @@ async function handleProfileEdit(session, flags, positional = []) {
 
 async function handleProfileRemove(session, flags, positional = []) {
   const targetName = positional[2] || flags.name;
-  if (!targetName) throw new CliError('Informe o nome do perfil: zenifra profile remove <name>.');
+  if (!targetName) {
+    printCommandHelpAndFail('profile remove')
+    return
+  }
   const normalizedName = normalizeProfileName(targetName);
   const store = getStore(session);
   if (!store.profiles[normalizedName]) {
@@ -2505,7 +2563,8 @@ async function getProject(session, flags, projectId, orgId) {
 }
 
 async function handleProjectInfo(session, flags) {
-  const projectId = requireProjectId(flags);
+  const projectId = requireProjectId(flags, 'project info');
+  if (!projectId) return
   const orgId = await resolveOrgId(session, flags);
   const project = await getProject(session, flags, projectId, orgId);
 
@@ -2514,7 +2573,8 @@ async function handleProjectInfo(session, flags) {
 }
 
 async function handleProjectUrl(session, flags) {
-  const projectId = requireProjectId(flags);
+  const projectId = requireProjectId(flags, 'project url');
+  if (!projectId) return
   const orgId = await resolveOrgId(session, flags);
   const project = await getProject(session, flags, projectId, orgId);
   const url = projectUrlOf(project);
@@ -2531,7 +2591,8 @@ async function handleProjectUrl(session, flags) {
 }
 
 async function handleProjectLogs(session, flags) {
-  const projectId = requireProjectId(flags);
+  const projectId = requireProjectId(flags, 'project logs');
+  if (!projectId) return
   const orgId = await resolveOrgId(session, flags);
   const query = buildQuery(flags, ['instance']);
   const logs = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/logs${query}`, { orgId }));
@@ -2540,7 +2601,8 @@ async function handleProjectLogs(session, flags) {
 }
 
 async function handleProjectMetrics(session, flags) {
-  const projectId = requireProjectId(flags);
+  const projectId = requireProjectId(flags, 'project metrics');
+  if (!projectId) return
   const orgId = await resolveOrgId(session, flags);
   const query = buildQuery(flags, ['instance']);
   const metrics = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/metrics${query}`, { orgId }));
@@ -2558,7 +2620,8 @@ async function handleProjectMetrics(session, flags) {
 }
 
 async function handleProjectNetwork(session, flags) {
-  const projectId = requireProjectId(flags);
+  const projectId = requireProjectId(flags, 'project network');
+  if (!projectId) return
   const orgId = await resolveOrgId(session, flags);
   const view = String(flags.view || 'summary');
   const allowedViews = new Set(['summary', 'status-codes', 'routes', 'user-agents', 'request-events', 'source-ips']);
@@ -2573,9 +2636,13 @@ async function handleProjectNetwork(session, flags) {
 }
 
 async function handleProjectImageSet(session, flags) {
-  const projectId = requireProjectId(flags);
+  const projectId = requireProjectId(flags, 'project image set');
+  if (!projectId) return
   const image = flags.image || await prompt('Imagem');
-  if (!image) throw new CliError('Informe --image <image>.');
+  if (!image) {
+    printCommandHelpAndFail('project image set')
+    return
+  }
 
   const orgId = await resolveOrgId(session, flags);
   const payload = await request(session, flags, 'PATCH', `/project/${projectId}/image`, {
@@ -2599,7 +2666,8 @@ async function patchProjectEnvs(session, flags, projectId, orgId, envs) {
 }
 
 async function handleProjectEnvs(session, flags) {
-  const projectId = requireProjectId(flags);
+  const projectId = requireProjectId(flags, 'project envs');
+  if (!projectId) return
   const orgId = await resolveOrgId(session, flags);
   const envs = await getProjectEnvs(session, flags, projectId, orgId);
 
@@ -2607,13 +2675,26 @@ async function handleProjectEnvs(session, flags) {
 }
 
 async function handleProjectEnvMutation(session, flags, action) {
-  const projectId = requireProjectId(flags);
+  const helpKeyByAction = {
+    add: 'project env add',
+    update: 'project env update',
+    remove: 'project env remove',
+  }
+  const helpKey = helpKeyByAction[action]
+  const projectId = requireProjectId(flags, helpKey);
+  if (!projectId) return
   const name = String(flags.name || '').trim();
-  if (!name) throw new CliError('Informe --name <name>.');
+  if (!name) {
+    printCommandHelpAndFail(helpKey)
+    return
+  }
 
   const needsValue = action === 'add' || action === 'update';
   const value = needsValue ? String(flags.value ?? await promptHidden('Valor')) : undefined;
-  if (needsValue && !value) throw new CliError('Informe --value <value>.');
+  if (needsValue && !value) {
+    printCommandHelpAndFail(helpKey)
+    return
+  }
 
   const orgId = await resolveOrgId(session, flags);
   const envs = await getProjectEnvs(session, flags, projectId, orgId);
@@ -2646,7 +2727,8 @@ async function handleProjectEnvMutation(session, flags, action) {
 }
 
 async function handleProjectInstances(session, flags) {
-  const projectId = requireProjectId(flags);
+  const projectId = requireProjectId(flags, 'project instances');
+  if (!projectId) return
   const orgId = await resolveOrgId(session, flags);
   const instances = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/instances`, { orgId }));
 
@@ -2657,7 +2739,12 @@ async function handleProjectInstances(session, flags) {
 }
 
 async function handleProjectInstancesSet(session, flags) {
-  const projectId = requireProjectId(flags);
+  const projectId = requireProjectId(flags, 'project instances set');
+  if (!projectId) return
+  if (flags.count === undefined) {
+    printCommandHelpAndFail('project instances set')
+    return
+  }
   const instances = Number(flags.count);
   if (!Number.isInteger(instances) || instances <= 0) {
     throw new CliError('Informe --count <n> com um inteiro positivo.');
@@ -2687,7 +2774,10 @@ function buildQuery(flags, allowedKeys) {
 
 async function handleDeployments(session, flags) {
   const projectId = flags.project;
-  if (!projectId) throw new CliError('Informe --project <id>.');
+  if (!projectId) {
+    printCommandHelpAndFail(flags.__commandKey || 'builds')
+    return
+  }
   const orgId = await resolveOrgId(session, flags);
   const query = buildQuery(flags, ['page', 'limit', 'branch', 'status']);
   const data = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/github/builds${query}`, { orgId }));
@@ -2705,7 +2795,11 @@ async function handleDeployments(session, flags) {
 
 async function handleDeploy(session, flags) {
   const projectId = flags.project;
-  if (!projectId) throw new CliError('Informe --project <id>.');
+  if (!projectId) {
+    process.stdout.write(commandHelp(['deploy']));
+    process.exitCode = 1;
+    return;
+  }
   const orgId = await resolveOrgId(session, flags);
   const body = {};
   if (flags.branch) body.branch = String(flags.branch);
@@ -2721,44 +2815,110 @@ async function handleDeploy(session, flags) {
   process.stdout.write(`Deploy iniciado${buildId ? `: ${buildId}` : '.'}\n`);
 }
 
-async function getBuild(session, flags, projectId, buildId, orgId) {
-  return unwrapData(await request(session, flags, 'GET', `/project/${projectId}/github/builds/${buildId}`, { orgId }));
+async function getBuildLogs(session, flags, projectId, buildId, orgId, { cursor = 0, limit = 200 } = {}) {
+  const query = buildQuery({ cursor, limit }, ['cursor', 'limit'])
+  return unwrapData(await request(session, flags, 'GET', `/project/${projectId}/github/builds/${buildId}/logs${query}`, { orgId }))
+}
+
+function printBuildLogs(logs) {
+  for (const log of asArray(logs)) {
+    process.stdout.write(`${buildLogLineOf(log)}\n`)
+  }
+}
+
+function printBuildLogEventsJson(logs) {
+  for (const log of asArray(logs)) {
+    process.stdout.write(`${JSON.stringify(log)}\n`)
+  }
+}
+
+async function followBuildLogs(session, flags, projectId, buildId, orgId, {
+  initialCursor = 0,
+  limit = 200,
+  intervalSeconds = 5,
+  timeoutSeconds = 900,
+} = {}) {
+  let cursor = Math.max(Number(initialCursor || 0), 0)
+  const pollLimit = Math.max(Number(limit || 200), 1)
+  const intervalMs = Math.max(Number(intervalSeconds || 5), 0.1) * 1000
+  const timeoutMs = Math.max(Number(timeoutSeconds || 900), 1) * 1000
+  const startedAt = Date.now()
+
+  while (true) {
+    const result = await getBuildLogs(session, flags, projectId, buildId, orgId, {
+      cursor,
+      limit: pollLimit,
+    })
+    const logs = asArray(result?.logs)
+
+    if (flags.json) {
+      printBuildLogEventsJson(logs)
+    } else {
+      printBuildLogs(logs)
+    }
+
+    if (typeof result?.next_cursor === 'number') {
+      cursor = result.next_cursor
+    } else if (logs.length > 0) {
+      cursor = logs[logs.length - 1].sequence || cursor
+    }
+
+    if (result?.finished) {
+      if (result?.status === 'failed') {
+        process.exitCode = 1
+      }
+      return result
+    }
+
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new CliError(`Timeout aguardando build ${buildId}. Ultimo status: ${result?.status || 'unknown'}`)
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+}
+
+async function handleBuildLogs(session, flags) {
+  const projectId = flags.project;
+  const buildId = flags.build;
+  if (!projectId || !buildId) {
+    printCommandHelpAndFail('builds logs')
+    return
+  }
+
+  const orgId = await resolveOrgId(session, flags);
+  const cursor = Math.max(Number(flags.cursor || 0), 0)
+  const limit = Math.max(Number(flags.limit || 200), 1)
+
+  if (flags.follow) {
+    return followBuildLogs(session, flags, projectId, buildId, orgId, {
+      initialCursor: cursor,
+      limit,
+      intervalSeconds: Number(flags.interval || 5),
+      timeoutSeconds: Number(flags.timeout || 900),
+    })
+  }
+
+  const result = await getBuildLogs(session, flags, projectId, buildId, orgId, { cursor, limit })
+  if (flags.json) return printJson(result)
+  printBuildLogs(result?.logs)
 }
 
 async function handleDeployWatch(session, flags) {
   const projectId = flags.project;
   const buildId = flags.build;
-  if (!projectId) throw new CliError('Informe --project <id>.');
-  if (!buildId) throw new CliError('Informe --build <id>.');
+  if (!projectId || !buildId) {
+    printCommandHelpAndFail('deploy watch')
+    return;
+  }
 
   const orgId = await resolveOrgId(session, flags);
-  const intervalMs = Math.max(Number(flags.interval || 5), 1) * 1000;
-  const timeoutMs = Math.max(Number(flags.timeout || 900), 1) * 1000;
-  const startedAt = Date.now();
-
-  while (true) {
-    const build = await getBuild(session, flags, projectId, buildId, orgId);
-    const status = build?.status || 'unknown';
-
-    if (flags.json) {
-      printJson(build);
-    } else {
-      process.stdout.write(`[${new Date().toISOString()}] build ${buildId}: ${status}\n`);
-    }
-
-    if (FINAL_BUILD_STATUSES.has(status)) {
-      if (status === 'failed') {
-        process.exitCode = 1;
-      }
-      return;
-    }
-
-    if (Date.now() - startedAt > timeoutMs) {
-      throw new CliError(`Timeout aguardando build ${buildId}. Ultimo status: ${status}`);
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
+  return followBuildLogs(session, flags, projectId, buildId, orgId, {
+    initialCursor: 0,
+    limit: 200,
+    intervalSeconds: Number(flags.interval || 5),
+    timeoutSeconds: Number(flags.timeout || 900),
+  })
 }
 
 async function main() {
@@ -2818,8 +2978,9 @@ async function main() {
     if (command === 'project' && subcommand === 'env' && positional[2] === 'remove') return handleProjectEnvMutation(session, flags, 'remove');
     if (command === 'project' && subcommand === 'instances' && positional[2] === 'set') return handleProjectInstancesSet(session, flags);
     if (command === 'project' && subcommand === 'instances') return handleProjectInstances(session, flags);
-    if (command === 'builds') return handleDeployments(session, flags);
-    if (command === 'deployments') return handleDeployments(session, flags);
+    if (command === 'builds' && subcommand === 'logs') return handleBuildLogs(session, flags);
+    if (command === 'builds') return handleDeployments(session, { ...flags, __commandKey: 'builds' });
+    if (command === 'deployments') return handleDeployments(session, { ...flags, __commandKey: 'deployments' });
     if (command === 'deploy' && subcommand === 'watch') return handleDeployWatch(session, flags);
     if (command === 'deploy') return handleDeploy(session, flags);
 

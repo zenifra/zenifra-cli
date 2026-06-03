@@ -70,10 +70,33 @@ zenifra project env remove --project <project-id> --name NODE_ENV
 zenifra project instances --project <project-id>
 zenifra project instances set --project <project-id> --count 3
 zenifra builds --project <project-id>
+zenifra builds logs --project <project-id> --build <build-id>
+zenifra builds logs --project <project-id> --build <build-id> --follow
 zenifra deployments --project <project-id>
 zenifra deploy --project <project-id> --branch main
 zenifra deploy watch --project <project-id> --build <build-id>
 ```
+
+## Builds GitHub
+
+Use `zenifra builds` para listar o historico de builds e `zenifra builds logs` para ler os logs do pipeline GitHub de um build especifico.
+
+```bash
+zenifra builds --project <project-id>
+zenifra builds logs --project <project-id> --build <build-id>
+zenifra builds logs --project <project-id> --build <build-id> --follow
+zenifra deploy --project <project-id> --branch main
+zenifra deploy watch --project <project-id> --build <build-id>
+```
+
+Fluxos:
+
+- `zenifra project logs`: logs da aplicacao em execucao
+- `zenifra builds logs`: logs do build GitHub
+- `zenifra deploy`: dispara o build/deploy GitHub e retorna o `build_id`
+- `zenifra deploy watch`: usa esse `build_id` para acompanhar o build em tempo real e imprimir os logs incrementais ate o fim
+
+Se voce rodar apenas `zenifra deploy`, a CLI mostra a ajuda especifica do comando com uso, flags, exemplos e exemplo de retorno.
 
 ## Configuracao
 
@@ -147,7 +170,7 @@ Tambem e possivel salvar a chave localmente no perfil ativo:
 zenifra auth api-key --key znf_sua_chave
 ```
 
-API keys globais ja sao vinculadas a uma organizacao, entao comandos como `projects`, `deploy`, `builds` e `deployments` nao precisam de `org set`. Comandos pessoais como `orgs` e `org set` continuam exigindo `zenifra auth login` em um perfil com token de usuario.
+API keys globais ja sao vinculadas a uma organizacao, entao comandos como `projects`, `deploy`, `builds`, `builds logs` e `deployments` nao precisam de `org set`. Comandos pessoais como `orgs` e `org set` continuam exigindo `zenifra auth login` em um perfil com token de usuario.
 
 Para reduzir impacto de vazamento, configure IPs permitidos na criacao da API key sempre que a automacao tiver origem fixa.
 

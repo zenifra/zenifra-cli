@@ -210,6 +210,92 @@ test('subcommand help is specific and does not require authentication', async ()
   }
 });
 
+test('deploy without required arguments prints the command help instead of a short validation error', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli(['deploy'], { configDir });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stdout, /Zenifra CLI - deploy/);
+    assert.match(result.stdout, /Usage:\n  zenifra deploy --project <id> \[--branch <name>] \[--commit-sha <sha>] \[--json]/);
+    assert.match(result.stdout, /zenifra deploy watch --project <id> --build <build_id>/);
+    assert.match(result.stdout, /acompanha status e logs incrementais/i);
+    assert.match(result.stdout, /Examples:/);
+    assert.match(result.stdout, /Deploy iniciado: build_123/);
+    assert.equal(result.stderr, '');
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('deploy watch help explains that it streams incremental build logs until completion', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli(['help', 'deploy', 'watch'], { configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Zenifra CLI - deploy watch/);
+    assert.match(result.stdout, /logs incrementais do build/i);
+    assert.match(result.stdout, /estado terminal/i);
+    assert.match(result.stdout, /zenifra deploy watch --project 507f1f77bcf86cd799439012 --build build_123 --interval 2/);
+    assert.match(result.stdout, /\[2026-05-27T12:00:00.000Z] install: npm ci/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('deploy watch without required arguments prints the command help instead of a short validation error', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli(['deploy', 'watch'], { configDir });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stdout, /Zenifra CLI - deploy watch/);
+    assert.match(result.stdout, /Usage:\n  zenifra deploy watch --project <id> --build <id> \[--interval <seconds>] \[--timeout <seconds>] \[--json]/);
+    assert.match(result.stdout, /logs incrementais do build/i);
+    assert.match(result.stdout, /\[2026-05-27T12:00:00.000Z] install: npm ci/);
+    assert.equal(result.stderr, '');
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('commands with missing required arguments print command-specific help instead of terse validation errors', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  const cases = [
+    { args: ['builds'], title: 'Zenifra CLI - builds' },
+    { args: ['deployments'], title: 'Zenifra CLI - deployments' },
+    { args: ['builds', 'logs'], title: 'Zenifra CLI - builds logs' },
+    { args: ['project', 'info'], title: 'Zenifra CLI - project info' },
+    { args: ['project', 'url'], title: 'Zenifra CLI - project url' },
+    { args: ['project', 'logs'], title: 'Zenifra CLI - project logs' },
+    { args: ['project', 'metrics'], title: 'Zenifra CLI - project metrics' },
+    { args: ['project', 'network'], title: 'Zenifra CLI - project network' },
+    { args: ['project', 'image', 'set'], title: 'Zenifra CLI - project image set' },
+    { args: ['project', 'envs'], title: 'Zenifra CLI - project envs' },
+    { args: ['project', 'env', 'add'], title: 'Zenifra CLI - project env add' },
+    { args: ['project', 'env', 'update'], title: 'Zenifra CLI - project env update' },
+    { args: ['project', 'env', 'remove'], title: 'Zenifra CLI - project env remove' },
+    { args: ['project', 'instances'], title: 'Zenifra CLI - project instances' },
+    { args: ['project', 'instances', 'set'], title: 'Zenifra CLI - project instances set' },
+    { args: ['profile', 'use'], title: 'Zenifra CLI - profile use' },
+    { args: ['profile', 'edit'], title: 'Zenifra CLI - profile edit' },
+    { args: ['profile', 'remove'], title: 'Zenifra CLI - profile remove' },
+  ];
+
+  try {
+    for (const testCase of cases) {
+      const result = await runCli(testCase.args, { configDir });
+      assert.equal(result.code, 1, `${testCase.args.join(' ')}\n${result.stdout}\n${result.stderr}`);
+      assert.match(result.stdout, new RegExp(testCase.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      assert.match(result.stdout, /Usage:/);
+      assert.equal(result.stderr, '', `${testCase.args.join(' ')}\n${result.stderr}`);
+    }
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
 test('help command resolves compound commands with examples and JSON output', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {
@@ -272,6 +358,7 @@ test('every routed command has command-specific help', async () => {
     ['project', 'instances'],
     ['project', 'instances', 'set'],
     ['builds'],
+    ['builds', 'logs'],
     ['deployments'],
     ['deploy'],
     ['deploy', 'watch'],
@@ -361,6 +448,20 @@ test('plans help works without authentication', async () => {
       assert.match(result.stdout, /Examples:/);
       assert.doesNotMatch(result.stdout, /Voce precisa autenticar primeiro/);
     }
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('builds logs help is specific and documents follow mode', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli(['builds', 'logs', '--help'], { configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Usage:\n  zenifra builds logs --project <id> --build <id>/);
+    assert.match(result.stdout, /--follow/);
+    assert.match(result.stdout, /Example output:/);
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }
@@ -529,6 +630,125 @@ test('legacy session is auto-migrated into the default profile', async () => {
     assert.equal(profiles.activeProfile, 'default');
     assert.equal(profiles.profiles.default.apiKey, 'legacy_key_123');
     assert.equal(profiles.profiles.default.apiBaseUrl, apiBase);
+  });
+});
+
+test('builds logs reads a build log snapshot', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/proj_123/github/builds/build_123/logs?cursor=0&limit=200');
+    jsonResponse(res, 200, {
+      status: 'success',
+      message: 'build logs retrieved successfully',
+      data: {
+        logs: [
+          {
+            sequence: 1,
+            timestamp: '2026-06-03T12:00:00.000Z',
+            level: 'info',
+            step: 'install',
+            message: 'added 512 packages',
+            final: false,
+          },
+          {
+            sequence: 2,
+            timestamp: '2026-06-03T12:00:05.000Z',
+            level: 'info',
+            step: 'build',
+            message: 'build completed',
+            final: true,
+          },
+        ],
+        next_cursor: 2,
+        status: 'success',
+        finished: true,
+        truncated: false,
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['builds', 'logs', '--project', 'proj_123', '--build', 'build_123'], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /\[2026-06-03T12:00:00.000Z] install: added 512 packages/);
+    assert.match(result.stdout, /\[2026-06-03T12:00:05.000Z] build: build completed/);
+  });
+});
+
+test('deploy watch streams build logs until the build succeeds', async () => {
+  let logPollCount = 0;
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+
+    if (req.url === '/v1/project/proj_123/github/builds/build_123/logs?cursor=0&limit=200') {
+      logPollCount += 1;
+      jsonResponse(res, 200, {
+        status: 'success',
+        message: 'build logs retrieved successfully',
+        data: {
+          logs: [
+            {
+              sequence: 1,
+              timestamp: '2026-06-03T12:00:00.000Z',
+              level: 'info',
+              step: 'install',
+              message: 'npm ci',
+              final: false,
+            },
+          ],
+          next_cursor: 1,
+          status: 'running',
+          finished: false,
+          truncated: false,
+        },
+      });
+      return;
+    }
+
+    if (req.url === '/v1/project/proj_123/github/builds/build_123/logs?cursor=1&limit=200') {
+      logPollCount += 1;
+      jsonResponse(res, 200, {
+        status: 'success',
+        message: 'build logs retrieved successfully',
+        data: {
+          logs: [
+            {
+              sequence: 2,
+              timestamp: '2026-06-03T12:00:03.000Z',
+              level: 'info',
+              step: 'build',
+              message: 'vite build',
+              final: false,
+            },
+            {
+              sequence: 3,
+              timestamp: '2026-06-03T12:00:06.000Z',
+              level: 'info',
+              step: 'build',
+              message: 'GitHub build and deployment completed successfully',
+              final: true,
+            },
+          ],
+          next_cursor: 3,
+          status: 'success',
+          finished: true,
+          truncated: false,
+        },
+      });
+      return;
+    }
+
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['deploy', 'watch', '--project', 'proj_123', '--build', 'build_123', '--interval', '0.01'], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(logPollCount, 2);
+    assert.match(result.stdout, /\[2026-06-03T12:00:00.000Z] install: npm ci/);
+    assert.match(result.stdout, /\[2026-06-03T12:00:03.000Z] build: vite build/);
+    assert.match(result.stdout, /\[2026-06-03T12:00:06.000Z] build: GitHub build and deployment completed successfully/);
   });
 });
 
