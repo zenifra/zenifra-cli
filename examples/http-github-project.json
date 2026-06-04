@@ -1,5 +1,6 @@
 {
   "type_project": "http",
+  "exposure": "public",
   "github": {
     "repository_owner": "zenifra",
     "repository_name": "zenifra-cli",

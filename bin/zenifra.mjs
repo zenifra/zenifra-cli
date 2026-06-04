@@ -39,6 +39,7 @@ const ALLOWED_PLAN_VALUES = new Set([
 const ALLOWED_PAYMENT_MODE_VALUES = new Set(['hourly', 'monthly', 'yearly']);
 const ALLOWED_TYPE_PROJECT_VALUES = new Set(['http', 'postgresql', 'mariadb']);
 const ALLOWED_RUNTIME_VALUES = new Set(['nodejs', 'python']);
+const ALLOWED_EXPOSURE_VALUES = new Set(['public', 'private']);
 const GITHUB_RUNTIME_VERSIONS = {
   nodejs: ['24', '22', '20'],
   python: ['3.13', '3.12', '3.11'],
@@ -68,6 +69,7 @@ const WIZARD_DATABASE_PLAN_OPTIONS = [
 ];
 const WIZARD_PAYMENT_MODE_OPTIONS = ['hourly', 'monthly', 'yearly'];
 const WIZARD_TYPE_PROJECT_OPTIONS = ['http', 'postgresql', 'mariadb'];
+const WIZARD_HTTP_EXPOSURE_OPTIONS = ['public', 'private'];
 let promptInterface;
 let pipedInputPromise;
 let pipedInputIndex = 0;
@@ -114,6 +116,7 @@ Usage:
   zenifra project metrics --project <id> [--instance <id>] [--json]
   zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]
   zenifra project image set --project <id> --image <image> [--json]
+  zenifra project exposure set --project <id> --exposure <public|private> [--json]
   zenifra project envs --project <id> [--json] [--show-values]
   zenifra project env add --project <id> --name <name> --value <value> [--json]
   zenifra project env update --project <id> --name <name> --value <value> [--json]
@@ -291,11 +294,11 @@ const HELP_SPECS = [
   },
   {
     command: 'project',
-    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
+    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
     description: 'Agrupa comandos operacionais e de introspecao sobre um projeto especifico.',
     examples: ['zenifra project', 'zenifra project info --project proj_1', 'zenifra project env add --project proj_1 --name NODE_ENV --value production'],
     output: 'Zenifra CLI - project',
-    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, url, logs, metrics, network, image, envs e instances.'],
+    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, url, logs, metrics, network, image, exposure, envs e instances.'],
   },
   {
     command: 'project info',
@@ -351,6 +354,16 @@ const HELP_SPECS = [
     examples: ['zenifra project image set --project 507f1f77bcf86cd799439012 --image ghcr.io/zenifra/app:1.2.3'],
     output: 'Imagem atualizada com sucesso.',
     jsonOutput: '{"status":"success","message":"updated with success"}',
+  },
+  {
+    command: 'project exposure set',
+    usage: 'zenifra project exposure set --project <id> --exposure <public|private> [--json]',
+    description: 'Altera se um projeto HTTP expoe rota publica e dominio.',
+    flags: ['--project <id>    ID do projeto.', '--exposure <mode> Use public para criar rota publica ou private para remover exposicao.', '--json            Imprime a resposta em JSON.'],
+    examples: ['zenifra project exposure set --project 507f1f77bcf86cd799439012 --exposure private', 'zenifra project exposure set --project 507f1f77bcf86cd799439012 --exposure public --json'],
+    output: 'Campo      Valor\n---------  ----------------------------------\nExposicao  private\nDominio    -',
+    jsonOutput: '{"status":"success","message":"project exposure updated with success","exposure":"private","custom_domains":[]}',
+    notes: ['Ao mudar para private, a API remove a rota publica e dominios personalizados do projeto.'],
   },
   {
     command: 'project envs',
@@ -864,6 +877,8 @@ function estimateWizardTotal(state = {}) {
     total += 1;
     if (state.envs?.enabled) total += state.envs.count * 3;
 
+    total += 1;
+
     if (state.httpSource === 'github') {
       total += 9;
     } else if (state.httpSource === 'oci') {
@@ -877,13 +892,13 @@ function estimateWizardTotal(state = {}) {
       total += 1;
     }
 
-    if (state.planAllowsBlockIp) {
+    if (state.httpExposure !== 'private' && state.planAllowsBlockIp) {
       total += 2;
       if (state.whitelist?.enabled) total += state.whitelist.count * 3;
       if (state.blacklist?.enabled) total += state.blacklist.count * 3;
     }
 
-    if (state.planAllowsSubdomain) total += 1;
+    if (state.httpExposure !== 'private' && state.planAllowsSubdomain) total += 1;
     return total;
   }
 
@@ -1351,6 +1366,7 @@ function printProject(project) {
     { label: 'Nome', value: project.name || '-' },
     { label: 'Status', value: project.status || '-' },
     { label: 'Tipo', value: project.type_project || '-' },
+    { label: 'Exposicao', value: project.exposure || '-' },
     { label: 'Plano', value: project.plan || '-' },
     { label: 'URL', value: url || '-' },
     { label: 'Imagem', value: project.image || '-' },
@@ -1801,6 +1817,22 @@ function normalizeTypeProject(value) {
   return aliases.get(raw) || raw;
 }
 
+function normalizeExposure(value) {
+  const raw = normalizeFreeText(value);
+  const aliases = new Map([
+    ['public', 'public'],
+    ['publico', 'public'],
+    ['público', 'public'],
+    ['exposto', 'public'],
+    ['sim', 'public'],
+    ['private', 'private'],
+    ['privado', 'private'],
+    ['nao', 'private'],
+    ['não', 'private'],
+  ]);
+  return aliases.get(raw) || raw;
+}
+
 function normalizeRuntime(value) {
   const raw = normalizeFreeText(value);
   const aliases = new Map([
@@ -2041,6 +2073,16 @@ function validateCreateInput({ plan, paymentMode, config }) {
     nextConfig.github = { ...nextConfig.github, runtime: nextRuntime };
   }
 
+  if (nextTypeProject === 'http') {
+    const nextExposure = normalizeExposure(nextConfig.exposure);
+    if (!nextExposure || !ALLOWED_EXPOSURE_VALUES.has(nextExposure)) {
+      throw new CliError(`exposure invalido: "${nextConfig.exposure || ''}". Valores aceitos: ${formatAllowedValues(ALLOWED_EXPOSURE_VALUES)}. Docs: ${DOCS_CREATE_HTTP_URL}`);
+    }
+    nextConfig.exposure = nextExposure;
+  } else if (nextConfig.exposure !== undefined) {
+    throw new CliError('exposure deve ser informado apenas para projetos HTTP.');
+  }
+
   return {
     plan: nextPlan,
     paymentMode: nextPaymentMode,
@@ -2072,7 +2114,7 @@ function printWizardSummary(payload) {
   if (masked.description) lines.push(`  descricao: ${masked.description}`);
 
   if (masked.config.type_project === 'http') {
-    lines.push(`  http: porta ${masked.config.port} | instancias ${masked.config.instances} | storage ${masked.config.storage.capacity}Gi (${masked.config.storage.persistent ? 'persistente' : 'efemero'})`);
+    lines.push(`  http: exposicao ${masked.config.exposure} | porta ${masked.config.port} | instancias ${masked.config.instances} | storage ${masked.config.storage.capacity}Gi (${masked.config.storage.persistent ? 'persistente' : 'efemero'})`);
     if (masked.config.github) {
       lines.push(`  github: ${masked.config.github.repository_owner}/${masked.config.github.repository_name}@${masked.config.github.branch} | runtime ${masked.config.github.runtime}@${masked.config.github.version}`);
     } else if (masked.config.image) {
@@ -2320,8 +2362,17 @@ async function buildHttpConfig({ plan, httpPlans, availableInstances }) {
     ],
   });
 
+  const exposure = await promptWizardSelect({
+    label: 'Exposicao HTTP',
+    docs: DOCS_CREATE_HTTP_URL,
+    examples: WIZARD_HTTP_EXPOSURE_OPTIONS,
+    options: WIZARD_HTTP_EXPOSURE_OPTIONS.map((value) => ({ value })),
+  });
+  promptWizardSelect.ui.state.httpExposure = exposure;
+
+  const isPublicExposure = exposure === 'public';
   const allowBlockIp = isIpAccessEnabled(httpPlans, plan);
-  const customWhitelist = allowBlockIp
+  const customWhitelist = isPublicExposure && allowBlockIp
     ? await promptWizardPairs({
       introLabel: 'Deseja configurar whitelist personalizada de entrada?',
       docs: DOCS_CONFIGURATION_URL,
@@ -2334,7 +2385,7 @@ async function buildHttpConfig({ plan, httpPlans, availableInstances }) {
     })
     : [];
 
-  const ingress_black_list = allowBlockIp
+  const ingress_black_list = isPublicExposure && allowBlockIp
     ? await promptWizardPairs({
       introLabel: 'Deseja adicionar blacklist de entrada?',
       docs: DOCS_CONFIGURATION_URL,
@@ -2347,7 +2398,7 @@ async function buildHttpConfig({ plan, httpPlans, availableInstances }) {
     })
     : [];
 
-  const subdomain = isSubdomainCustomizable(httpPlans, plan)
+  const subdomain = isPublicExposure && isSubdomainCustomizable(httpPlans, plan)
     ? await promptWizardText({
       label: 'Subdomain personalizado',
       examples: ['minha-api'],
@@ -2357,6 +2408,7 @@ async function buildHttpConfig({ plan, httpPlans, availableInstances }) {
 
   return {
     type_project: 'http',
+    exposure,
     ...(source === 'github' ? { github: await buildHttpGithubConfig() } : { image: await buildHttpImageConfig() }),
     port,
     instances,
@@ -2652,6 +2704,33 @@ async function handleProjectImageSet(session, flags) {
 
   if (flags.json) return printJson(payload);
   process.stdout.write('Imagem atualizada com sucesso.\n');
+}
+
+async function handleProjectExposureSet(session, flags) {
+  const projectId = requireProjectId(flags, 'project exposure set');
+  if (!projectId) return
+  const exposure = normalizeExposure(flags.exposure);
+
+  if (!ALLOWED_EXPOSURE_VALUES.has(exposure)) {
+    throw new CliError('exposure invalido. Use public ou private.');
+  }
+
+  const orgId = await resolveOrgId(session, flags);
+  const payload = await request(session, flags, 'PATCH', `/project/${projectId}/exposure`, {
+    orgId,
+    body: { exposure },
+  });
+
+  if (flags.json) return printJson(payload);
+
+  printTable([
+    { field: 'Exposicao', value: payload.exposure || exposure },
+    { field: 'Dominio', value: payload.domain ? formatPublicUrl(payload.domain) : '-' },
+    { field: 'Dominios customizados', value: asArray(payload.custom_domains).join(', ') || '-' },
+  ], [
+    { label: 'Campo', value: (row) => row.field },
+    { label: 'Valor', value: (row) => row.value },
+  ]);
 }
 
 async function getProjectEnvs(session, flags, projectId, orgId) {
@@ -2972,6 +3051,7 @@ async function main() {
     if (command === 'project' && subcommand === 'metrics') return handleProjectMetrics(session, flags);
     if (command === 'project' && subcommand === 'network') return handleProjectNetwork(session, flags);
     if (command === 'project' && subcommand === 'image' && positional[2] === 'set') return handleProjectImageSet(session, flags);
+    if (command === 'project' && subcommand === 'exposure' && positional[2] === 'set') return handleProjectExposureSet(session, flags);
     if (command === 'project' && subcommand === 'envs') return handleProjectEnvs(session, flags);
     if (command === 'project' && subcommand === 'env' && positional[2] === 'add') return handleProjectEnvMutation(session, flags, 'add');
     if (command === 'project' && subcommand === 'env' && positional[2] === 'update') return handleProjectEnvMutation(session, flags, 'update');

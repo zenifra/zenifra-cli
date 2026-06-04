@@ -272,6 +272,7 @@ test('commands with missing required arguments print command-specific help inste
     { args: ['project', 'metrics'], title: 'Zenifra CLI - project metrics' },
     { args: ['project', 'network'], title: 'Zenifra CLI - project network' },
     { args: ['project', 'image', 'set'], title: 'Zenifra CLI - project image set' },
+    { args: ['project', 'exposure', 'set'], title: 'Zenifra CLI - project exposure set' },
     { args: ['project', 'envs'], title: 'Zenifra CLI - project envs' },
     { args: ['project', 'env', 'add'], title: 'Zenifra CLI - project env add' },
     { args: ['project', 'env', 'update'], title: 'Zenifra CLI - project env update' },
@@ -351,6 +352,7 @@ test('every routed command has command-specific help', async () => {
     ['project', 'metrics'],
     ['project', 'network'],
     ['project', 'image', 'set'],
+    ['project', 'exposure', 'set'],
     ['project', 'envs'],
     ['project', 'env', 'add'],
     ['project', 'env', 'update'],
@@ -1076,6 +1078,78 @@ test('project image and instances commands call their project operation endpoint
   });
 });
 
+test('project exposure set updates project exposure', async () => {
+  const calls = [];
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    calls.push({ method: req.method, url: req.url, body: await readJson(req) });
+
+    if (req.method === 'PATCH' && req.url === '/v1/project/proj_1/exposure') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        message: 'project exposure updated with success',
+        exposure: 'public',
+        domain: 'proj-1.client.zenifra.com',
+        custom_domains: [],
+      });
+      return;
+    }
+
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'exposure', 'set',
+      '--project', 'proj_1',
+      '--exposure', 'public',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(calls, [
+      { method: 'PATCH', url: '/v1/project/proj_1/exposure', body: { exposure: 'public' } },
+    ]);
+    assert.match(result.stdout, /Exposicao\s+public/);
+    assert.match(result.stdout, /Dominio\s+https:\/\/proj-1\.client\.zenifra\.com/);
+  });
+});
+
+test('project exposure set supports json output and rejects invalid exposure early', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+
+    if (req.method === 'PATCH' && req.url === '/v1/project/proj_1/exposure') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        message: 'project exposure updated with success',
+        exposure: 'private',
+        custom_domains: [],
+      });
+      return;
+    }
+
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'exposure', 'set',
+      '--project', 'proj_1',
+      '--exposure', 'privado',
+      '--json',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).exposure, 'private');
+
+    const invalid = await runCli([
+      'project', 'exposure', 'set',
+      '--project', 'proj_1',
+      '--exposure', 'internal',
+    ], { apiBase, configDir });
+
+    assert.equal(invalid.code, 1);
+    assert.match(invalid.stderr, /exposure invalido/);
+  });
+});
+
 test('create project fails early when plan is invalid', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {
@@ -1130,6 +1204,24 @@ test('create project fails when github runtime is missing for http github projec
   }
 });
 
+test('create project fails early when http exposure is missing', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli([
+      'create', 'project',
+      '--name', 'api-web',
+      '--plan', 'free',
+      '--payment-mode', 'hourly',
+      '--config', '{"type_project":"http","github":{"runtime":"nodejs"}}',
+    ], { configDir });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /exposure invalido/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
 test('create project normalizes aliases before calling API', async () => {
   let body;
   await withCliServer(async (req, res) => {
@@ -1147,13 +1239,14 @@ test('create project normalizes aliases before calling API', async () => {
       '--name', 'api-web',
       '--plan', 'premium plus',
       '--payment-mode', 'por ano',
-      '--config', '{"type_project":"HTTP","github":{"runtime":"Node.js"}}',
+      '--config', '{"type_project":"HTTP","exposure":"publico","github":{"runtime":"Node.js"}}',
     ], { apiBase, configDir });
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(body.plan, 'premium_plus');
     assert.equal(body.payment_mode, 'yearly');
     assert.equal(body.config.type_project, 'http');
+    assert.equal(body.config.exposure, 'public');
     assert.equal(body.config.github.runtime, 'nodejs');
   });
 });
@@ -1176,6 +1269,7 @@ test('create project launches the wizard for an http OCI project', async () => {
       '8080',
       '1',
       'n',
+      '1',
       's',
       'registry.example.com/team/api:1.0.0',
       's',
@@ -1188,6 +1282,7 @@ test('create project launches the wizard for an http OCI project', async () => {
     assert.equal(body.plan, 'free');
     assert.equal(body.payment_mode, 'hourly');
     assert.equal(body.config.type_project, 'http');
+    assert.equal(body.config.exposure, 'public');
     assert.deepEqual(body.config.image, {
       url: 'registry.example.com/team/api:1.0.0',
       is_public: true,
@@ -1215,6 +1310,48 @@ test('create project launches the wizard for an http OCI project', async () => {
   });
 });
 
+test('create project wizard creates a private http project without public routing prompts', async () => {
+  let body;
+  await withWizardCatalogServer(async (req, res) => {
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project');
+    body = await readJson(req);
+    jsonResponse(res, 200, { status: 'success', data: { id: 'proj_private_http_1' } });
+  }, async ({ apiBase, configDir }) => {
+    const stdin = [
+      'api-private',
+      '',
+      '1',
+      '3',
+      '1',
+      '2',
+      '8080',
+      '2',
+      'n',
+      '5',
+      'n',
+      '2',
+      's',
+      'registry.example.com/team/api:1.0.0',
+      's',
+    ].join('\n');
+
+    const result = await runCli(['create', 'project'], { apiBase, configDir, stdin });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(body.config.exposure, 'private');
+    assert.equal(body.config.subdomain, undefined);
+    assert.deepEqual(body.config.network_access, {
+      ingress_white_list: [{ cidr: '0.0.0.0/0', description: 'Allow all' }],
+      ingress_black_list: [],
+    });
+    assert.match(result.stdout, /Exposicao HTTP\* \[1=public 2=private\]/);
+    assert.doesNotMatch(result.stdout, /Subdomain personalizado/i);
+    assert.doesNotMatch(result.stdout, /whitelist personalizada/i);
+    assert.doesNotMatch(result.stdout, /blacklist de entrada/i);
+  });
+});
+
 test('create project wizard re-prompts invalid runtime and creates an http github project', async () => {
   let body;
   await withWizardCatalogServer(async (req, res) => {
@@ -1233,6 +1370,7 @@ test('create project wizard re-prompts invalid runtime and creates an http githu
       '3000',
       '1',
       'n',
+      '1',
       'zenifra',
       'zenifra-cli',
       'main',
@@ -1288,6 +1426,7 @@ test('create project wizard shows field help when user types question mark', asy
       '8080',
       '1',
       'n',
+      '1',
       's',
       'registry.example.com/team/api:1.0.0',
       's',
@@ -1366,6 +1505,7 @@ test('create project wizard hides subdomain and network prompts for http basic p
       'n',
       '5',
       'n',
+      '1',
       's',
       'registry.example.com/team/api:1.0.0',
       's',
@@ -1404,6 +1544,7 @@ test('create project wizard shows dynamic totals for a short http oci flow', asy
       'n',
       '1',
       'n',
+      '1',
       's',
       'docker.io/nginx:perl',
       's',
@@ -1412,8 +1553,8 @@ test('create project wizard shows dynamic totals for a short http oci flow', asy
     const result = await runCli(['create', 'project'], { apiBase, configDir, stdin });
 
     assert.equal(result.code, 0, result.stderr);
-    assert.match(result.stdout, /\[13\/14\] Image URL\*/);
-    assert.match(result.stdout, /\[14\/14\] Confirmar criacao do projeto\* \[s\/n\]/);
+    assert.match(result.stdout, /\[14\/15\] Image URL\*/);
+    assert.match(result.stdout, /\[15\/15\] Confirmar criacao do projeto\* \[s\/n\]/);
   });
 });
 
@@ -1506,6 +1647,7 @@ test('create project wizard can be cancelled at the confirmation step', async ()
       '8080',
       '1',
       'n',
+      '1',
       's',
       'registry.example.com/team/api:1.0.0',
       'n',
@@ -1551,6 +1693,7 @@ test('create project wizard closes the tty and prints a success table with full 
         { waitFor: /Nome da env/, send: 'PORT\n' },
         { waitFor: /Valor da env/, send: '8080\n' },
         { waitFor: /Deseja adicionar mais um item/, send: 'n\n' },
+        { waitFor: /Exposicao HTTP/, send: '1\n' },
         { waitFor: /Imagem publica/, send: 's\n' },
         { waitFor: /Image URL/, send: 'registry.example.com/team/api:1.0.0\n' },
         { waitFor: /Confirmar criacao do projeto/, send: 's\n' },

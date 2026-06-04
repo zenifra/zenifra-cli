@@ -196,12 +196,14 @@ O wizard atual cobre:
 - projetos `mariadb`
 
 `zenifra create project` nao assume valores default para `--plan` e `--payment-mode`.
+Configs HTTP nao interativas tambem devem informar `config.exposure`; use `public` para criar rota/dominio publico ou `private` para manter a aplicacao sem exposicao na internet.
 Antes de escolher um plano com o usuario, compare os catalogos com `zenifra plans` para evitar suposicoes sobre custo.
 
 Valores aceitos:
 
 - `payment_mode`: `hourly`, `monthly`, `yearly`
 - `type_project` no `config`: `http`, `postgresql`, `mariadb`
+- `exposure` no `config` HTTP: `public`, `private`
 - `plan`: `free`, `static`, `basic`, `premium`, `premium_plus`, `business`, `deep_learning_basic`, `deep_learning_premium`, `db-free`, `db-starter`, `db-basic`, `db-premium`, `db-enterprise`
 - `config.github.runtime` (quando houver GitHub em projeto HTTP): `nodejs` ou `python`
 
