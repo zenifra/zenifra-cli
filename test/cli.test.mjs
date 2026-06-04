@@ -272,6 +272,7 @@ test('commands with missing required arguments print command-specific help inste
     { args: ['project', 'metrics'], title: 'Zenifra CLI - project metrics' },
     { args: ['project', 'network'], title: 'Zenifra CLI - project network' },
     { args: ['project', 'image', 'set'], title: 'Zenifra CLI - project image set' },
+    { args: ['project', 'exposure', 'set'], title: 'Zenifra CLI - project exposure set' },
     { args: ['project', 'envs'], title: 'Zenifra CLI - project envs' },
     { args: ['project', 'env', 'add'], title: 'Zenifra CLI - project env add' },
     { args: ['project', 'env', 'update'], title: 'Zenifra CLI - project env update' },
@@ -351,6 +352,7 @@ test('every routed command has command-specific help', async () => {
     ['project', 'metrics'],
     ['project', 'network'],
     ['project', 'image', 'set'],
+    ['project', 'exposure', 'set'],
     ['project', 'envs'],
     ['project', 'env', 'add'],
     ['project', 'env', 'update'],
@@ -1073,6 +1075,78 @@ test('project image and instances commands call their project operation endpoint
       { method: 'GET', url: '/v1/project/proj_1/instances', body: null },
       { method: 'PATCH', url: '/v1/project/proj_1/instances', body: { instances: 3 } },
     ]);
+  });
+});
+
+test('project exposure set updates project exposure', async () => {
+  const calls = [];
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    calls.push({ method: req.method, url: req.url, body: await readJson(req) });
+
+    if (req.method === 'PATCH' && req.url === '/v1/project/proj_1/exposure') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        message: 'project exposure updated with success',
+        exposure: 'public',
+        domain: 'proj-1.client.zenifra.com',
+        custom_domains: [],
+      });
+      return;
+    }
+
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'exposure', 'set',
+      '--project', 'proj_1',
+      '--exposure', 'public',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(calls, [
+      { method: 'PATCH', url: '/v1/project/proj_1/exposure', body: { exposure: 'public' } },
+    ]);
+    assert.match(result.stdout, /Exposicao\s+public/);
+    assert.match(result.stdout, /Dominio\s+https:\/\/proj-1\.client\.zenifra\.com/);
+  });
+});
+
+test('project exposure set supports json output and rejects invalid exposure early', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+
+    if (req.method === 'PATCH' && req.url === '/v1/project/proj_1/exposure') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        message: 'project exposure updated with success',
+        exposure: 'private',
+        custom_domains: [],
+      });
+      return;
+    }
+
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'exposure', 'set',
+      '--project', 'proj_1',
+      '--exposure', 'privado',
+      '--json',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).exposure, 'private');
+
+    const invalid = await runCli([
+      'project', 'exposure', 'set',
+      '--project', 'proj_1',
+      '--exposure', 'internal',
+    ], { apiBase, configDir });
+
+    assert.equal(invalid.code, 1);
+    assert.match(invalid.stderr, /exposure invalido/);
   });
 });
 
