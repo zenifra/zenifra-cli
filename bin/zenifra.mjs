@@ -39,6 +39,7 @@ const ALLOWED_PLAN_VALUES = new Set([
 const ALLOWED_PAYMENT_MODE_VALUES = new Set(['hourly', 'monthly', 'yearly']);
 const ALLOWED_TYPE_PROJECT_VALUES = new Set(['http', 'postgresql', 'mariadb']);
 const ALLOWED_RUNTIME_VALUES = new Set(['nodejs', 'python']);
+const ALLOWED_EXPOSURE_VALUES = new Set(['public', 'private']);
 const GITHUB_RUNTIME_VERSIONS = {
   nodejs: ['24', '22', '20'],
   python: ['3.13', '3.12', '3.11'],
@@ -68,6 +69,7 @@ const WIZARD_DATABASE_PLAN_OPTIONS = [
 ];
 const WIZARD_PAYMENT_MODE_OPTIONS = ['hourly', 'monthly', 'yearly'];
 const WIZARD_TYPE_PROJECT_OPTIONS = ['http', 'postgresql', 'mariadb'];
+const WIZARD_HTTP_EXPOSURE_OPTIONS = ['public', 'private'];
 let promptInterface;
 let pipedInputPromise;
 let pipedInputIndex = 0;
@@ -864,6 +866,8 @@ function estimateWizardTotal(state = {}) {
     total += 1;
     if (state.envs?.enabled) total += state.envs.count * 3;
 
+    total += 1;
+
     if (state.httpSource === 'github') {
       total += 9;
     } else if (state.httpSource === 'oci') {
@@ -877,13 +881,13 @@ function estimateWizardTotal(state = {}) {
       total += 1;
     }
 
-    if (state.planAllowsBlockIp) {
+    if (state.httpExposure !== 'private' && state.planAllowsBlockIp) {
       total += 2;
       if (state.whitelist?.enabled) total += state.whitelist.count * 3;
       if (state.blacklist?.enabled) total += state.blacklist.count * 3;
     }
 
-    if (state.planAllowsSubdomain) total += 1;
+    if (state.httpExposure !== 'private' && state.planAllowsSubdomain) total += 1;
     return total;
   }
 
@@ -1801,6 +1805,22 @@ function normalizeTypeProject(value) {
   return aliases.get(raw) || raw;
 }
 
+function normalizeExposure(value) {
+  const raw = normalizeFreeText(value);
+  const aliases = new Map([
+    ['public', 'public'],
+    ['publico', 'public'],
+    ['público', 'public'],
+    ['exposto', 'public'],
+    ['sim', 'public'],
+    ['private', 'private'],
+    ['privado', 'private'],
+    ['nao', 'private'],
+    ['não', 'private'],
+  ]);
+  return aliases.get(raw) || raw;
+}
+
 function normalizeRuntime(value) {
   const raw = normalizeFreeText(value);
   const aliases = new Map([
@@ -2041,6 +2061,16 @@ function validateCreateInput({ plan, paymentMode, config }) {
     nextConfig.github = { ...nextConfig.github, runtime: nextRuntime };
   }
 
+  if (nextTypeProject === 'http') {
+    const nextExposure = normalizeExposure(nextConfig.exposure);
+    if (!nextExposure || !ALLOWED_EXPOSURE_VALUES.has(nextExposure)) {
+      throw new CliError(`exposure invalido: "${nextConfig.exposure || ''}". Valores aceitos: ${formatAllowedValues(ALLOWED_EXPOSURE_VALUES)}. Docs: ${DOCS_CREATE_HTTP_URL}`);
+    }
+    nextConfig.exposure = nextExposure;
+  } else if (nextConfig.exposure !== undefined) {
+    throw new CliError('exposure deve ser informado apenas para projetos HTTP.');
+  }
+
   return {
     plan: nextPlan,
     paymentMode: nextPaymentMode,
@@ -2072,7 +2102,7 @@ function printWizardSummary(payload) {
   if (masked.description) lines.push(`  descricao: ${masked.description}`);
 
   if (masked.config.type_project === 'http') {
-    lines.push(`  http: porta ${masked.config.port} | instancias ${masked.config.instances} | storage ${masked.config.storage.capacity}Gi (${masked.config.storage.persistent ? 'persistente' : 'efemero'})`);
+    lines.push(`  http: exposicao ${masked.config.exposure} | porta ${masked.config.port} | instancias ${masked.config.instances} | storage ${masked.config.storage.capacity}Gi (${masked.config.storage.persistent ? 'persistente' : 'efemero'})`);
     if (masked.config.github) {
       lines.push(`  github: ${masked.config.github.repository_owner}/${masked.config.github.repository_name}@${masked.config.github.branch} | runtime ${masked.config.github.runtime}@${masked.config.github.version}`);
     } else if (masked.config.image) {
@@ -2320,8 +2350,17 @@ async function buildHttpConfig({ plan, httpPlans, availableInstances }) {
     ],
   });
 
+  const exposure = await promptWizardSelect({
+    label: 'Exposicao HTTP',
+    docs: DOCS_CREATE_HTTP_URL,
+    examples: WIZARD_HTTP_EXPOSURE_OPTIONS,
+    options: WIZARD_HTTP_EXPOSURE_OPTIONS.map((value) => ({ value })),
+  });
+  promptWizardSelect.ui.state.httpExposure = exposure;
+
+  const isPublicExposure = exposure === 'public';
   const allowBlockIp = isIpAccessEnabled(httpPlans, plan);
-  const customWhitelist = allowBlockIp
+  const customWhitelist = isPublicExposure && allowBlockIp
     ? await promptWizardPairs({
       introLabel: 'Deseja configurar whitelist personalizada de entrada?',
       docs: DOCS_CONFIGURATION_URL,
@@ -2334,7 +2373,7 @@ async function buildHttpConfig({ plan, httpPlans, availableInstances }) {
     })
     : [];
 
-  const ingress_black_list = allowBlockIp
+  const ingress_black_list = isPublicExposure && allowBlockIp
     ? await promptWizardPairs({
       introLabel: 'Deseja adicionar blacklist de entrada?',
       docs: DOCS_CONFIGURATION_URL,
@@ -2347,7 +2386,7 @@ async function buildHttpConfig({ plan, httpPlans, availableInstances }) {
     })
     : [];
 
-  const subdomain = isSubdomainCustomizable(httpPlans, plan)
+  const subdomain = isPublicExposure && isSubdomainCustomizable(httpPlans, plan)
     ? await promptWizardText({
       label: 'Subdomain personalizado',
       examples: ['minha-api'],
@@ -2357,6 +2396,7 @@ async function buildHttpConfig({ plan, httpPlans, availableInstances }) {
 
   return {
     type_project: 'http',
+    exposure,
     ...(source === 'github' ? { github: await buildHttpGithubConfig() } : { image: await buildHttpImageConfig() }),
     port,
     instances,

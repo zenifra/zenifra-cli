@@ -1,5 +1,6 @@
 {
   "type_project": "http",
+  "exposure": "public",
   "image": {
     "url": "docker.io/nginx:perl",
     "is_public": true
