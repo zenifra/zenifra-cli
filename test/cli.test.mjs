@@ -277,6 +277,9 @@ test('commands with missing required arguments print command-specific help inste
     { args: ['project', 'env', 'add'], title: 'Zenifra CLI - project env add' },
     { args: ['project', 'env', 'update'], title: 'Zenifra CLI - project env update' },
     { args: ['project', 'env', 'remove'], title: 'Zenifra CLI - project env remove' },
+    { args: ['project', 'autoscaling'], title: 'Zenifra CLI - project autoscaling' },
+    { args: ['project', 'autoscaling', 'set'], title: 'Zenifra CLI - project autoscaling set' },
+    { args: ['project', 'autoscaling', 'disable'], title: 'Zenifra CLI - project autoscaling disable' },
     { args: ['project', 'instances'], title: 'Zenifra CLI - project instances' },
     { args: ['project', 'instances', 'set'], title: 'Zenifra CLI - project instances set' },
     { args: ['profile', 'use'], title: 'Zenifra CLI - profile use' },
@@ -1027,7 +1030,7 @@ test('project logs prints log snapshots from the logs endpoint', async () => {
   });
 });
 
-test('project image and instances commands call their project operation endpoints', async () => {
+test('project image, autoscaling and instances commands call their project operation endpoints', async () => {
   const calls = [];
 
   await withCliServer(async (req, res) => {
@@ -1041,6 +1044,30 @@ test('project image and instances commands call their project operation endpoint
 
     if (req.method === 'GET' && req.url === '/v1/project/proj_1/instances') {
       jsonResponse(res, 200, { status: 'success', data: [{ instance: 'web-1' }] });
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/v1/project/proj_1') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: {
+          id: 'proj_1',
+          additional_info: {
+            autoscaling: {
+              enabled: true,
+              min_instances: 2,
+              max_instances: 8,
+              target_cpu_utilization_percent: 70,
+              target_memory_utilization_percent: 80,
+            },
+          },
+        },
+      });
+      return;
+    }
+
+    if (req.method === 'PATCH' && req.url === '/v1/project/proj_1/autoscaling') {
+      jsonResponse(res, 200, { status: 'success', message: 'project autoscaling updated with success' });
       return;
     }
 
@@ -1061,6 +1088,22 @@ test('project image and instances commands call their project operation endpoint
       '--project', 'proj_1',
       '--json',
     ], { apiBase, configDir });
+    const showAutoscaling = await runCli([
+      'project', 'autoscaling',
+      '--project', 'proj_1',
+    ], { apiBase, configDir });
+    const setAutoscaling = await runCli([
+      'project', 'autoscaling', 'set',
+      '--project', 'proj_1',
+      '--min', '2',
+      '--max', '8',
+      '--cpu', '70',
+      '--memory', '80',
+    ], { apiBase, configDir });
+    const disableAutoscaling = await runCli([
+      'project', 'autoscaling', 'disable',
+      '--project', 'proj_1',
+    ], { apiBase, configDir });
     const setInstances = await runCli([
       'project', 'instances', 'set',
       '--project', 'proj_1',
@@ -1069,10 +1112,17 @@ test('project image and instances commands call their project operation endpoint
 
     assert.equal(setImage.code, 0, setImage.stderr);
     assert.equal(listInstances.code, 0, listInstances.stderr);
+    assert.equal(showAutoscaling.code, 0, showAutoscaling.stderr);
+    assert.match(showAutoscaling.stdout, /ativo/);
+    assert.equal(setAutoscaling.code, 0, setAutoscaling.stderr);
+    assert.equal(disableAutoscaling.code, 0, disableAutoscaling.stderr);
     assert.equal(setInstances.code, 0, setInstances.stderr);
     assert.deepEqual(calls, [
       { method: 'PATCH', url: '/v1/project/proj_1/image', body: { image: 'ghcr.io/zenifra/app:1.2.3' } },
       { method: 'GET', url: '/v1/project/proj_1/instances', body: null },
+      { method: 'GET', url: '/v1/project/proj_1', body: null },
+      { method: 'PATCH', url: '/v1/project/proj_1/autoscaling', body: { enabled: true, min_instances: 2, max_instances: 8, target_cpu_utilization_percent: 70, target_memory_utilization_percent: 80 } },
+      { method: 'PATCH', url: '/v1/project/proj_1/autoscaling', body: { enabled: false } },
       { method: 'PATCH', url: '/v1/project/proj_1/instances', body: { instances: 3 } },
     ]);
   });

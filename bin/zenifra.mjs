@@ -121,6 +121,9 @@ Usage:
   zenifra project env add --project <id> --name <name> --value <value> [--json]
   zenifra project env update --project <id> --name <name> --value <value> [--json]
   zenifra project env remove --project <id> --name <name> [--json]
+  zenifra project autoscaling --project <id> [--json]
+  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]
+  zenifra project autoscaling disable --project <id> [--json]
   zenifra project instances --project <id> [--json]
   zenifra project instances set --project <id> --count <n> [--json]
   zenifra builds --project <id> [--page <n>] [--limit <n>] [--branch <name>] [--status <status>] [--json]
@@ -294,11 +297,11 @@ const HELP_SPECS = [
   },
   {
     command: 'project',
-    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
+    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project autoscaling --project <id> [--json]\n  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]\n  zenifra project autoscaling disable --project <id> [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
     description: 'Agrupa comandos operacionais e de introspecao sobre um projeto especifico.',
     examples: ['zenifra project', 'zenifra project info --project proj_1', 'zenifra project env add --project proj_1 --name NODE_ENV --value production'],
     output: 'Zenifra CLI - project',
-    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, url, logs, metrics, network, image, exposure, envs e instances.'],
+    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, url, logs, metrics, network, image, exposure, autoscaling, envs e instances.'],
   },
   {
     command: 'project info',
@@ -404,6 +407,33 @@ const HELP_SPECS = [
     output: 'Env NODE_ENV removida com sucesso.',
     jsonOutput: '{"status":"success","message":"updated with success","envs":[]}',
     notes: ['Falha se a variavel nao existir.'],
+  },
+  {
+    command: 'project autoscaling',
+    usage: 'zenifra project autoscaling --project <id> [--json]',
+    description: 'Mostra a configuracao de auto-scaling HTTP do projeto.',
+    flags: ['--project <id>  ID do projeto.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project autoscaling --project 507f1f77bcf86cd799439012'],
+    output: 'Campo       Valor\n----------  -----\nStatus      ativo\nMinimo      2\nMaximo      8\nCPU alvo    70%\nMemoria     80%',
+    jsonOutput: '{"enabled":true,"min_instances":2,"max_instances":8,"target_cpu_utilization_percent":70,"target_memory_utilization_percent":80}',
+  },
+  {
+    command: 'project autoscaling set',
+    usage: 'zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]',
+    description: 'Ativa ou atualiza o auto-scaling HTTP do projeto.',
+    flags: ['--project <id>    ID do projeto.', '--min <n>        Minimo de instancias reservadas.', '--max <n>        Maximo de instancias permitidas.', '--cpu <percent>  CPU alvo. Padrao da API: 70.', '--memory <percent> Memoria alvo. Padrao da API: 80.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra project autoscaling set --project 507f1f77bcf86cd799439012 --min 2 --max 8 --cpu 70 --memory 80'],
+    output: 'Auto-scaling atualizado: 2-8 instancias.',
+    jsonOutput: '{"status":"success","message":"project autoscaling updated with success","data":{"autoscaling":{"enabled":true,"min_instances":2,"max_instances":8}}}',
+  },
+  {
+    command: 'project autoscaling disable',
+    usage: 'zenifra project autoscaling disable --project <id> [--json]',
+    description: 'Desativa o auto-scaling HTTP e volta para instancias fixas no minimo configurado.',
+    flags: ['--project <id>  ID do projeto.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project autoscaling disable --project 507f1f77bcf86cd799439012'],
+    output: 'Auto-scaling desativado.',
+    jsonOutput: '{"status":"success","message":"project autoscaling updated with success","data":{"autoscaling":{"enabled":false}}}',
   },
   {
     command: 'project instances',
@@ -2839,6 +2869,98 @@ async function handleProjectInstancesSet(session, flags) {
   process.stdout.write(`Quantidade de instancias atualizada para ${instances}.\n`);
 }
 
+function parseAutoscalingPositiveInteger(value, flagName) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new CliError(`Informe ${flagName} <n> com um inteiro positivo.`);
+  }
+  return parsed;
+}
+
+function autoscalingFromProject(project) {
+  return project?.additional_info?.autoscaling || project?.autoscaling || { enabled: false };
+}
+
+function printAutoscaling(autoscaling) {
+  printTable([
+    {
+      status: autoscaling.enabled ? 'ativo' : 'inativo',
+      min: autoscaling.min_instances || '-',
+      max: autoscaling.max_instances || '-',
+      cpu: autoscaling.target_cpu_utilization_percent ? `${autoscaling.target_cpu_utilization_percent}%` : '-',
+      memory: autoscaling.target_memory_utilization_percent ? `${autoscaling.target_memory_utilization_percent}%` : '-',
+    },
+  ], [
+    { label: 'Status', value: (item) => item.status },
+    { label: 'Minimo', value: (item) => item.min },
+    { label: 'Maximo', value: (item) => item.max },
+    { label: 'CPU alvo', value: (item) => item.cpu },
+    { label: 'Memoria alvo', value: (item) => item.memory },
+  ]);
+}
+
+async function handleProjectAutoscaling(session, flags) {
+  const projectId = requireProjectId(flags, 'project autoscaling');
+  if (!projectId) return
+  const orgId = await resolveOrgId(session, flags);
+  const project = await getProject(session, flags, projectId, orgId);
+  const autoscaling = autoscalingFromProject(project);
+
+  if (flags.json) return printJson(autoscaling);
+  printAutoscaling(autoscaling);
+}
+
+async function handleProjectAutoscalingSet(session, flags) {
+  const projectId = requireProjectId(flags, 'project autoscaling set');
+  if (!projectId) return
+  if (flags.min === undefined || flags.max === undefined) {
+    printCommandHelpAndFail('project autoscaling set')
+    return
+  }
+
+  const minInstances = parseAutoscalingPositiveInteger(flags.min, '--min');
+  const maxInstances = parseAutoscalingPositiveInteger(flags.max, '--max');
+  if (maxInstances < minInstances) {
+    throw new CliError('Informe --max maior ou igual a --min.');
+  }
+
+  const body = {
+    enabled: true,
+    min_instances: minInstances,
+    max_instances: maxInstances,
+  };
+
+  if (flags.cpu !== undefined) {
+    body.target_cpu_utilization_percent = parseAutoscalingPositiveInteger(flags.cpu, '--cpu');
+  }
+  if (flags.memory !== undefined) {
+    body.target_memory_utilization_percent = parseAutoscalingPositiveInteger(flags.memory, '--memory');
+  }
+
+  const orgId = await resolveOrgId(session, flags);
+  const payload = await request(session, flags, 'PATCH', `/project/${projectId}/autoscaling`, {
+    orgId,
+    body,
+  });
+
+  if (flags.json) return printJson(payload);
+  process.stdout.write(`Auto-scaling atualizado: ${minInstances}-${maxInstances} instancias.\n`);
+}
+
+async function handleProjectAutoscalingDisable(session, flags) {
+  const projectId = requireProjectId(flags, 'project autoscaling disable');
+  if (!projectId) return
+
+  const orgId = await resolveOrgId(session, flags);
+  const payload = await request(session, flags, 'PATCH', `/project/${projectId}/autoscaling`, {
+    orgId,
+    body: { enabled: false },
+  });
+
+  if (flags.json) return printJson(payload);
+  process.stdout.write('Auto-scaling desativado.\n');
+}
+
 function buildQuery(flags, allowedKeys) {
   const params = new URLSearchParams();
   for (const key of allowedKeys) {
@@ -3056,6 +3178,9 @@ async function main() {
     if (command === 'project' && subcommand === 'env' && positional[2] === 'add') return handleProjectEnvMutation(session, flags, 'add');
     if (command === 'project' && subcommand === 'env' && positional[2] === 'update') return handleProjectEnvMutation(session, flags, 'update');
     if (command === 'project' && subcommand === 'env' && positional[2] === 'remove') return handleProjectEnvMutation(session, flags, 'remove');
+    if (command === 'project' && subcommand === 'autoscaling' && positional[2] === 'set') return handleProjectAutoscalingSet(session, flags);
+    if (command === 'project' && subcommand === 'autoscaling' && positional[2] === 'disable') return handleProjectAutoscalingDisable(session, flags);
+    if (command === 'project' && subcommand === 'autoscaling') return handleProjectAutoscaling(session, flags);
     if (command === 'project' && subcommand === 'instances' && positional[2] === 'set') return handleProjectInstancesSet(session, flags);
     if (command === 'project' && subcommand === 'instances') return handleProjectInstances(session, flags);
     if (command === 'builds' && subcommand === 'logs') return handleBuildLogs(session, flags);
