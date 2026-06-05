@@ -32,6 +32,8 @@
   ],
   "scripts": {
     "check": "node --check bin/zenifra.mjs",
+    "check:staging-autoscaling-regression": "node --check scripts/staging-autoscaling-regression.mjs",
+    "test:staging:autoscaling": "node scripts/staging-autoscaling-regression.mjs",
     "test": "node --test"
   }
 }

@@ -67,6 +67,10 @@ zenifra project envs --project <project-id>
 zenifra project env add --project <project-id> --name NODE_ENV --value production
 zenifra project env update --project <project-id> --name NODE_ENV --value staging
 zenifra project env remove --project <project-id> --name NODE_ENV
+zenifra project autoscaling --project <project-id>
+zenifra project autoscaling set --project <project-id> --min 2 --max 8 --cpu 70 --memory 80
+zenifra project autoscaling disable --project <project-id>
+zenifra project autoscaling events --project <project-id> --direction scale_up --page 1 --limit 10
 zenifra project instances --project <project-id>
 zenifra project instances set --project <project-id> --count 3
 zenifra builds --project <project-id>

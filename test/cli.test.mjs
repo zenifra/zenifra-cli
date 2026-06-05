@@ -277,6 +277,10 @@ test('commands with missing required arguments print command-specific help inste
     { args: ['project', 'env', 'add'], title: 'Zenifra CLI - project env add' },
     { args: ['project', 'env', 'update'], title: 'Zenifra CLI - project env update' },
     { args: ['project', 'env', 'remove'], title: 'Zenifra CLI - project env remove' },
+    { args: ['project', 'autoscaling'], title: 'Zenifra CLI - project autoscaling' },
+    { args: ['project', 'autoscaling', 'set'], title: 'Zenifra CLI - project autoscaling set' },
+    { args: ['project', 'autoscaling', 'disable'], title: 'Zenifra CLI - project autoscaling disable' },
+    { args: ['project', 'autoscaling', 'events'], title: 'Zenifra CLI - project autoscaling events' },
     { args: ['project', 'instances'], title: 'Zenifra CLI - project instances' },
     { args: ['project', 'instances', 'set'], title: 'Zenifra CLI - project instances set' },
     { args: ['profile', 'use'], title: 'Zenifra CLI - profile use' },
@@ -1027,7 +1031,83 @@ test('project logs prints log snapshots from the logs endpoint', async () => {
   });
 });
 
-test('project image and instances commands call their project operation endpoints', async () => {
+test('project autoscaling events lists paginated autoscaling history', async () => {
+  const calls = [];
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    calls.push({ method: req.method, url: req.url });
+
+    if (req.method === 'GET' && req.url === '/v1/project/proj_1/autoscaling/events?direction=scale_up&from=2026-06-01T00%3A00%3A00.000Z&page=2&limit=10') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: {
+          events: [{
+            id: 'event-1',
+            direction: 'scale_up',
+            previous_instances: 2,
+            new_instances: 5,
+            desired_instances: 5,
+            trigger_metric: 'cpu',
+            current_cpu_utilization_percent: 91,
+            target_cpu_utilization_percent: 70,
+            current_memory_utilization_percent: 62,
+            target_memory_utilization_percent: 80,
+            reason: 'increased_capacity',
+            occurred_at: '2026-06-05T21:40:00.000Z',
+          }],
+          pagination: { page: 2, limit: 10, total: 11, total_pages: 2 },
+        },
+      });
+      return;
+    }
+
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'autoscaling', 'events',
+      '--project', 'proj_1',
+      '--direction', 'scale_up',
+      '--from', '2026-06-01T00:00:00.000Z',
+      '--page', '2',
+      '--limit', '10',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /scale_up/);
+    assert.match(result.stdout, /2 -> 5/);
+    assert.match(result.stdout, /CPU 91%\/70%/);
+    assert.match(result.stdout, /increased_capacity/);
+    assert.doesNotMatch(result.stdout, /Kubernetes|HPA|kubernetes_/i);
+    assert.match(result.stdout, /Pagina 2 de 2/);
+    assert.deepEqual(calls, [
+      { method: 'GET', url: '/v1/project/proj_1/autoscaling/events?direction=scale_up&from=2026-06-01T00%3A00%3A00.000Z&page=2&limit=10' },
+    ]);
+  });
+});
+
+test('project autoscaling set validates target percentages before calling the API', async () => {
+  const calls = [];
+
+  await withCliServer(async (req, res) => {
+    calls.push({ method: req.method, url: req.url });
+    jsonResponse(res, 500, { status: 'failed', message: 'unexpected API call' });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'autoscaling', 'set',
+      '--project', 'proj_1',
+      '--min', '1',
+      '--max', '5',
+      '--cpu', '101',
+    ], { apiBase, configDir });
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /Informe --cpu entre 1 e 100/);
+    assert.deepEqual(calls, []);
+  });
+});
+
+test('project image, autoscaling and instances commands call their project operation endpoints', async () => {
   const calls = [];
 
   await withCliServer(async (req, res) => {
@@ -1041,6 +1121,30 @@ test('project image and instances commands call their project operation endpoint
 
     if (req.method === 'GET' && req.url === '/v1/project/proj_1/instances') {
       jsonResponse(res, 200, { status: 'success', data: [{ instance: 'web-1' }] });
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/v1/project/proj_1') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: {
+          id: 'proj_1',
+          additional_info: {
+            autoscaling: {
+              enabled: true,
+              min_instances: 2,
+              max_instances: 8,
+              target_cpu_utilization_percent: 70,
+              target_memory_utilization_percent: 80,
+            },
+          },
+        },
+      });
+      return;
+    }
+
+    if (req.method === 'PATCH' && req.url === '/v1/project/proj_1/autoscaling') {
+      jsonResponse(res, 200, { status: 'success', message: 'project autoscaling updated with success' });
       return;
     }
 
@@ -1061,6 +1165,22 @@ test('project image and instances commands call their project operation endpoint
       '--project', 'proj_1',
       '--json',
     ], { apiBase, configDir });
+    const showAutoscaling = await runCli([
+      'project', 'autoscaling',
+      '--project', 'proj_1',
+    ], { apiBase, configDir });
+    const setAutoscaling = await runCli([
+      'project', 'autoscaling', 'set',
+      '--project', 'proj_1',
+      '--min', '2',
+      '--max', '8',
+      '--cpu', '70',
+      '--memory', '80',
+    ], { apiBase, configDir });
+    const disableAutoscaling = await runCli([
+      'project', 'autoscaling', 'disable',
+      '--project', 'proj_1',
+    ], { apiBase, configDir });
     const setInstances = await runCli([
       'project', 'instances', 'set',
       '--project', 'proj_1',
@@ -1069,10 +1189,17 @@ test('project image and instances commands call their project operation endpoint
 
     assert.equal(setImage.code, 0, setImage.stderr);
     assert.equal(listInstances.code, 0, listInstances.stderr);
+    assert.equal(showAutoscaling.code, 0, showAutoscaling.stderr);
+    assert.match(showAutoscaling.stdout, /ativo/);
+    assert.equal(setAutoscaling.code, 0, setAutoscaling.stderr);
+    assert.equal(disableAutoscaling.code, 0, disableAutoscaling.stderr);
     assert.equal(setInstances.code, 0, setInstances.stderr);
     assert.deepEqual(calls, [
       { method: 'PATCH', url: '/v1/project/proj_1/image', body: { image: 'ghcr.io/zenifra/app:1.2.3' } },
       { method: 'GET', url: '/v1/project/proj_1/instances', body: null },
+      { method: 'GET', url: '/v1/project/proj_1', body: null },
+      { method: 'PATCH', url: '/v1/project/proj_1/autoscaling', body: { enabled: true, min_instances: 2, max_instances: 8, target_cpu_utilization_percent: 70, target_memory_utilization_percent: 80 } },
+      { method: 'PATCH', url: '/v1/project/proj_1/autoscaling', body: { enabled: false } },
       { method: 'PATCH', url: '/v1/project/proj_1/instances', body: { instances: 3 } },
     ]);
   });
