@@ -15,10 +15,28 @@ const apiBase = (process.env.ZENIFRA_API_URL_STG || process.env.ZENIFRA_API_URL 
 const apiKey = process.env.ZENIFRA_API_KEY_STG || process.env.ZENIFRA_API_KEY;
 const organizationId = process.env.ZENIFRA_ORGANIZATION_ID_STG || process.env.ZENIFRA_ORGANIZATION_ID;
 const skipHourlyWait = process.env.ZENIFRA_STAGING_SKIP_HOURLY_WAIT === '1';
+const allowMutations = process.env.ZENIFRA_STAGING_ALLOW_MUTATIONS === '1';
 
 if (!apiKey) {
   throw new Error('Missing ZENIFRA_API_KEY_STG or ZENIFRA_API_KEY');
 }
+
+function assertSafeStagingTarget() {
+  const target = new URL(apiBase);
+  const hostname = target.hostname.toLowerCase();
+  const isLocal = ['localhost', '127.0.0.1', '::1'].includes(hostname);
+  const isStaging = hostname.endsWith('.zenifra.com')
+    && (hostname.includes('stg') || hostname.includes('staging'));
+
+  if (hostname === 'api.zenifra.com' || (!isLocal && !isStaging)) {
+    throw new Error(`Refusing mutating regression against non-staging host: ${hostname}`);
+  }
+  if (!allowMutations) {
+    throw new Error('Set ZENIFRA_STAGING_ALLOW_MUTATIONS=1 to enable staging project creation and cleanup');
+  }
+}
+
+assertSafeStagingTarget();
 
 const createdProjects = [];
 const evidence = [];
@@ -92,6 +110,7 @@ async function api(method, route, body, allowStatuses = []) {
     method,
     headers: authHeaders(),
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   });
   const text = await response.text();
   let payload = null;
@@ -109,7 +128,7 @@ async function api(method, route, body, allowStatuses = []) {
   return { status: response.status, payload };
 }
 
-function httpConfig({ persistent = false, capacity = 1 } = {}) {
+function httpConfig({ persistent = false, capacity = 1, autoscaling } = {}) {
   return {
     type_project: 'http',
     exposure: 'public',
@@ -119,6 +138,7 @@ function httpConfig({ persistent = false, capacity = 1 } = {}) {
     },
     port: 80,
     instances: 1,
+    ...(autoscaling ? { autoscaling } : {}),
     storage: persistent
       ? { persistent: true, dir_path_to_persist: '/data', capacity }
       : { persistent: false, capacity },
@@ -285,11 +305,21 @@ function setAutoscaling(id, min, max, cpu = 1, memory = 1) {
 
 async function changePlan(id, plan) {
   const response = await api('PATCH', `/project/${id}/plan`, { plan });
-  await wait(12_000);
-  return {
-    status: response.status,
-    project: projectData(cliJson(['project', 'info', '--project', id])),
-  };
+  const deadline = Date.now() + 180_000;
+  let project = null;
+
+  while (Date.now() < deadline) {
+    project = projectData(cliJson(['project', 'info', '--project', id]));
+    if (project.plan === plan) {
+      return {
+        status: response.status,
+        project,
+      };
+    }
+    await wait(5_000);
+  }
+
+  throw new Error(`Project ${id} did not reach plan ${plan}. Last state: ${JSON.stringify(project)}`);
 }
 
 async function stopProject(id) {
@@ -301,7 +331,12 @@ async function deleteProject(id) {
 }
 
 async function hourlyUsage(id) {
-  return api('GET', `/project/${id}/billing/hourly-usage?page=1&limit=50`, undefined, [404]);
+  return {
+    status: 200,
+    payload: {
+      data: cliJson(['project', 'billing', 'usage', '--project', id, '--page', '1', '--limit', '50']),
+    },
+  };
 }
 
 function nextClosedHourWithMargin(now = new Date()) {
@@ -311,22 +346,122 @@ function nextClosedHourWithMargin(now = new Date()) {
   return new Date(hour.getTime() + 6 * 60 * 1000);
 }
 
-async function waitHourlyUsage(id) {
+function moneyCents(value, label) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error(`Invalid ${label}: ${JSON.stringify(value)}`);
+  }
+  return Math.round(amount * 100);
+}
+
+function usageQuantity(value, label) {
+  const quantity = Number(value);
+  if (!Number.isFinite(quantity) || quantity < 0) {
+    throw new Error(`Invalid ${label}: ${JSON.stringify(value)}`);
+  }
+  return quantity;
+}
+
+function validateHourlyUsage(data, { requireStorage = false } = {}) {
+  const hours = Array.isArray(data?.hours) ? data.hours : [];
+  const summary = data?.summary;
+
+  if (hours.length === 0) {
+    throw new Error('Hourly usage response does not contain closed hours');
+  }
+  if (!summary || summary.currency !== 'brl') {
+    throw new Error(`Hourly usage summary has invalid currency: ${JSON.stringify(summary?.currency)}`);
+  }
+
+  let computeCents = 0;
+  let storageCents = 0;
+  let totalCents = 0;
+  let hasComputeUsage = false;
+  let hasStorageUsage = false;
+
+  for (const hour of hours) {
+    if (hour?.currency !== 'brl') {
+      throw new Error(`Hourly usage row has invalid currency: ${JSON.stringify(hour?.currency)}`);
+    }
+    if (!['pending', 'charged'].includes(hour?.status)) {
+      throw new Error(`Hourly usage row has invalid status: ${JSON.stringify(hour?.status)}`);
+    }
+    if (Number.isNaN(Date.parse(hour?.hour_start)) || Number.isNaN(Date.parse(hour?.hour_end))) {
+      throw new Error(`Hourly usage row has invalid period: ${JSON.stringify(hour)}`);
+    }
+
+    const rowComputeCents = moneyCents(hour.compute_amount, 'hour.compute_amount');
+    const rowStorageCents = moneyCents(hour.storage_amount, 'hour.storage_amount');
+    const rowTotalCents = moneyCents(hour.total_amount, 'hour.total_amount');
+    if (rowTotalCents !== rowComputeCents + rowStorageCents) {
+      throw new Error(`Hourly usage row total does not match compute plus storage: ${JSON.stringify(hour)}`);
+    }
+
+    const instanceHours = usageQuantity(hour.compute_instance_hours, 'hour.compute_instance_hours');
+    const storageGbHours = usageQuantity(hour.storage_gb_hours, 'hour.storage_gb_hours');
+    hasComputeUsage ||= instanceHours > 0;
+    hasStorageUsage ||= storageGbHours > 0 && rowStorageCents > 0;
+    computeCents += rowComputeCents;
+    storageCents += rowStorageCents;
+    totalCents += rowTotalCents;
+  }
+
+  const summaryComputeCents = moneyCents(summary.compute_amount, 'summary.compute_amount');
+  const summaryStorageCents = moneyCents(summary.storage_amount, 'summary.storage_amount');
+  const summaryTotalCents = moneyCents(summary.total_amount, 'summary.total_amount');
+  if (summaryTotalCents !== summaryComputeCents + summaryStorageCents) {
+    throw new Error(`Hourly usage summary total does not match compute plus storage: ${JSON.stringify(summary)}`);
+  }
+
+  const reportedTotal = Number(data?.pagination?.total);
+  if (Number.isInteger(reportedTotal) && reportedTotal === hours.length
+    && (summaryComputeCents !== computeCents
+      || summaryStorageCents !== storageCents
+      || summaryTotalCents !== totalCents)) {
+    throw new Error('Hourly usage summary does not match the returned rows');
+  }
+  if (!hasComputeUsage) {
+    throw new Error('Hourly usage does not contain compute instance-hours');
+  }
+  if (requireStorage && !hasStorageUsage) {
+    throw new Error('Hourly usage does not contain billable persistent storage GB-hours');
+  }
+
+  return {
+    hours: hours.length,
+    computeCents: summaryComputeCents,
+    storageCents: summaryStorageCents,
+    totalCents: summaryTotalCents,
+  };
+}
+
+async function waitHourlyUsage(id, { requireStorage = false } = {}) {
   if (skipHourlyWait) {
     return {
       skipped: true,
       before: await hourlyUsage(id),
       after: null,
+      validation: null,
     };
   }
 
   const before = await hourlyUsage(id);
+  const beforeTotal = before.payload?.data?.pagination?.total || before.payload?.data?.hours?.length || 0;
+  if (beforeTotal > 0) {
+    return {
+      skipped: false,
+      before,
+      after: before,
+      validation: validateHourlyUsage(before.payload.data, { requireStorage }),
+    };
+  }
+
   const target = nextClosedHourWithMargin();
 
   log('waiting hourly usage window', {
     id,
     target: target.toISOString(),
-    before_total: before.payload?.data?.pagination?.total || 0,
+    before_total: beforeTotal,
   });
 
   while (Date.now() < target.getTime()) {
@@ -342,7 +477,12 @@ async function waitHourlyUsage(id) {
     log('hourly usage poll', { id, total });
 
     if (total > 0) {
-      return { skipped: false, before, after };
+      return {
+        skipped: false,
+        before,
+        after,
+        validation: validateHourlyUsage(after.payload.data, { requireStorage }),
+      };
     }
 
     await wait(60_000);
@@ -385,10 +525,19 @@ async function scenarioFreePlanDenied() {
 }
 
 async function scenarioStaticPlanChangeAndHourlyUsage() {
-  const id = await createProject('hourly', 'static');
+  const id = await createProject('hourly', 'static', httpConfig({
+    persistent: true,
+    capacity: 2,
+    autoscaling: {
+      enabled: true,
+      max_instances: 5,
+      target_cpu_utilization_percent: 1,
+      target_memory_utilization_percent: 1,
+    },
+  }));
   await waitProjectStatus(id, 'running');
 
-  const autoscaling = setAutoscaling(id, 1, 5, 1, 1);
+  const autoscaling = cliJson(['project', 'autoscaling', '--project', id]);
   await generateTraffic(id);
 
   const scaleUp = await waitForAutoscalingEvent(
@@ -397,15 +546,14 @@ async function scenarioStaticPlanChangeAndHourlyUsage() {
     'scale_up',
   );
   const basic = await changePlan(id, 'basic');
-  await wait(20_000);
   const business = await changePlan(id, 'business');
   const stop = await stopProject(id);
-  const usage = await waitHourlyUsage(id);
+  const usage = await waitHourlyUsage(id, { requireStorage: true });
 
   evidence.push({
     scenario: 'static_plan_change_hourly_usage',
     id,
-    autoscaling: autoscaling.state,
+    autoscaling,
     scaleUp,
     basic,
     business,
@@ -413,6 +561,7 @@ async function scenarioStaticPlanChangeAndHourlyUsage() {
     beforeUsage: usage.before?.payload,
     finalUsage: usage.after?.payload || null,
     hourlyWaitSkipped: usage.skipped,
+    usageValidation: usage.validation,
   });
 }
 
@@ -521,7 +670,7 @@ async function writeSummary(summary) {
 }
 
 async function main() {
-  let summary = null;
+  let primaryError = null;
 
   try {
     log('staging autoscaling regression started', { apiBase, prefix, skipHourlyWait });
@@ -530,13 +679,15 @@ async function main() {
     await scenarioPersistentStorage();
     await scenarioDisableAndManualInstances();
     await scenarioStaticPlanChangeAndHourlyUsage();
-  } finally {
-    await cleanup();
+  } catch (error) {
+    primaryError = error;
   }
 
+  await cleanup();
   const cleanupResults = await verifyCleanup();
-  summary = {
-    status: 'passed',
+  const cleanupFailures = cleanupResults.filter((result) => !/project dont exists/i.test(`${result.stdout}\n${result.stderr}`));
+  const summary = {
+    status: primaryError || cleanupFailures.length > 0 ? 'failed' : 'passed',
     startedAt: startedAt.toISOString(),
     finishedAt: new Date().toISOString(),
     apiBase,
@@ -544,32 +695,21 @@ async function main() {
     createdProjects,
     evidence,
     cleanupResults,
+    ...(primaryError ? { error: redact(primaryError?.stack || primaryError?.message || String(primaryError)) } : {}),
+    ...(cleanupFailures.length > 0 ? { cleanupFailures } : {}),
   };
-
-  const cleanupFailures = cleanupResults.filter((result) => !/project dont exists/i.test(`${result.stdout}\n${result.stderr}`));
-  if (cleanupFailures.length > 0) {
-    summary.status = 'failed';
-    summary.cleanupFailures = cleanupFailures;
-    await writeSummary(summary);
-    throw new Error(`Cleanup verification failed for ${cleanupFailures.length} project(s)`);
-  }
 
   await writeSummary(summary);
+
+  if (primaryError) {
+    throw primaryError;
+  }
+  if (cleanupFailures.length > 0) {
+    throw new Error(`Cleanup verification failed for ${cleanupFailures.length} project(s)`);
+  }
 }
 
-main().catch(async (error) => {
-  const failedSummary = {
-    status: 'failed',
-    startedAt: startedAt.toISOString(),
-    finishedAt: new Date().toISOString(),
-    apiBase,
-    prefix,
-    createdProjects,
-    evidence,
-    error: redact(error?.stack || error?.message || String(error)),
-  };
-
-  await writeSummary(failedSummary).catch(() => undefined);
+main().catch((error) => {
   process.stderr.write(`${redact(error?.stack || error?.message || String(error))}\n`);
   process.exit(1);
 });

@@ -40,6 +40,7 @@ zenifra auth login --profile staging --code 123456
 zenifra auth api-key --key znf_sua_chave
 zenifra auth api-key --profile prod --key znf_sua_chave
 zenifra auth logout
+zenifra auth logout --revoke
 zenifra profile list
 zenifra profile show
 zenifra profile add --name staging --description Homologacao --api-base https://api-stg.zenifra.com/v1 --mode api-key --key znf_sua_chave
@@ -54,6 +55,7 @@ zenifra plans --type storage --json
 zenifra create project
 zenifra create project --name <name> --plan free --payment-mode hourly --config @examples/http-project.json
 zenifra create project --name <name> --plan basic --payment-mode hourly --config @examples/http-github-project.json
+zenifra create project --name <name> --plan premium --payment-mode hourly --config @examples/http-autoscaling-project.json
 zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/postgresql-project.json
 zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/mariadb-project.json
 zenifra projects --type http --page 1 --limit 15
@@ -71,6 +73,7 @@ zenifra project autoscaling --project <project-id>
 zenifra project autoscaling set --project <project-id> --min 2 --max 8 --cpu 70 --memory 80
 zenifra project autoscaling disable --project <project-id>
 zenifra project autoscaling events --project <project-id> --direction scale_up --page 1 --limit 10
+zenifra project billing usage --project <project-id> --from 2026-06-01T00:00:00Z --limit 20
 zenifra project instances --project <project-id>
 zenifra project instances set --project <project-id> --count 3
 zenifra builds --project <project-id>
@@ -107,6 +110,7 @@ Se voce rodar apenas `zenifra deploy`, a CLI mostra a ajuda especifica do comand
 - API padrao: `https://api.zenifra.com/v1`
 - Override de API: `ZENIFRA_API_URL=https://api-stg.zenifra.com/v1`
 - API key global: `ZENIFRA_API_KEY=znf_sua_chave`
+- Timeout de cada request HTTP: `ZENIFRA_HTTP_TIMEOUT_MS=30000`
 - Store local de perfis: `~/.config/zenifra-cli/profiles.json`
 - Override do diretorio local: `ZENIFRA_CONFIG_DIR=/path/custom`
 
@@ -153,10 +157,12 @@ Regras de precedencia:
 - `ZENIFRA_API_URL` sobrescreve a API base do perfil ativo apenas para a execucao atual
 - `auth login` e `auth api-key` operam no perfil ativo por padrao
 - `auth login --profile <name>` e `auth api-key --profile <name>` atualizam ou criam outro perfil e o tornam ativo
+- `auth logout` remove somente a autenticacao local; `auth logout --revoke` tambem invalida as sessoes de login do usuario no servidor
+- `auth logout --revoke` exige um perfil autenticado por login e nao revoga API keys
 
 Migracao:
 
-- se existir `session.json` legado e ainda nao existir `profiles.json`, a CLI migra automaticamente a sessao antiga para um perfil `default`
+- se existir `session.json` legado e ainda nao existir `profiles.json`, a CLI migra automaticamente a sessao antiga para um perfil `default` e remove o arquivo legado
 
 ## Automacao com API key
 
@@ -184,6 +190,7 @@ Use os arquivos em `examples/` como base para `zenifra create project`:
 
 - `examples/http-project.json`: projeto HTTP com imagem OCI publica
 - `examples/http-github-project.json`: projeto HTTP com build via GitHub
+- `examples/http-autoscaling-project.json`: projeto HTTP pago criado com auto-scaling
 - `examples/postgresql-project.json`: projeto PostgreSQL
 - `examples/mariadb-project.json`: projeto MariaDB
 
@@ -210,12 +217,28 @@ Valores aceitos:
 - `exposure` no `config` HTTP: `public`, `private`
 - `plan`: `free`, `static`, `basic`, `premium`, `premium_plus`, `business`, `deep_learning_basic`, `deep_learning_premium`, `db-free`, `db-starter`, `db-basic`, `db-premium`, `db-enterprise`
 - `config.github.runtime` (quando houver GitHub em projeto HTTP): `nodejs` ou `python`
+- `config.autoscaling` (somente HTTP pago): `enabled: true`, `max_instances` maior ou igual a `config.instances` e alvos opcionais de CPU/memoria entre 1 e 100
 
 Observacoes do wizard:
 
 - conflitos entre documentacao e API sao validados pelo contrato real aceito pela API
+- o wizard oferece auto-scaling apenas quando o plano selecionado informa essa disponibilidade
+- na criacao com auto-scaling, `config.instances` e o minimo inicial e `config.autoscaling.max_instances` e o maximo
 - em projetos de banco, o wizard nao pergunta `username`, `password` nem `database name`
 - em projetos de banco, a CLI preenche apenas campos tecnicos minimos exigidos pela validacao atual da API
+
+## Regressao manual de auto-scaling em staging
+
+O teste de staging cria projetos, gera trafego, consulta consumo e remove somente os projetos criados pela propria execucao. Ele rejeita a API de producao e exige habilitacao explicita das mutacoes.
+
+```bash
+export ZENIFRA_API_URL_STG=https://api-stg.zenifra.com/v1
+export ZENIFRA_API_KEY_STG=znf_sua_chave_de_staging
+export ZENIFRA_STAGING_ALLOW_MUTATIONS=1
+npm run test:staging:autoscaling
+```
+
+Use `ZENIFRA_STAGING_SKIP_HOURLY_WAIT=1` para pular a espera pelo fechamento da janela horaria. Quando a espera esta habilitada, o teste verifica moeda, totais de computacao e armazenamento, instancia-horas e armazenamento persistente faturavel. A execucao pode consumir capacidade e gerar custos no ambiente de staging; o resumo redigido fica em `artifacts/`, que nao e versionado.
 
 ## Publicacao no npm
 

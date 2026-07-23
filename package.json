@@ -1,6 +1,6 @@
 {
   "name": "@zenifra/cli",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Official Zenifra command line interface.",
   "type": "module",
   "license": "MIT",
@@ -31,7 +31,7 @@
     "README.md"
   ],
   "scripts": {
-    "check": "node --check bin/zenifra.mjs",
+    "check": "node --check bin/zenifra.mjs && npm run check:staging-autoscaling-regression",
     "check:staging-autoscaling-regression": "node --check scripts/staging-autoscaling-regression.mjs",
     "test:staging:autoscaling": "node scripts/staging-autoscaling-regression.mjs",
     "test": "node --test"
