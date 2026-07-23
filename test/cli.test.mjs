@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import test from 'node:test';
 
 const cliPath = resolve('bin/zenifra.mjs');
+const stagingAutoscalingScriptPath = resolve('scripts/staging-autoscaling-regression.mjs');
 const apiKey = 'znf_0123456789abcdef01234567_abcdefghijklmnopqrstuvwxyzABCDEFGHI';
 const HTTP_PLAN_CATALOG = [
   { plan: 'free', prices: { hourly: 0, monthly: 0, yearly: 0 }, features: ['1 GB Armazenamento Efêmero'] },
@@ -100,6 +101,23 @@ async function runCli(args, { apiBase = 'http://127.0.0.1:1/v1', configDir, stdi
   child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
   if (stdin !== undefined) child.stdin.end(stdin);
 
+  const code = await new Promise((resolvePromise) => child.on('close', resolvePromise));
+  return { code, stdout, stderr };
+}
+
+async function runNodeScript(scriptPath, extraEnv = {}) {
+  const child = spawn(process.execPath, [scriptPath], {
+    cwd: resolve('.'),
+    env: {
+      ...process.env,
+      ...extraEnv,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
+  child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
   const code = await new Promise((resolvePromise) => child.on('close', resolvePromise));
   return { code, stdout, stderr };
 }
@@ -277,6 +295,11 @@ test('commands with missing required arguments print command-specific help inste
     { args: ['project', 'env', 'add'], title: 'Zenifra CLI - project env add' },
     { args: ['project', 'env', 'update'], title: 'Zenifra CLI - project env update' },
     { args: ['project', 'env', 'remove'], title: 'Zenifra CLI - project env remove' },
+    { args: ['project', 'autoscaling'], title: 'Zenifra CLI - project autoscaling' },
+    { args: ['project', 'autoscaling', 'set'], title: 'Zenifra CLI - project autoscaling set' },
+    { args: ['project', 'autoscaling', 'disable'], title: 'Zenifra CLI - project autoscaling disable' },
+    { args: ['project', 'autoscaling', 'events'], title: 'Zenifra CLI - project autoscaling events' },
+    { args: ['project', 'billing', 'usage'], title: 'Zenifra CLI - project billing usage' },
     { args: ['project', 'instances'], title: 'Zenifra CLI - project instances' },
     { args: ['project', 'instances', 'set'], title: 'Zenifra CLI - project instances set' },
     { args: ['profile', 'use'], title: 'Zenifra CLI - profile use' },
@@ -321,6 +344,19 @@ test('unknown help command fails with a clear message', async () => {
     assert.equal(result.code, 1);
     assert.match(result.stderr, /Ajuda nao encontrada para: project missing/);
     assert.match(result.stderr, /zenifra help <command>/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('unknown flags fail locally with the normalized flag name', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli(['plans', '--limti', '10'], { configDir });
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /Flag desconhecida: --limti/);
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }
@@ -584,12 +620,32 @@ test('plans fails instead of printing partial data when one requested catalog fa
   });
 });
 
-async function withWizardCatalogServer(postHandler, callback) {
+test('staging autoscaling regression refuses production and requires explicit mutation opt-in', async () => {
+  const missingOptIn = await runNodeScript(stagingAutoscalingScriptPath, {
+    ZENIFRA_API_KEY_STG: 'znf_test_only',
+    ZENIFRA_API_URL_STG: 'https://api-stg.zenifra.com/v1',
+    ZENIFRA_STAGING_ALLOW_MUTATIONS: '0',
+  });
+  assert.notEqual(missingOptIn.code, 0);
+  assert.match(missingOptIn.stderr, /ZENIFRA_STAGING_ALLOW_MUTATIONS=1/);
+
+  const production = await runNodeScript(stagingAutoscalingScriptPath, {
+    ZENIFRA_API_KEY_STG: 'znf_test_only',
+    ZENIFRA_API_URL_STG: 'https://api.zenifra.com/v1',
+    ZENIFRA_STAGING_ALLOW_MUTATIONS: '1',
+  });
+  assert.notEqual(production.code, 0);
+  assert.match(production.stderr, /Refusing mutating regression against non-staging host: api\.zenifra\.com/);
+  assert.equal(missingOptIn.stdout, '');
+  assert.equal(production.stdout, '');
+});
+
+async function withWizardCatalogServer(postHandler, callback, { httpPlans = HTTP_PLAN_CATALOG } = {}) {
   return withCliServer(async (req, res) => {
     assertApiKeyAuth(req);
 
     if (req.method === 'GET' && req.url === '/v1/project/plans') {
-      jsonResponse(res, 200, { status: 'success', data: HTTP_PLAN_CATALOG });
+      jsonResponse(res, 200, { status: 'success', data: httpPlans });
       return;
     }
 
@@ -632,6 +688,7 @@ test('legacy session is auto-migrated into the default profile', async () => {
     assert.equal(profiles.activeProfile, 'default');
     assert.equal(profiles.profiles.default.apiKey, 'legacy_key_123');
     assert.equal(profiles.profiles.default.apiBaseUrl, apiBase);
+    await assert.rejects(stat(join(configDir, 'session.json')), { code: 'ENOENT' });
   });
 });
 
@@ -744,7 +801,7 @@ test('deploy watch streams build logs until the build succeeds', async () => {
 
     jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
   }, async ({ apiBase, configDir }) => {
-    const result = await runCli(['deploy', 'watch', '--project', 'proj_123', '--build', 'build_123', '--interval', '0.01'], { apiBase, configDir });
+    const result = await runCli(['deploy', 'watch', '--project', 'proj_123', '--build', 'build_123', '--interval', '0.1'], { apiBase, configDir });
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(logPollCount, 2);
@@ -922,6 +979,64 @@ test('auth logout clears only the target profile authentication', async () => {
   }
 });
 
+test('auth logout --revoke revokes the user session before clearing local authentication', async () => {
+  await withCliServer(async (req, res) => {
+    assert.equal(req.method, 'DELETE');
+    assert.equal(req.url, '/v1/authentication');
+    assert.equal(req.headers.authorization, 'Bearer user_token_1');
+    assert.equal(req.headers['x-organization-id'], undefined);
+    jsonResponse(res, 200, { status: 'success', message: 'logout with success' });
+  }, async ({ apiBase, configDir }) => {
+    await writeProfiles(configDir, {
+      version: 1,
+      activeProfile: 'default',
+      profiles: {
+        default: {
+          name: 'default',
+          apiBaseUrl: apiBase,
+          authMode: 'access_token',
+          accessToken: 'user_token_1',
+          selectedOrganizationId: 'org_1',
+        },
+      },
+    });
+
+    const result = await runCli(['auth', 'logout', '--revoke'], {
+      apiBase,
+      configDir,
+      envApiKey: 'environment_key_must_not_override_user_token',
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /sessoes de usuario revogadas/);
+    const profiles = JSON.parse(await readFile(join(configDir, 'profiles.json'), 'utf8'));
+    assert.equal(profiles.profiles.default.accessToken, undefined);
+    assert.equal(profiles.profiles.default.selectedOrganizationId, undefined);
+  });
+});
+
+test('auth logout --revoke rejects API-key profiles without clearing them', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    await writeProfiles(configDir, {
+      version: 1,
+      activeProfile: 'default',
+      profiles: {
+        default: { name: 'default', apiBaseUrl: 'https://api.zenifra.com/v1', authMode: 'api_key', apiKey },
+      },
+    });
+
+    const result = await runCli(['auth', 'logout', '--revoke'], { configDir, envApiKey: null });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /API keys devem ser revogadas na organizacao/);
+    const profiles = JSON.parse(await readFile(join(configDir, 'profiles.json'), 'utf8'));
+    assert.equal(profiles.profiles.default.apiKey, apiKey);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
 test('profile remove rejects deleting the active profile', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {
@@ -1027,7 +1142,289 @@ test('project logs prints log snapshots from the logs endpoint', async () => {
   });
 });
 
-test('project image and instances commands call their project operation endpoints', async () => {
+test('project autoscaling events lists paginated autoscaling history', async () => {
+  const calls = [];
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    calls.push({ method: req.method, url: req.url });
+
+    if (req.method === 'GET' && req.url === '/v1/project/proj_1/autoscaling/events?direction=scale_up&from=2026-06-01T00%3A00%3A00.000Z&page=2&limit=10') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: {
+          events: [{
+            id: 'event-1',
+            direction: 'scale_up',
+            previous_instances: 2,
+            new_instances: 5,
+            desired_instances: 5,
+            trigger_metric: 'cpu',
+            current_cpu_utilization_percent: 91,
+            target_cpu_utilization_percent: 70,
+            current_memory_utilization_percent: 62,
+            target_memory_utilization_percent: 80,
+            reason: 'increased_capacity',
+            occurred_at: '2026-06-05T21:40:00.000Z',
+          }],
+          pagination: { page: 2, limit: 10, total: 11, total_pages: 2 },
+        },
+      });
+      return;
+    }
+
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'autoscaling', 'events',
+      '--project', 'proj_1',
+      '--direction', 'scale_up',
+      '--from', '2026-06-01T00:00:00.000Z',
+      '--page', '2',
+      '--limit', '10',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /aumento/);
+    assert.match(result.stdout, /2 -> 5/);
+    assert.match(result.stdout, /CPU 91%\/70%/);
+    assert.match(result.stdout, /capacidade aumentada/);
+    assert.doesNotMatch(result.stdout, /increased_capacity/);
+    assert.doesNotMatch(result.stdout, /Kubernetes|HPA|kubernetes_/i);
+    assert.match(result.stdout, /Pagina 2 de 2/);
+    assert.deepEqual(calls, [
+      { method: 'GET', url: '/v1/project/proj_1/autoscaling/events?direction=scale_up&from=2026-06-01T00%3A00%3A00.000Z&page=2&limit=10' },
+    ]);
+  });
+});
+
+test('project autoscaling events preserves public API values in json output', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.url, '/v1/project/proj_1/autoscaling/events?limit=1');
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        events: [{ direction: 'scale_up', reason: 'increased_capacity' }],
+        pagination: { page: 1, limit: 1, total: 1, total_pages: 1 },
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'autoscaling', 'events',
+      '--project', 'proj_1',
+      '--limit', '1',
+      '--json',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout).events[0], {
+      direction: 'scale_up',
+      reason: 'increased_capacity',
+    });
+  });
+});
+
+test('project billing usage preserves filters, summaries and json contract', async () => {
+  const calls = [];
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    calls.push(req.url);
+    if (req.url === '/v1/project/proj_1/billing/hourly-usage?from=2026-06-01T00%3A00%3A00Z&to=2026-06-02T00%3A00%3A00Z&page=2&limit=20') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: {
+          hours: [{
+            id: 'hour_1',
+            hour_start: '2026-06-01T10:00:00.000Z',
+            hour_end: '2026-06-01T11:00:00.000Z',
+            currency: 'brl',
+            compute_amount: 0.2,
+            storage_amount: 0.1,
+            total_amount: 0.3,
+            compute_instance_hours: 2,
+            storage_gb_hours: 1.5,
+            status: 'closed',
+          }],
+          summary: { currency: 'brl', compute_amount: 0.2, storage_amount: 0.1, total_amount: 0.3 },
+          pagination: { page: 2, limit: 20, total: 21, total_pages: 2 },
+        },
+      });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    const usage = await runCli([
+      'project', 'billing', 'usage',
+      '--project', 'proj_1',
+      '--from', '2026-06-01T00:00:00Z',
+      '--to', '2026-06-02T00:00:00Z',
+      '--page', '2',
+      '--limit', '20',
+    ], { apiBase, configDir });
+    const usageJsonResult = await runCli([
+      'project', 'billing', 'usage',
+      '--project', 'proj_1',
+      '--from', '2026-06-01T00:00:00Z',
+      '--to', '2026-06-02T00:00:00Z',
+      '--page', '2',
+      '--limit', '20',
+      '--json',
+    ], { apiBase, configDir });
+    assert.equal(usage.code, 0, usage.stderr);
+    assert.match(usage.stdout, /1\.5 GB-h/);
+    assert.match(usage.stdout, /Resumo: computacao R\$\s*0,20/);
+    assert.match(usage.stdout, /Pagina 2 de 2 - 21 hora\(s\)/);
+    assert.equal(usageJsonResult.code, 0, usageJsonResult.stderr);
+    const usageJson = JSON.parse(usageJsonResult.stdout);
+    assert.equal(usageJson.hours[0].compute_instance_hours, 2);
+    assert.deepEqual(usageJson.summary, {
+      currency: 'brl',
+      compute_amount: 0.2,
+      storage_amount: 0.1,
+      total_amount: 0.3,
+    });
+    assert.deepEqual(calls, [
+      '/v1/project/proj_1/billing/hourly-usage?from=2026-06-01T00%3A00%3A00Z&to=2026-06-02T00%3A00%3A00Z&page=2&limit=20',
+      '/v1/project/proj_1/billing/hourly-usage?from=2026-06-01T00%3A00%3A00Z&to=2026-06-02T00%3A00%3A00Z&page=2&limit=20',
+    ]);
+  });
+});
+
+test('project billing usage validates dates and pagination before calling the API', async () => {
+  const invalidCases = [
+    [['project', 'billing', 'usage', '--project', 'proj_1', '--from', 'not-a-date'], /data ISO valida/],
+    [['project', 'billing', 'usage', '--project', 'proj_1', '--from', '2026\/06\/01'], /data ISO valida/],
+    [['project', 'billing', 'usage', '--project', 'proj_1', '--from', '123'], /data ISO valida/],
+    [['project', 'billing', 'usage', '--project', 'proj_1', '--from', '2026-02-30'], /data ISO valida/],
+    [['project', 'billing', 'usage', '--project', 'proj_1', '--from', '2026-06-02', '--to', '2026-06-01'], /--from anterior/],
+    [['project', 'billing', 'usage', '--project', 'proj_1', '--limit', '51'], /--limit entre 1 e 50/],
+  ];
+
+  for (const [args, expected] of invalidCases) {
+    const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+    try {
+      const result = await runCli(args, { configDir });
+      assert.equal(result.code, 1, result.stderr);
+      assert.match(result.stderr, expected);
+    } finally {
+      await rm(configDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('build polling options reject invalid numeric values before requesting logs', async () => {
+  const invalidCases = [
+    [['builds', 'logs', '--project', 'proj_1', '--build', 'build_1', '--cursor', '-1'], /--cursor.*maior ou igual a 0/],
+    [['builds', 'logs', '--project', 'proj_1', '--build', 'build_1', '--limit', '501'], /--limit.*entre 1 e 500/],
+    [['builds', 'logs', '--project', 'proj_1', '--build', 'build_1', '--follow', '--interval', '0'], /--interval.*maior ou igual a 0\.1/],
+    [['deploy', 'watch', '--project', 'proj_1', '--build', 'build_1', '--timeout', 'abc'], /--timeout.*maior ou igual a 1/],
+  ];
+
+  for (const [args, expected] of invalidCases) {
+    const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+    try {
+      const result = await runCli(args, { configDir });
+      assert.equal(result.code, 1, result.stderr);
+      assert.equal(result.stdout, '');
+      assert.match(result.stderr, expected);
+    } finally {
+      await rm(configDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('HTTP requests use a configurable timeout and report it clearly', async () => {
+  await withCliServer(async (_req, res) => {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));
+    jsonResponse(res, 200, { status: 'success', data: [] });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['plans', '--type', 'http'], {
+      apiBase,
+      configDir,
+      extraEnv: { ZENIFRA_HTTP_TIMEOUT_MS: '25' },
+    });
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /nao respondeu em ate 25 ms/);
+  });
+
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const invalid = await runCli(['plans', '--type', 'http'], {
+      configDir,
+      extraEnv: { ZENIFRA_HTTP_TIMEOUT_MS: 'invalid' },
+    });
+    assert.equal(invalid.code, 1);
+    assert.match(invalid.stderr, /ZENIFRA_HTTP_TIMEOUT_MS deve ser um inteiro positivo/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('API errors distinguish authentication, authorization and retry guidance', async () => {
+  const cases = [
+    {
+      status: 401,
+      payload: { message: 'invalid token' },
+      expected: /Verifique se a API key esta ativa/,
+      forbidden: /permissao RBAC/,
+    },
+    {
+      status: 403,
+      payload: { code: 'AUTOSCALING_NOT_AVAILABLE_FOR_PLAN', message: 'HTTP autoscaling is not available for this plan' },
+      expected: /not available for this plan/,
+      forbidden: /auth login|API key esta ativa|IP atual/,
+    },
+    {
+      status: 429,
+      payload: { code: 'AUTOSCALING_TOGGLE_COOLDOWN_ACTIVE', message: 'Auto-scaling was recently changed.', retry_after_seconds: 37 },
+      expected: /37 segundo\(s\)/,
+      forbidden: /auth login/,
+    },
+  ];
+
+  for (const item of cases) {
+    await withCliServer(async (_req, res) => {
+      jsonResponse(res, item.status, item.payload);
+    }, async ({ apiBase, configDir }) => {
+      const result = await runCli([
+        'project', 'autoscaling', 'set',
+        '--project', 'proj_1',
+        '--min', '1',
+        '--max', '2',
+      ], { apiBase, configDir });
+
+      assert.equal(result.code, 1, result.stderr);
+      assert.match(result.stderr, item.expected);
+      assert.doesNotMatch(result.stderr, item.forbidden);
+    });
+  }
+});
+
+test('project autoscaling set validates target percentages before calling the API', async () => {
+  const calls = [];
+
+  await withCliServer(async (req, res) => {
+    calls.push({ method: req.method, url: req.url });
+    jsonResponse(res, 500, { status: 'failed', message: 'unexpected API call' });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'autoscaling', 'set',
+      '--project', 'proj_1',
+      '--min', '1',
+      '--max', '5',
+      '--cpu', '101',
+    ], { apiBase, configDir });
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /Informe --cpu entre 1 e 100/);
+    assert.deepEqual(calls, []);
+  });
+});
+
+test('project image, autoscaling and instances commands call their project operation endpoints', async () => {
   const calls = [];
 
   await withCliServer(async (req, res) => {
@@ -1041,6 +1438,30 @@ test('project image and instances commands call their project operation endpoint
 
     if (req.method === 'GET' && req.url === '/v1/project/proj_1/instances') {
       jsonResponse(res, 200, { status: 'success', data: [{ instance: 'web-1' }] });
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/v1/project/proj_1') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: {
+          id: 'proj_1',
+          additional_info: {
+            autoscaling: {
+              enabled: true,
+              min_instances: 2,
+              max_instances: 8,
+              target_cpu_utilization_percent: 70,
+              target_memory_utilization_percent: 80,
+            },
+          },
+        },
+      });
+      return;
+    }
+
+    if (req.method === 'PATCH' && req.url === '/v1/project/proj_1/autoscaling') {
+      jsonResponse(res, 200, { status: 'success', message: 'project autoscaling updated with success' });
       return;
     }
 
@@ -1061,6 +1482,22 @@ test('project image and instances commands call their project operation endpoint
       '--project', 'proj_1',
       '--json',
     ], { apiBase, configDir });
+    const showAutoscaling = await runCli([
+      'project', 'autoscaling',
+      '--project', 'proj_1',
+    ], { apiBase, configDir });
+    const setAutoscaling = await runCli([
+      'project', 'autoscaling', 'set',
+      '--project', 'proj_1',
+      '--min', '2',
+      '--max', '8',
+      '--cpu', '70',
+      '--memory', '80',
+    ], { apiBase, configDir });
+    const disableAutoscaling = await runCli([
+      'project', 'autoscaling', 'disable',
+      '--project', 'proj_1',
+    ], { apiBase, configDir });
     const setInstances = await runCli([
       'project', 'instances', 'set',
       '--project', 'proj_1',
@@ -1069,10 +1506,17 @@ test('project image and instances commands call their project operation endpoint
 
     assert.equal(setImage.code, 0, setImage.stderr);
     assert.equal(listInstances.code, 0, listInstances.stderr);
+    assert.equal(showAutoscaling.code, 0, showAutoscaling.stderr);
+    assert.match(showAutoscaling.stdout, /ativo/);
+    assert.equal(setAutoscaling.code, 0, setAutoscaling.stderr);
+    assert.equal(disableAutoscaling.code, 0, disableAutoscaling.stderr);
     assert.equal(setInstances.code, 0, setInstances.stderr);
     assert.deepEqual(calls, [
       { method: 'PATCH', url: '/v1/project/proj_1/image', body: { image: 'ghcr.io/zenifra/app:1.2.3' } },
       { method: 'GET', url: '/v1/project/proj_1/instances', body: null },
+      { method: 'GET', url: '/v1/project/proj_1', body: null },
+      { method: 'PATCH', url: '/v1/project/proj_1/autoscaling', body: { enabled: true, min_instances: 2, max_instances: 8, target_cpu_utilization_percent: 70, target_memory_utilization_percent: 80 } },
+      { method: 'PATCH', url: '/v1/project/proj_1/autoscaling', body: { enabled: false } },
       { method: 'PATCH', url: '/v1/project/proj_1/instances', body: { instances: 3 } },
     ]);
   });
@@ -1251,6 +1695,101 @@ test('create project normalizes aliases before calling API', async () => {
   });
 });
 
+test('create project sends paid HTTP autoscaling using config.instances as the minimum', async () => {
+  let body;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project');
+    body = await readJson(req);
+    jsonResponse(res, 200, { status: 'success', data: { id: 'proj_autoscaling_create_1' } });
+  }, async ({ apiBase, configDir }) => {
+    const config = {
+      type_project: 'http',
+      exposure: 'public',
+      instances: 2,
+      autoscaling: {
+        enabled: true,
+        max_instances: 8,
+        target_cpu_utilization_percent: 70,
+        target_memory_utilization_percent: 80,
+      },
+    };
+    const result = await runCli([
+      'create', 'project',
+      '--name', 'api-autoscaling',
+      '--plan', 'premium',
+      '--payment-mode', 'hourly',
+      '--config', JSON.stringify(config),
+      '--json',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(body.config.autoscaling, config.autoscaling);
+    assert.equal(body.config.instances, 2);
+    assert.equal(body.config.autoscaling.min_instances, undefined);
+  });
+});
+
+test('create project rejects invalid autoscaling configurations before calling the API', async () => {
+  const cases = [
+    {
+      name: 'free plan',
+      plan: 'free',
+      config: { type_project: 'http', exposure: 'public', instances: 1, autoscaling: { enabled: true, max_instances: 2 } },
+      expected: /plano free/,
+    },
+    {
+      name: 'non HTTP project',
+      plan: 'db-basic',
+      config: { type_project: 'postgresql', instances: 1, autoscaling: { enabled: true, max_instances: 2 } },
+      expected: /apenas para projetos HTTP/,
+    },
+    {
+      name: 'disabled creation config',
+      plan: 'basic',
+      config: { type_project: 'http', exposure: 'public', instances: 1, autoscaling: { enabled: false, max_instances: 2 } },
+      expected: /enabled deve ser true/,
+    },
+    {
+      name: 'explicit min',
+      plan: 'basic',
+      config: { type_project: 'http', exposure: 'public', instances: 1, autoscaling: { enabled: true, min_instances: 1, max_instances: 2 } },
+      expected: /config\.instances como minimo inicial/,
+    },
+    {
+      name: 'max below instances',
+      plan: 'basic',
+      config: { type_project: 'http', exposure: 'public', instances: 3, autoscaling: { enabled: true, max_instances: 2 } },
+      expected: /maior ou igual a config\.instances/,
+    },
+    {
+      name: 'invalid target',
+      plan: 'basic',
+      config: { type_project: 'http', exposure: 'public', instances: 1, autoscaling: { enabled: true, max_instances: 2, target_cpu_utilization_percent: 101 } },
+      expected: /entre 1 e 100/,
+    },
+  ];
+
+  for (const item of cases) {
+    const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+    try {
+      const result = await runCli([
+        'create', 'project',
+        '--name', 'api-autoscaling',
+        '--plan', item.plan,
+        '--payment-mode', 'hourly',
+        '--config', JSON.stringify(item.config),
+      ], { configDir });
+
+      assert.equal(result.code, 1, `${item.name}: ${result.stderr}`);
+      assert.match(result.stderr, item.expected, item.name);
+    } finally {
+      await rm(configDir, { recursive: true, force: true });
+    }
+  }
+});
+
 test('create project launches the wizard for an http OCI project', async () => {
   let body;
   await withWizardCatalogServer(async (req, res) => {
@@ -1308,6 +1847,62 @@ test('create project launches the wizard for an http OCI project', async () => {
     assert.doesNotMatch(result.stdout, /whitelist personalizada/i);
     assert.doesNotMatch(result.stdout, /blacklist de entrada/i);
   });
+});
+
+test('create project wizard offers autoscaling only when the selected plan allows it', async () => {
+  let body;
+  const httpPlans = HTTP_PLAN_CATALOG.map((plan) => ({
+    ...plan,
+    permissions: {
+      ...plan.permissions,
+      allow_autoscaling: plan.plan === 'premium' ? 'true' : 'false',
+    },
+  }));
+
+  await withWizardCatalogServer(async (req, res) => {
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project');
+    body = await readJson(req);
+    jsonResponse(res, 200, { status: 'success', data: { id: 'proj_wizard_autoscaling_1' } });
+  }, async ({ apiBase, configDir }) => {
+    const stdin = [
+      'api-autoscaling',
+      '',
+      '1',
+      '4',
+      '1',
+      '2',
+      '8080',
+      '2',
+      's',
+      '3',
+      '70',
+      '80',
+      'n',
+      '1',
+      'n',
+      '1',
+      'n',
+      'n',
+      '',
+      's',
+      'registry.example.com/team/api:1.0.0',
+      's',
+    ].join('\n');
+
+    const result = await runCli(['create', 'project'], { apiBase, configDir, stdin });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(body.config.autoscaling, {
+      enabled: true,
+      max_instances: 3,
+      target_cpu_utilization_percent: 70,
+      target_memory_utilization_percent: 80,
+    });
+    assert.equal(body.config.instances, 2);
+    assert.match(result.stdout, /Ativar auto-scaling/);
+    assert.match(result.stdout, /auto-scaling: 2-3 instancias/);
+  }, { httpPlans });
 });
 
 test('create project wizard creates a private http project without public routing prompts', async () => {
@@ -1523,6 +2118,7 @@ test('create project wizard hides subdomain and network prompts for http basic p
     assert.doesNotMatch(result.stdout, /Subdomain personalizado/i);
     assert.doesNotMatch(result.stdout, /whitelist personalizada/i);
     assert.doesNotMatch(result.stdout, /blacklist de entrada/i);
+    assert.doesNotMatch(result.stdout, /Ativar auto-scaling/i);
   });
 });
 

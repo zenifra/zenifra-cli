@@ -1,0 +1,30 @@
+{
+  "type_project": "http",
+  "exposure": "public",
+  "image": {
+    "url": "docker.io/nginx:perl",
+    "is_public": true
+  },
+  "port": 80,
+  "instances": 2,
+  "autoscaling": {
+    "enabled": true,
+    "max_instances": 8,
+    "target_cpu_utilization_percent": 70,
+    "target_memory_utilization_percent": 80
+  },
+  "storage": {
+    "persistent": false,
+    "capacity": 1
+  },
+  "envs": [],
+  "network_access": {
+    "ingress_white_list": [
+      {
+        "cidr": "0.0.0.0/0",
+        "description": "Allow all"
+      }
+    ],
+    "ingress_black_list": []
+  }
+}

@@ -21,6 +21,53 @@ const SESSION_FILE = join(SESSION_DIR, 'session.json');
 const PROFILES_FILE = join(SESSION_DIR, 'profiles.json');
 const PROFILE_STORE_VERSION = 1;
 const DEFAULT_PROFILE_NAME = 'default';
+const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
+const KNOWN_FLAG_NAMES = new Set([
+  'apiBase',
+  'branch',
+  'build',
+  'challengeToken',
+  'code',
+  'commitSha',
+  'config',
+  'count',
+  'cpu',
+  'cursor',
+  'description',
+  'direction',
+  'email',
+  'exposure',
+  'follow',
+  'from',
+  'help',
+  'image',
+  'instance',
+  'interval',
+  'json',
+  'key',
+  'limit',
+  'max',
+  'memory',
+  'min',
+  'mode',
+  'name',
+  'org',
+  'page',
+  'password',
+  'paymentMode',
+  'plan',
+  'profile',
+  'project',
+  'revoke',
+  'showValues',
+  'status',
+  'timeout',
+  'to',
+  'totp',
+  'type',
+  'value',
+  'view',
+]);
 const ALLOWED_PLAN_VALUES = new Set([
   'free',
   'static',
@@ -97,7 +144,7 @@ Usage:
   zenifra help <command>
   zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>]
   zenifra auth api-key --key <znf_key> [--profile <name>] [--api-base <url>]
-  zenifra auth logout [--profile <name>]
+  zenifra auth logout [--profile <name>] [--revoke]
   zenifra profile list [--json]
   zenifra profile show [<name>] [--json]
   zenifra profile add [--name <name>] [--description <text>] [--api-base <url>] [--mode <api-key|login>] [--key <znf_key>] [--json]
@@ -121,6 +168,11 @@ Usage:
   zenifra project env add --project <id> --name <name> --value <value> [--json]
   zenifra project env update --project <id> --name <name> --value <value> [--json]
   zenifra project env remove --project <id> --name <name> [--json]
+  zenifra project autoscaling --project <id> [--json]
+  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]
+  zenifra project autoscaling disable --project <id> [--json]
+  zenifra project autoscaling events --project <id> [--direction <scale_up|scale_down>] [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]
+  zenifra project billing usage --project <id> [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]
   zenifra project instances --project <id> [--json]
   zenifra project instances set --project <id> --count <n> [--json]
   zenifra builds --project <id> [--page <n>] [--limit <n>] [--branch <name>] [--status <status>] [--json]
@@ -141,7 +193,7 @@ Run "zenifra help <command>" or "zenifra <command> --help" for command-specific 
 const HELP_SPECS = [
   {
     command: 'auth',
-    usage: 'zenifra auth\n  zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>]\n  zenifra auth api-key --key <znf_key> [--profile <name>] [--api-base <url>]\n  zenifra auth logout [--profile <name>]',
+    usage: 'zenifra auth\n  zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>]\n  zenifra auth api-key --key <znf_key> [--profile <name>] [--api-base <url>]\n  zenifra auth logout [--profile <name>] [--revoke]',
     description: 'Gerencia a autenticacao dos perfis locais da CLI.',
     examples: ['zenifra auth', 'zenifra auth login --profile staging', 'zenifra auth api-key --profile prod --key znf_0123456789abcdef01234567_abcd...'],
     output: 'Zenifra CLI - auth',
@@ -171,11 +223,12 @@ const HELP_SPECS = [
   },
   {
     command: 'auth logout',
-    usage: 'zenifra auth logout [--profile <name>]',
+    usage: 'zenifra auth logout [--profile <name>] [--revoke]',
     description: 'Remove a autenticacao do perfil ativo ou do perfil informado.',
-    flags: ['--profile <name>  Limpa outro perfil sem trocar o perfil ativo.'],
-    examples: ['zenifra auth logout', 'zenifra auth logout --profile staging'],
+    flags: ['--profile <name>  Limpa outro perfil sem trocar o perfil ativo.', '--revoke          Revoga as sessoes de usuario no servidor antes de limpar o perfil.'],
+    examples: ['zenifra auth logout', 'zenifra auth logout --profile staging', 'zenifra auth logout --revoke'],
     output: 'Autenticacao removida do perfil active.',
+    notes: ['Sem --revoke, remove somente a credencial local. A revogacao invalida as sessoes de login do usuario e nao se aplica a API keys.'],
   },
   {
     command: 'profile',
@@ -294,11 +347,11 @@ const HELP_SPECS = [
   },
   {
     command: 'project',
-    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
+    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project autoscaling --project <id> [--json]\n  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]\n  zenifra project autoscaling disable --project <id> [--json]\n  zenifra project autoscaling events --project <id> [--direction <scale_up|scale_down>] [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project billing usage --project <id> [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
     description: 'Agrupa comandos operacionais e de introspecao sobre um projeto especifico.',
     examples: ['zenifra project', 'zenifra project info --project proj_1', 'zenifra project env add --project proj_1 --name NODE_ENV --value production'],
     output: 'Zenifra CLI - project',
-    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, url, logs, metrics, network, image, exposure, envs e instances.'],
+    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, url, logs, metrics, network, image, exposure, autoscaling, billing, envs e instances.'],
   },
   {
     command: 'project info',
@@ -406,9 +459,54 @@ const HELP_SPECS = [
     notes: ['Falha se a variavel nao existir.'],
   },
   {
+    command: 'project autoscaling',
+    usage: 'zenifra project autoscaling --project <id> [--json]',
+    description: 'Mostra a configuracao de auto-scaling HTTP do projeto.',
+    flags: ['--project <id>  ID do projeto.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project autoscaling --project 507f1f77bcf86cd799439012'],
+    output: 'Campo       Valor\n----------  -----\nStatus      ativo\nMinimo      2\nMaximo      8\nCPU alvo    70%\nMemoria     80%',
+    jsonOutput: '{"enabled":true,"min_instances":2,"max_instances":8,"target_cpu_utilization_percent":70,"target_memory_utilization_percent":80}',
+  },
+  {
+    command: 'project autoscaling set',
+    usage: 'zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]',
+    description: 'Ativa ou atualiza o auto-scaling HTTP do projeto.',
+    flags: ['--project <id>    ID do projeto.', '--min <n>        Minimo de instancias reservadas.', '--max <n>        Maximo de instancias permitidas.', '--cpu <percent>  CPU alvo. Padrao da API: 70.', '--memory <percent> Memoria alvo. Padrao da API: 80.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra project autoscaling set --project 507f1f77bcf86cd799439012 --min 2 --max 8 --cpu 70 --memory 80'],
+    output: 'Auto-scaling atualizado: 2-8 instancias.',
+    jsonOutput: '{"status":"success","message":"project autoscaling updated with success","data":{"autoscaling":{"enabled":true,"min_instances":2,"max_instances":8}}}',
+  },
+  {
+    command: 'project autoscaling disable',
+    usage: 'zenifra project autoscaling disable --project <id> [--json]',
+    description: 'Desativa o auto-scaling HTTP e volta para instancias fixas no minimo configurado.',
+    flags: ['--project <id>  ID do projeto.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project autoscaling disable --project 507f1f77bcf86cd799439012'],
+    output: 'Auto-scaling desativado.',
+    jsonOutput: '{"status":"success","message":"project autoscaling updated with success","data":{"autoscaling":{"enabled":false}}}',
+  },
+  {
+    command: 'project autoscaling events',
+    usage: 'zenifra project autoscaling events --project <id> [--direction <scale_up|scale_down>] [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]',
+    description: 'Lista o historico de scale up e scale down do auto-scaling HTTP.',
+    flags: ['--project <id>       ID do projeto.', '--direction <valor> Filtra por scale_up ou scale_down.', '--from <iso>         Inicio do periodo.', '--to <iso>           Fim do periodo.', '--page <n>           Pagina. Padrao da API: 1.', '--limit <n>          Itens por pagina. Maximo da API: 100.', '--json               Imprime a resposta em JSON.'],
+    examples: ['zenifra project autoscaling events --project 507f1f77bcf86cd799439012 --direction scale_up'],
+    output: 'Quando                    Direcao   Instancias  Limites          Motivo\n05/06/2026, 18:40        aumento   2 -> 5     CPU 91%/70%    capacidade aumentada',
+    jsonOutput: '{"events":[{"direction":"scale_up","previous_instances":2,"new_instances":5,"occurred_at":"2026-06-05T21:40:00.000Z"}],"pagination":{"page":1,"limit":10,"total":1,"total_pages":1}}',
+  },
+  {
+    command: 'project billing usage',
+    usage: 'zenifra project billing usage --project <id> [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]',
+    description: 'Lista o consumo horario consolidado de um projeto.',
+    flags: ['--project <id>  ID do projeto.', '--from <iso>    Inicio do periodo.', '--to <iso>      Fim do periodo.', '--page <n>      Pagina. Padrao da API: 1.', '--limit <n>     Itens por pagina. Maximo: 50.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project billing usage --project 507f1f77bcf86cd799439012 --from 2026-06-01T00:00:00Z --limit 20'],
+    output: 'Inicio                    Fim                       Instancia-horas  Armazenamento  Total\n2026-06-01T10:00:00.000Z  2026-06-01T11:00:00.000Z  2                1.5 GB-h         R$ 0,30',
+    jsonOutput: '{"hours":[],"summary":{"currency":"brl","compute_amount":0,"storage_amount":0,"total_amount":0},"pagination":{"page":1,"limit":10,"total":0,"total_pages":0}}',
+  },
+  {
     command: 'project instances',
     usage: 'zenifra project instances --project <id> [--json]',
-    description: 'Lista instancias/pods do projeto.',
+    description: 'Lista instancias do projeto.',
     flags: ['--project <id>  ID do projeto.', '--json          Imprime a resposta em JSON.'],
     examples: ['zenifra project instances --project 507f1f77bcf86cd799439012'],
     output: 'Instancia\nweb-1',
@@ -439,11 +537,11 @@ const HELP_SPECS = [
     flags: [
       '--project <id>        ID do projeto.',
       '--build <id>          ID do build.',
-      '--cursor <n>          Cursor inicial. Padrao: 0.',
-      '--limit <n>           Quantidade de logs por request. Padrao: 200.',
+      '--cursor <n>          Cursor inicial inteiro, maior ou igual a 0. Padrao: 0.',
+      '--limit <n>           Quantidade de logs por request, entre 1 e 500. Padrao: 200.',
       '--follow              Continua em polling ate o build finalizar.',
-      '--interval <seconds>  Intervalo de polling com --follow. Padrao: 5.',
-      '--timeout <seconds>   Timeout total com --follow. Padrao: 900.',
+      '--interval <seconds>  Intervalo de polling com --follow, minimo 0.1. Padrao: 5.',
+      '--timeout <seconds>   Timeout total com --follow, minimo 1. Padrao: 900.',
       '--json                Imprime a resposta em JSON.',
     ],
     examples: ['zenifra builds logs --project 507f1f77bcf86cd799439012 --build build_123', 'zenifra builds logs --project 507f1f77bcf86cd799439012 --build build_123 --follow'],
@@ -479,7 +577,7 @@ const HELP_SPECS = [
     command: 'deploy watch',
     usage: 'zenifra deploy watch --project <id> --build <id> [--interval <seconds>] [--timeout <seconds>] [--json]',
     description: 'Acompanha um build em tempo real, fazendo polling do status e imprimindo os logs incrementais do build ate o estado terminal.',
-    flags: ['--project <id>        ID do projeto.', '--build <id>          ID do build.', '--interval <seconds>  Intervalo de polling. Padrao: 5.', '--timeout <seconds>   Timeout total. Padrao: 900.', '--json                Imprime cada resposta em JSON.'],
+    flags: ['--project <id>        ID do projeto.', '--build <id>          ID do build.', '--interval <seconds>  Intervalo de polling, minimo 0.1. Padrao: 5.', '--timeout <seconds>   Timeout total, minimo 1. Padrao: 900.', '--json                Imprime cada resposta em JSON.'],
     examples: [
       'zenifra deploy watch --project 507f1f77bcf86cd799439012 --build build_123',
       'zenifra deploy watch --project 507f1f77bcf86cd799439012 --build build_123 --interval 2',
@@ -591,6 +689,17 @@ function parseArgs(argv) {
   return { positional, flags };
 }
 
+function flagNameForDisplay(value) {
+  return `--${String(value).replace(/[A-Z]/g, (character) => `-${character.toLowerCase()}`)}`;
+}
+
+function validateKnownFlags(flags) {
+  const unknown = Object.keys(flags).filter((name) => !KNOWN_FLAG_NAMES.has(name));
+  if (unknown.length > 0) {
+    throw new CliError(`Flag desconhecida: ${unknown.map(flagNameForDisplay).join(', ')}.`);
+  }
+}
+
 function emptyProfileStore() {
   return {
     version: PROFILE_STORE_VERSION,
@@ -680,7 +789,9 @@ async function migrateLegacySession() {
   });
   store.profiles[DEFAULT_PROFILE_NAME] = migratedProfile;
   store.activeProfile = DEFAULT_PROFILE_NAME;
-  return writeProfileStore(store);
+  const normalized = await writeProfileStore(store);
+  await rm(SESSION_FILE, { force: true });
+  return normalized;
 }
 
 async function readProfileStore() {
@@ -872,6 +983,11 @@ function estimateWizardTotal(state = {}) {
     if (state.plan !== 'free') {
       total += 2;
       if (state.httpStoragePersistent) total += 1;
+    }
+
+    if (state.planAllowsAutoscaling) {
+      total += 1;
+      if (state.httpAutoscalingEnabled) total += 3;
     }
 
     total += 1;
@@ -1214,8 +1330,24 @@ async function promptHidden(question) {
   });
 }
 
-async function request(session, flags, method, path, { body, orgId, tokenRequired = true } = {}) {
-  const credential = resolveCredential(session);
+function httpTimeoutMs() {
+  const configured = process.env.ZENIFRA_HTTP_TIMEOUT_MS;
+  if (configured === undefined) return DEFAULT_HTTP_TIMEOUT_MS;
+
+  const value = Number(configured);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new CliError('ZENIFRA_HTTP_TIMEOUT_MS deve ser um inteiro positivo em milissegundos.');
+  }
+  return value;
+}
+
+async function request(session, flags, method, path, {
+  body,
+  orgId,
+  tokenRequired = true,
+  credential: credentialOverride,
+} = {}) {
+  const credential = credentialOverride || resolveCredential(session);
   if (tokenRequired && !credential) {
     throw new CliError('Voce precisa autenticar primeiro: zenifra auth login, zenifra auth api-key --key <znf_key> ou ZENIFRA_API_KEY.');
   }
@@ -1231,11 +1363,21 @@ async function request(session, flags, method, path, { body, orgId, tokenRequire
     headers['x-organization-id'] = orgId;
   }
 
-  const response = await fetch(`${apiBaseUrl(session, flags)}${path}`, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  const timeoutMs = httpTimeoutMs();
+  let response;
+  try {
+    response = await fetch(`${apiBaseUrl(session, flags)}${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+      throw new CliError(`A API da Zenifra nao respondeu em ate ${timeoutMs} ms.`);
+    }
+    throw new CliError(`Nao foi possivel conectar a API da Zenifra: ${error?.message || 'erro de rede'}.`);
+  }
 
   const text = await response.text();
   let payload = {};
@@ -1249,11 +1391,17 @@ async function request(session, flags, method, path, { body, orgId, tokenRequire
 
   if (!response.ok) {
     const message = payload?.message || payload?.error || `Zenifra API retornou HTTP ${response.status}`;
-    if (response.status === 401 || response.status === 403) {
+    if (response.status === 401) {
       if (credential?.type === 'api_key') {
-        throw new CliError(`${message}. Verifique se a API key esta ativa, possui permissao RBAC e se o IP atual esta permitido.`);
+        throw new CliError(`${message}. Verifique se a API key esta ativa e se o IP atual esta permitido.`);
       }
       throw new CliError(`${message}. Rode "zenifra auth login" para renovar sua sessao.`);
+    }
+    if (response.status === 403) {
+      throw new CliError(message);
+    }
+    if (response.status === 429 && Number.isFinite(Number(payload?.retry_after_seconds))) {
+      throw new CliError(`${message} Tente novamente em ${Number(payload.retry_after_seconds)} segundo(s).`);
     }
     if (String(message).includes('missing x-organization-id')) {
       throw new CliError('Organizacao nao selecionada. Rode "zenifra org set" ou use --org <id>.');
@@ -1523,6 +1671,18 @@ async function handleLogout(session, flags) {
     throw new CliError('Nenhum perfil ativo configurado. Crie um perfil com "zenifra profile add" ou autentique com "zenifra auth login".');
   }
   const target = requireExistingProfile(session, targetName);
+  if (flags.revoke) {
+    if (!target.accessToken) {
+      throw new CliError('A revogacao exige um perfil autenticado por login de usuario; API keys devem ser revogadas na organizacao.');
+    }
+    await request(target, flags, 'DELETE', '/authentication', {
+      credential: {
+        token: target.accessToken,
+        type: 'user',
+        source: 'profile',
+      },
+    });
+  }
   target.accessToken = undefined;
   target.apiKey = undefined;
   target.selectedOrganizationId = undefined;
@@ -1532,7 +1692,7 @@ async function handleLogout(session, flags) {
   if (target.__profileName === getProfileName(session)) {
     Object.assign(session, buildSession(target.__store));
   }
-  process.stdout.write(`Autenticacao removida do perfil ${target.__profileName}.\n`);
+  process.stdout.write(`Autenticacao removida do perfil ${target.__profileName}${flags.revoke ? ' e sessoes de usuario revogadas' : ''}.\n`);
 }
 
 function maskApiKey(value) {
@@ -1874,6 +2034,13 @@ function isIpAccessEnabled(planCatalog, planId) {
   return planHasFeature(planCatalog, planId, 'Bloqueio de IPs');
 }
 
+function isAutoscalingEnabledForPlan(planCatalog, planId) {
+  const plan = Array.isArray(planCatalog)
+    ? planCatalog.find((item) => item?.plan === planId)
+    : undefined;
+  return plan?.permissions?.allow_autoscaling === 'true';
+}
+
 function getMaxReplicasFromFeatures(features) {
   const replicaFeature = features.find((feature) => /réplicas?/i.test(String(feature)));
   if (!replicaFeature) return 5;
@@ -2048,6 +2215,52 @@ function formatAllowedValues(values) {
   return [...values].join(', ');
 }
 
+function validateCreateAutoscaling(config, plan, typeProject) {
+  if (config?.autoscaling === undefined) return config;
+  if (typeProject !== 'http') {
+    throw new CliError('config.autoscaling deve ser informado apenas para projetos HTTP.');
+  }
+  if (plan === 'free') {
+    throw new CliError('Auto-scaling nao esta disponivel para projetos HTTP no plano free.');
+  }
+
+  const autoscaling = config.autoscaling;
+  if (!autoscaling || typeof autoscaling !== 'object' || Array.isArray(autoscaling)) {
+    throw new CliError('config.autoscaling deve ser um objeto.');
+  }
+  if (autoscaling.enabled !== true) {
+    throw new CliError('config.autoscaling.enabled deve ser true na criacao do projeto.');
+  }
+  if (autoscaling.min_instances !== undefined) {
+    throw new CliError('Use config.instances como minimo inicial; config.autoscaling.min_instances nao e aceito na criacao.');
+  }
+
+  const instances = Number(config.instances);
+  if (!Number.isInteger(instances) || instances <= 0) {
+    throw new CliError('config.instances deve ser um inteiro positivo ao criar um projeto com auto-scaling.');
+  }
+
+  const maxInstances = Number(autoscaling.max_instances);
+  if (!Number.isInteger(maxInstances) || maxInstances < instances) {
+    throw new CliError('config.autoscaling.max_instances deve ser um inteiro maior ou igual a config.instances.');
+  }
+
+  const nextAutoscaling = {
+    enabled: true,
+    max_instances: maxInstances,
+  };
+  for (const key of ['target_cpu_utilization_percent', 'target_memory_utilization_percent']) {
+    if (autoscaling[key] === undefined) continue;
+    const value = Number(autoscaling[key]);
+    if (!Number.isInteger(value) || value < 1 || value > 100) {
+      throw new CliError(`config.autoscaling.${key} deve ser um inteiro entre 1 e 100.`);
+    }
+    nextAutoscaling[key] = value;
+  }
+
+  return { ...config, autoscaling: nextAutoscaling };
+}
+
 function validateCreateInput({ plan, paymentMode, config }) {
   const nextPlan = normalizePlan(plan);
   if (!nextPlan || !ALLOWED_PLAN_VALUES.has(nextPlan)) {
@@ -2083,10 +2296,12 @@ function validateCreateInput({ plan, paymentMode, config }) {
     throw new CliError('exposure deve ser informado apenas para projetos HTTP.');
   }
 
+  const validatedConfig = validateCreateAutoscaling(nextConfig, nextPlan, nextTypeProject);
+
   return {
     plan: nextPlan,
     paymentMode: nextPaymentMode,
-    config: nextConfig,
+    config: validatedConfig,
   };
 }
 
@@ -2115,6 +2330,9 @@ function printWizardSummary(payload) {
 
   if (masked.config.type_project === 'http') {
     lines.push(`  http: exposicao ${masked.config.exposure} | porta ${masked.config.port} | instancias ${masked.config.instances} | storage ${masked.config.storage.capacity}Gi (${masked.config.storage.persistent ? 'persistente' : 'efemero'})`);
+    if (masked.config.autoscaling?.enabled) {
+      lines.push(`  auto-scaling: ${masked.config.instances}-${masked.config.autoscaling.max_instances} instancias | CPU ${masked.config.autoscaling.target_cpu_utilization_percent}% | memoria ${masked.config.autoscaling.target_memory_utilization_percent}%`);
+    }
     if (masked.config.github) {
       lines.push(`  github: ${masked.config.github.repository_owner}/${masked.config.github.repository_name}@${masked.config.github.branch} | runtime ${masked.config.github.runtime}@${masked.config.github.version}`);
     } else if (masked.config.image) {
@@ -2319,6 +2537,42 @@ async function buildHttpConfig({ plan, httpPlans, availableInstances }) {
     max: Math.max(1, Number(availableInstances?.[plan] || 1)),
   });
 
+  let autoscaling;
+  if (isAutoscalingEnabledForPlan(httpPlans, plan)) {
+    const enabled = await promptWizardBoolean({
+      label: 'Ativar auto-scaling',
+      docs: DOCS_CONFIGURATION_URL,
+      examples: ['sim', 'nao'],
+    });
+    promptWizardBoolean.ui.state.httpAutoscalingEnabled = enabled;
+    if (enabled) {
+      autoscaling = {
+        enabled: true,
+        max_instances: await promptWizardNumber({
+          label: 'Maximo de instancias do auto-scaling',
+          docs: DOCS_CONFIGURATION_URL,
+          examples: [String(Math.max(instances, 2))],
+          min: instances,
+          max: Math.max(instances, Number(availableInstances?.[plan] || instances)),
+        }),
+        target_cpu_utilization_percent: await promptWizardNumber({
+          label: 'CPU alvo do auto-scaling (%)',
+          docs: DOCS_CONFIGURATION_URL,
+          examples: ['70'],
+          min: 1,
+          max: 100,
+        }),
+        target_memory_utilization_percent: await promptWizardNumber({
+          label: 'Memoria alvo do auto-scaling (%)',
+          docs: DOCS_CONFIGURATION_URL,
+          examples: ['80'],
+          min: 1,
+          max: 100,
+        }),
+      };
+    }
+  }
+
   let storage;
   if (plan === 'free') {
     storage = { persistent: false, capacity: 1 };
@@ -2412,6 +2666,7 @@ async function buildHttpConfig({ plan, httpPlans, availableInstances }) {
     ...(source === 'github' ? { github: await buildHttpGithubConfig() } : { image: await buildHttpImageConfig() }),
     port,
     instances,
+    ...(autoscaling ? { autoscaling } : {}),
     storage,
     envs,
     ...(subdomain ? { subdomain } : {}),
@@ -2527,6 +2782,7 @@ async function runProjectCreateWizard(session, flags) {
   if (typeProject === 'http') {
     ui.state.planAllowsBlockIp = isIpAccessEnabled(catalogs.httpPlans, plan);
     ui.state.planAllowsSubdomain = isSubdomainCustomizable(catalogs.httpPlans, plan);
+    ui.state.planAllowsAutoscaling = isAutoscalingEnabledForPlan(catalogs.httpPlans, plan);
   }
   const paymentMode = await promptWizardSelect({
     label: 'Modo de pagamento',
@@ -2839,6 +3095,241 @@ async function handleProjectInstancesSet(session, flags) {
   process.stdout.write(`Quantidade de instancias atualizada para ${instances}.\n`);
 }
 
+function parseAutoscalingPositiveInteger(value, flagName) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new CliError(`Informe ${flagName} <n> com um inteiro positivo.`);
+  }
+  return parsed;
+}
+
+function parseAutoscalingTargetPercent(value, flagName) {
+  const parsed = parseAutoscalingPositiveInteger(value, flagName);
+  if (parsed > 100) {
+    throw new CliError(`Informe ${flagName} entre 1 e 100.`);
+  }
+  return parsed;
+}
+
+function autoscalingFromProject(project) {
+  return project?.additional_info?.autoscaling || project?.autoscaling || { enabled: false };
+}
+
+function printAutoscaling(autoscaling) {
+  printTable([
+    {
+      status: autoscaling.enabled ? 'ativo' : 'inativo',
+      min: autoscaling.min_instances || '-',
+      max: autoscaling.max_instances || '-',
+      cpu: autoscaling.target_cpu_utilization_percent ? `${autoscaling.target_cpu_utilization_percent}%` : '-',
+      memory: autoscaling.target_memory_utilization_percent ? `${autoscaling.target_memory_utilization_percent}%` : '-',
+    },
+  ], [
+    { label: 'Status', value: (item) => item.status },
+    { label: 'Minimo', value: (item) => item.min },
+    { label: 'Maximo', value: (item) => item.max },
+    { label: 'CPU alvo', value: (item) => item.cpu },
+    { label: 'Memoria alvo', value: (item) => item.memory },
+  ]);
+}
+
+async function handleProjectAutoscaling(session, flags) {
+  const projectId = requireProjectId(flags, 'project autoscaling');
+  if (!projectId) return
+  const orgId = await resolveOrgId(session, flags);
+  const project = await getProject(session, flags, projectId, orgId);
+  const autoscaling = autoscalingFromProject(project);
+
+  if (flags.json) return printJson(autoscaling);
+  printAutoscaling(autoscaling);
+}
+
+async function handleProjectAutoscalingSet(session, flags) {
+  const projectId = requireProjectId(flags, 'project autoscaling set');
+  if (!projectId) return
+  if (flags.min === undefined || flags.max === undefined) {
+    printCommandHelpAndFail('project autoscaling set')
+    return
+  }
+
+  const minInstances = parseAutoscalingPositiveInteger(flags.min, '--min');
+  const maxInstances = parseAutoscalingPositiveInteger(flags.max, '--max');
+  if (maxInstances < minInstances) {
+    throw new CliError('Informe --max maior ou igual a --min.');
+  }
+
+  const body = {
+    enabled: true,
+    min_instances: minInstances,
+    max_instances: maxInstances,
+  };
+
+  if (flags.cpu !== undefined) {
+    body.target_cpu_utilization_percent = parseAutoscalingTargetPercent(flags.cpu, '--cpu');
+  }
+  if (flags.memory !== undefined) {
+    body.target_memory_utilization_percent = parseAutoscalingTargetPercent(flags.memory, '--memory');
+  }
+
+  const orgId = await resolveOrgId(session, flags);
+  const payload = await request(session, flags, 'PATCH', `/project/${projectId}/autoscaling`, {
+    orgId,
+    body,
+  });
+
+  if (flags.json) return printJson(payload);
+  process.stdout.write(`Auto-scaling atualizado: ${minInstances}-${maxInstances} instancias.\n`);
+}
+
+async function handleProjectAutoscalingDisable(session, flags) {
+  const projectId = requireProjectId(flags, 'project autoscaling disable');
+  if (!projectId) return
+
+  const orgId = await resolveOrgId(session, flags);
+  const payload = await request(session, flags, 'PATCH', `/project/${projectId}/autoscaling`, {
+    orgId,
+    body: { enabled: false },
+  });
+
+  if (flags.json) return printJson(payload);
+  process.stdout.write('Auto-scaling desativado.\n');
+}
+
+function printAutoscalingEvents(data) {
+  const directions = { scale_up: 'aumento', scale_down: 'reducao' };
+  const reasons = { increased_capacity: 'capacidade aumentada', reduced_capacity: 'capacidade reduzida' };
+  const events = asArray(data?.events);
+  printTable(events, [
+    { label: 'Quando', value: (event) => event.occurred_at || '-' },
+    { label: 'Direcao', value: (event) => directions[event.direction] || event.direction || '-' },
+    {
+      label: 'Instancias',
+      value: (event) => `${event.previous_instances ?? '-'} -> ${event.new_instances ?? '-'}`,
+    },
+    {
+      label: 'Limites',
+      value: (event) => {
+        const cpu = typeof event.current_cpu_utilization_percent === 'number' || typeof event.target_cpu_utilization_percent === 'number'
+          ? `CPU ${event.current_cpu_utilization_percent ?? '-'}%/${event.target_cpu_utilization_percent ?? '-'}%`
+          : null;
+        const memory = typeof event.current_memory_utilization_percent === 'number' || typeof event.target_memory_utilization_percent === 'number'
+          ? `MEM ${event.current_memory_utilization_percent ?? '-'}%/${event.target_memory_utilization_percent ?? '-'}%`
+          : null;
+        return [cpu, memory].filter(Boolean).join(' ');
+      },
+    },
+    { label: 'Motivo', value: (event) => reasons[event.reason] || event.reason || event.trigger_metric || '-' },
+  ]);
+
+  printPagination(data?.pagination, 'evento');
+}
+
+function isIsoDate(value) {
+  const text = String(value);
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/);
+  if (!match || Number.isNaN(Date.parse(text))) return false;
+
+  const [, year, month, day, hour = '00', minute = '00', second = '00'] = match;
+  const calendarDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  return calendarDate.getUTCFullYear() === Number(year)
+    && calendarDate.getUTCMonth() === Number(month) - 1
+    && calendarDate.getUTCDate() === Number(day)
+    && Number(hour) <= 23
+    && Number(minute) <= 59
+    && Number(second) <= 59;
+}
+
+function validateProjectListFlags(flags, { maxLimit }) {
+  for (const key of ['from', 'to']) {
+    if (flags[key] !== undefined && !isIsoDate(flags[key])) {
+      throw new CliError(`Informe --${key} <iso> com uma data ISO valida.`);
+    }
+  }
+  if (flags.from !== undefined && flags.to !== undefined && Date.parse(String(flags.from)) > Date.parse(String(flags.to))) {
+    throw new CliError('Informe --from anterior ou igual a --to.');
+  }
+  for (const key of ['page', 'limit']) {
+    if (flags[key] === undefined) continue;
+    const value = Number(flags[key]);
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new CliError(`Informe --${key} <n> com um inteiro positivo.`);
+    }
+    if (key === 'limit' && value > maxLimit) {
+      throw new CliError(`Informe --limit entre 1 e ${maxLimit}.`);
+    }
+  }
+}
+
+function printPagination(pagination, singular = 'item') {
+  if (!pagination) return;
+  const { page, total_pages: totalPages, total } = pagination;
+  process.stdout.write(`Pagina ${page} de ${totalPages || 1} - ${total} ${singular}(s)\n`);
+}
+
+function formatMoney(value, currency = 'brl') {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return '-';
+  try {
+    return new Intl.NumberFormat('pt-BR', {
+      style: 'currency',
+      currency: String(currency || 'brl').toUpperCase(),
+    }).format(amount);
+  } catch {
+    return `${String(currency || 'brl').toUpperCase()} ${amount.toFixed(2)}`;
+  }
+}
+
+function printBillingUsage(data) {
+  const hours = asArray(data?.hours);
+  printTable(hours, [
+    { label: 'Inicio', value: (item) => item.hour_start || '-' },
+    { label: 'Fim', value: (item) => item.hour_end || '-' },
+    { label: 'Instancia-horas', value: (item) => item.compute_instance_hours ?? '-' },
+    { label: 'Armazenamento', value: (item) => item.storage_gb_hours === undefined ? '-' : `${item.storage_gb_hours} GB-h` },
+    { label: 'Computacao', value: (item) => formatMoney(item.compute_amount, item.currency) },
+    { label: 'Storage', value: (item) => formatMoney(item.storage_amount, item.currency) },
+    { label: 'Total', value: (item) => formatMoney(item.total_amount, item.currency) },
+    { label: 'Status', value: (item) => item.status || '-' },
+  ]);
+
+  if (data?.summary) {
+    const summary = data.summary;
+    process.stdout.write(`Resumo: computacao ${formatMoney(summary.compute_amount, summary.currency)}, armazenamento ${formatMoney(summary.storage_amount, summary.currency)}, total ${formatMoney(summary.total_amount, summary.currency)}\n`);
+  }
+  printPagination(data?.pagination, 'hora');
+}
+
+
+async function handleProjectAutoscalingEvents(session, flags) {
+  const projectId = requireProjectId(flags, 'project autoscaling events');
+  if (!projectId) return
+
+  if (flags.direction !== undefined && !['scale_up', 'scale_down'].includes(String(flags.direction))) {
+    throw new CliError('direction invalido. Use scale_up ou scale_down.');
+  }
+
+  validateProjectListFlags(flags, { maxLimit: 100 });
+
+  const orgId = await resolveOrgId(session, flags);
+  const query = buildQuery(flags, ['direction', 'from', 'to', 'page', 'limit']);
+  const data = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/autoscaling/events${query}`, { orgId }));
+
+  if (flags.json) return printJson(data);
+  printAutoscalingEvents(data);
+}
+
+async function handleProjectBillingUsage(session, flags) {
+  const projectId = requireProjectId(flags, 'project billing usage');
+  if (!projectId) return;
+  validateProjectListFlags(flags, { maxLimit: 50 });
+  const orgId = await resolveOrgId(session, flags);
+  const query = buildQuery(flags, ['from', 'to', 'page', 'limit']);
+  const data = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/billing/hourly-usage${query}`, { orgId }));
+
+  if (flags.json) return printJson(data);
+  printBillingUsage(data);
+}
+
 function buildQuery(flags, allowedKeys) {
   const params = new URLSearchParams();
   for (const key of allowedKeys) {
@@ -2899,6 +3390,25 @@ async function getBuildLogs(session, flags, projectId, buildId, orgId, { cursor 
   return unwrapData(await request(session, flags, 'GET', `/project/${projectId}/github/builds/${buildId}/logs${query}`, { orgId }))
 }
 
+function parseIntegerOption(value, flagName, { defaultValue, min, max }) {
+  if (value === undefined) return defaultValue;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || (max !== undefined && parsed > max)) {
+    const range = max === undefined ? `maior ou igual a ${min}` : `entre ${min} e ${max}`;
+    throw new CliError(`Informe ${flagName} com um inteiro ${range}.`);
+  }
+  return parsed;
+}
+
+function parseSecondsOption(value, flagName, { defaultValue, min }) {
+  if (value === undefined) return defaultValue;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < min) {
+    throw new CliError(`Informe ${flagName} com um numero maior ou igual a ${min}.`);
+  }
+  return parsed;
+}
+
 function printBuildLogs(logs) {
   for (const log of asArray(logs)) {
     process.stdout.write(`${buildLogLineOf(log)}\n`)
@@ -2917,10 +3427,10 @@ async function followBuildLogs(session, flags, projectId, buildId, orgId, {
   intervalSeconds = 5,
   timeoutSeconds = 900,
 } = {}) {
-  let cursor = Math.max(Number(initialCursor || 0), 0)
-  const pollLimit = Math.max(Number(limit || 200), 1)
-  const intervalMs = Math.max(Number(intervalSeconds || 5), 0.1) * 1000
-  const timeoutMs = Math.max(Number(timeoutSeconds || 900), 1) * 1000
+  let cursor = parseIntegerOption(initialCursor, '--cursor', { defaultValue: 0, min: 0 })
+  const pollLimit = parseIntegerOption(limit, '--limit', { defaultValue: 200, min: 1, max: 500 })
+  const intervalMs = parseSecondsOption(intervalSeconds, '--interval', { defaultValue: 5, min: 0.1 }) * 1000
+  const timeoutMs = parseSecondsOption(timeoutSeconds, '--timeout', { defaultValue: 900, min: 1 }) * 1000
   const startedAt = Date.now()
 
   while (true) {
@@ -2966,15 +3476,15 @@ async function handleBuildLogs(session, flags) {
   }
 
   const orgId = await resolveOrgId(session, flags);
-  const cursor = Math.max(Number(flags.cursor || 0), 0)
-  const limit = Math.max(Number(flags.limit || 200), 1)
+  const cursor = parseIntegerOption(flags.cursor, '--cursor', { defaultValue: 0, min: 0 })
+  const limit = parseIntegerOption(flags.limit, '--limit', { defaultValue: 200, min: 1, max: 500 })
 
   if (flags.follow) {
     return followBuildLogs(session, flags, projectId, buildId, orgId, {
       initialCursor: cursor,
       limit,
-      intervalSeconds: Number(flags.interval || 5),
-      timeoutSeconds: Number(flags.timeout || 900),
+      intervalSeconds: parseSecondsOption(flags.interval, '--interval', { defaultValue: 5, min: 0.1 }),
+      timeoutSeconds: parseSecondsOption(flags.timeout, '--timeout', { defaultValue: 900, min: 1 }),
     })
   }
 
@@ -2995,13 +3505,14 @@ async function handleDeployWatch(session, flags) {
   return followBuildLogs(session, flags, projectId, buildId, orgId, {
     initialCursor: 0,
     limit: 200,
-    intervalSeconds: Number(flags.interval || 5),
-    timeoutSeconds: Number(flags.timeout || 900),
+    intervalSeconds: parseSecondsOption(flags.interval, '--interval', { defaultValue: 5, min: 0.1 }),
+    timeoutSeconds: parseSecondsOption(flags.timeout, '--timeout', { defaultValue: 900, min: 1 }),
   })
 }
 
 async function main() {
   const { positional, flags } = parseArgs(process.argv.slice(2));
+  validateKnownFlags(flags);
   const [command, subcommand] = positional;
   const session = await readSession();
   try {
@@ -3056,6 +3567,11 @@ async function main() {
     if (command === 'project' && subcommand === 'env' && positional[2] === 'add') return handleProjectEnvMutation(session, flags, 'add');
     if (command === 'project' && subcommand === 'env' && positional[2] === 'update') return handleProjectEnvMutation(session, flags, 'update');
     if (command === 'project' && subcommand === 'env' && positional[2] === 'remove') return handleProjectEnvMutation(session, flags, 'remove');
+    if (command === 'project' && subcommand === 'autoscaling' && positional[2] === 'set') return handleProjectAutoscalingSet(session, flags);
+    if (command === 'project' && subcommand === 'autoscaling' && positional[2] === 'disable') return handleProjectAutoscalingDisable(session, flags);
+    if (command === 'project' && subcommand === 'autoscaling' && positional[2] === 'events') return handleProjectAutoscalingEvents(session, flags);
+    if (command === 'project' && subcommand === 'autoscaling') return handleProjectAutoscaling(session, flags);
+    if (command === 'project' && subcommand === 'billing' && positional[2] === 'usage') return handleProjectBillingUsage(session, flags);
     if (command === 'project' && subcommand === 'instances' && positional[2] === 'set') return handleProjectInstancesSet(session, flags);
     if (command === 'project' && subcommand === 'instances') return handleProjectInstances(session, flags);
     if (command === 'builds' && subcommand === 'logs') return handleBuildLogs(session, flags);
