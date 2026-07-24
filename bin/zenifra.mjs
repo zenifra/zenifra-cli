@@ -62,6 +62,13 @@ const KNOWN_FLAG_NAMES = new Set([
   'showValues',
   'status',
   'timeout',
+  'tier',
+  'quota',
+  'bucket',
+  'permissions',
+  'prefixes',
+  'expiresAt',
+  'allowedCidrs',
   'to',
   'totp',
   'type',
@@ -87,6 +94,7 @@ const ALLOWED_PAYMENT_MODE_VALUES = new Set(['hourly', 'monthly', 'yearly']);
 const ALLOWED_TYPE_PROJECT_VALUES = new Set(['http', 'postgresql', 'mariadb']);
 const ALLOWED_RUNTIME_VALUES = new Set(['nodejs', 'python']);
 const ALLOWED_EXPOSURE_VALUES = new Set(['public', 'private']);
+const OBJECT_STORAGE_KEY_PERMISSIONS = new Set(['bucket:list', 'object:read', 'object:write', 'object:delete']);
 const GITHUB_RUNTIME_VERSIONS = {
   nodejs: ['24', '22', '20'],
   python: ['3.13', '3.12', '3.11'],
@@ -154,6 +162,16 @@ Usage:
   zenifra orgs [--json]
   zenifra org set [--org <id>]
   zenifra plans [--type <all|http|database|storage>] [--json]
+  zenifra object-storage plans [--json]
+  zenifra object-storage buckets list [--json]
+  zenifra object-storage buckets create --name <name> --tier <capacity|performance> [--quota <GiB>] [--json]
+  zenifra object-storage buckets delete --bucket <id> [--json]
+  zenifra object-storage keys list [--json]
+  zenifra object-storage keys create --name <name> --bucket <id[,id]> --permissions <list> [--prefixes <list>] [--expires-at <ISO>] [--allowed-cidrs <list>] [--json]
+  zenifra object-storage keys revoke --key <id> [--json]
+  zenifra object-storage usage [--json]
+  zenifra object-storage policy --bucket <id> [--config <json|@file>] [--json]
+  zenifra object-storage cors --bucket <id> [--config <json|@file>] [--json]
   zenifra create project
   zenifra create project --name <name> --plan <plan> --payment-mode <mode> --config <json|@file> [--description <text>] [--org <id>] [--json]
   zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb>] [--page <n>] [--limit <n>]
@@ -590,6 +608,14 @@ const HELP_SPECS = [
       'No modo --json, o comando imprime eventos de log em streaming, um JSON por linha.',
     ],
   },
+  {
+    command: 'object-storage',
+    usage: 'zenifra object-storage plans\n  zenifra object-storage buckets list\n  zenifra object-storage buckets create --name <name> --tier <capacity|performance> [--quota <GiB>]\n  zenifra object-storage keys create --name <name> --bucket <id[,id]> --permissions <list> [--prefixes <list>] [--expires-at <ISO>] [--allowed-cidrs <list>]\n  zenifra object-storage keys list|revoke\n  zenifra object-storage usage\n  zenifra object-storage policy|cors --bucket <id> [--config <json|@file>]',
+    description: 'Gerencia buckets, credenciais, politicas, CORS e uso do Object Storage. Para transferir objetos, use AWS CLI ou SDK compativel com S3.',
+    examples: ['zenifra object-storage buckets create --name minha-aplicacao-assets --tier performance --quota 100', 'zenifra object-storage keys create --name backend --bucket bucket_id --permissions bucket:list,object:read,object:write --prefixes uploads/,assets/'],
+    output: 'ID        Nome                       Classe       Status\nbucket_id minha-aplicacao-assets    performance  active',
+    notes: ['A chave secreta e exibida apenas na criacao. Guarde-a em local seguro.', 'Este comando nao transfere objetos.'],
+  },
 ];
 
 const HELP_BY_COMMAND = new Map(HELP_SPECS.map((spec) => [spec.command, spec]));
@@ -654,7 +680,7 @@ function removedProjectsCreateMessage() {
 }
 
 function isNamespaceCommand(command) {
-  return ['auth', 'profile', 'project', 'org'].includes(command);
+  return ['auth', 'profile', 'project', 'org', 'object-storage'].includes(command);
 }
 
 function parseArgs(argv) {
@@ -1906,6 +1932,99 @@ async function parseConfig(input) {
   } catch {
     throw new CliError('Config invalido. Use JSON valido ou @arquivo.json.');
   }
+}
+
+function printObjectStorage(data, flags) {
+  if (flags.json) return printJson(data)
+  const payload = unwrapData(data)
+  if (payload?.secret_access_key) {
+    process.stdout.write('Credencial S3 criada. Copie o segredo agora: ele não será exibido novamente.\n\n')
+    process.stdout.write(`Access key ID: ${payload.access_key_id}\n`)
+    process.stdout.write(`Secret access key: ${payload.secret_access_key}\n`)
+    process.stdout.write(`Nome: ${payload.name || '-'}\n`)
+    return
+  }
+  if (Array.isArray(payload)) {
+    const isBucket = payload.every((item) => item && typeof item === 'object' && 'tier' in item)
+    if (isBucket) return printTable(payload, [
+      { label: 'ID', value: (bucket) => bucket.id || '-' },
+      { label: 'Nome', value: (bucket) => bucket.name || '-' },
+      { label: 'Classe', value: (bucket) => bucket.tier || '-' },
+      { label: 'Status', value: (bucket) => bucket.status || '-' },
+      { label: 'Quota (GiB)', value: (bucket) => bucket.quota_gib ?? '-' },
+    ])
+    return printTable(payload, [
+      { label: 'ID', value: (key) => key.id || '-' },
+      { label: 'Nome', value: (key) => key.name || '-' },
+      { label: 'Access key', value: (key) => key.key_preview || key.access_key_id || '-' },
+      { label: 'Status', value: (key) => key.status || '-' },
+      { label: 'Expira em', value: (key) => key.expires_at || '-' },
+    ])
+  }
+  printJson(payload)
+}
+
+async function handleObjectStorage(session, flags, positional) {
+  const [, action, operation] = positional
+  const orgId = await resolveOrgId(session, flags)
+  const output = async (method, path, body) => {
+    const data = await request(session, flags, method, path, { body, orgId })
+    printObjectStorage(data, flags)
+  }
+
+  if (action === 'plans') return output('GET', '/object-storage/plans')
+  if (action === 'usage') return output('GET', '/object-storage/usage')
+  if (action === 'buckets' && operation === 'list') return output('GET', '/object-storage/buckets')
+  if (action === 'buckets' && operation === 'create') {
+    if (!flags.name || !flags.tier) throw new CliError('Informe --name e --tier <capacity|performance>.')
+    if (!['capacity', 'performance'].includes(String(flags.tier))) throw new CliError('--tier deve ser capacity ou performance.')
+    const quota = flags.quota === undefined ? undefined : Number(flags.quota)
+    if (quota !== undefined && (!Number.isInteger(quota) || quota <= 0)) throw new CliError('--quota deve ser um inteiro positivo em GiB.')
+    return output('POST', '/object-storage/buckets', { name: flags.name, tier: flags.tier, ...(quota ? { quota_gib: quota } : {}) })
+  }
+  if (action === 'buckets' && operation === 'delete') {
+    if (!flags.bucket) throw new CliError('Informe --bucket <id>.')
+    return output('DELETE', `/object-storage/buckets/${encodeURIComponent(flags.bucket)}`)
+  }
+  if (action === 'keys' && operation === 'list') return output('GET', '/object-storage/access-keys')
+  if (action === 'keys' && operation === 'create') {
+    if (!flags.name || !flags.bucket || !flags.permissions) throw new CliError('Informe --name, --bucket e --permissions.')
+    const list = (value, flag) => {
+      const values = String(value).split(',').map((item) => item.trim()).filter(Boolean)
+      if (values.length === 0) throw new CliError(`${flag} deve conter ao menos um valor.`)
+      if (new Set(values).size !== values.length) throw new CliError(`${flag} não pode conter valores repetidos.`)
+      return values
+    }
+    const bucketIds = list(flags.bucket, '--bucket')
+    const permissions = list(flags.permissions, '--permissions')
+    if (permissions.some((permission) => !OBJECT_STORAGE_KEY_PERMISSIONS.has(permission))) {
+      throw new CliError('--permissions aceita apenas bucket:list, object:read, object:write e object:delete.')
+    }
+    const prefixes = flags.prefixes ? list(flags.prefixes, '--prefixes') : undefined
+    if (prefixes?.some((prefix) => prefix.startsWith('/') || prefix.includes('\0'))) throw new CliError('--prefixes não pode começar com / nem conter NUL.')
+    const allowedCidrs = flags.allowedCidrs ? list(flags.allowedCidrs, '--allowed-cidrs') : undefined
+    let expiresAt
+    if (flags.expiresAt) {
+      const parsed = new Date(String(flags.expiresAt))
+      if (Number.isNaN(parsed.getTime()) || parsed.getTime() <= Date.now()) throw new CliError('--expires-at deve ser uma data ISO futura.')
+      expiresAt = parsed.toISOString()
+    }
+    const body = { name: flags.name, bucket_ids: bucketIds, permissions,
+      ...(prefixes ? { prefixes } : {}),
+      ...(expiresAt ? { expires_at: expiresAt } : {}),
+      ...(allowedCidrs ? { allowed_cidrs: allowedCidrs } : {}) }
+    return output('POST', '/object-storage/access-keys', body)
+  }
+  if (action === 'keys' && operation === 'revoke') {
+    if (!flags.key) throw new CliError('Informe --key <id>.')
+    return output('DELETE', `/object-storage/access-keys/${encodeURIComponent(flags.key)}`)
+  }
+  if ((action === 'policy' || action === 'cors') && flags.bucket) {
+    const path = `/object-storage/buckets/${encodeURIComponent(flags.bucket)}/${action}`
+    if (!flags.config) return output('GET', path)
+    return output('PUT', path, { [action]: await parseConfig(flags.config) })
+  }
+  throw new CliError('Comando Object Storage desconhecido. Rode "zenifra object-storage --help".')
 }
 
 function normalizeFreeText(value) {
@@ -3552,6 +3671,7 @@ async function main() {
     if (command === 'login') return handleLogin(session, flags);
     if (command === 'logout') return handleLogout(session, flags);
     if (command === 'plans') return handlePlans(session, flags);
+    if (command === 'object-storage') return handleObjectStorage(session, flags, positional);
     if (command === 'create' && subcommand === 'project') return handleProjectCreate(session, flags);
     if (command === 'orgs') return handleOrgs(session, flags);
     if (command === 'org' && subcommand === 'set') return handleOrgSet(session, flags);

@@ -82,7 +82,38 @@ zenifra builds logs --project <project-id> --build <build-id> --follow
 zenifra deployments --project <project-id>
 zenifra deploy --project <project-id> --branch main
 zenifra deploy watch --project <project-id> --build <build-id>
+zenifra object-storage plans
+zenifra object-storage buckets list
+zenifra object-storage buckets create --name <name> --tier <capacity|performance> --quota <GiB>
+zenifra object-storage buckets delete --bucket <bucket-id>
+zenifra object-storage keys list
+zenifra object-storage keys create --name <name> --bucket <bucket-id[,bucket-id]> --permissions <list>
+zenifra object-storage keys revoke --key <key-id>
+zenifra object-storage usage
+zenifra object-storage policy --bucket <bucket-id> --config @policy.json
+zenifra object-storage cors --bucket <bucket-id> --config @cors.json
 ```
+
+## Object Storage
+
+Use o namespace `object-storage` para administrar buckets, credenciais, policy, CORS e uso. A transferência de objetos continua sendo feita por AWS CLI ou SDKs S3, usando o endpoint `https://s3.zenifra.com` e a região `br-sao-1`.
+
+```bash
+zenifra object-storage buckets create \
+  --name minha-aplicacao-assets \
+  --tier performance \
+  --quota 100
+
+zenifra object-storage keys create \
+  --name backend-producao \
+  --bucket <bucket-id> \
+  --permissions bucket:list,object:read,object:write \
+  --prefixes uploads/,documentos/ \
+  --allowed-cidrs 203.0.113.10/32 \
+  --expires-at 2027-01-01T00:00:00.000Z
+```
+
+O `secret_access_key` aparece somente na criação. Guarde-o em um gerenciador de segredos; a CLI não consegue recuperá-lo depois. `buckets delete` exige bucket vazio e `keys revoke` interrompe o acesso das aplicações que usam a credencial. Revise o ID antes de executar qualquer um desses comandos.
 
 ## Builds GitHub
 

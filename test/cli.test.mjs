@@ -2342,3 +2342,75 @@ test('auth api-key stores the local profile store with owner-only permissions', 
     await rm(configDir, { recursive: true, force: true });
   }
 });
+
+test('object storage policy wraps customer policy in the management API contract', async () => {
+  const server = await withServer(async (req, res) => {
+    assert.equal(req.method, 'PUT');
+    assert.equal(req.url, '/v1/object-storage/buckets/bucket-1/policy');
+    assert.deepEqual(await readJson(req), {
+      policy: { Version: '2012-10-17', Statement: [] },
+    });
+    jsonResponse(res, 200, { status: 'success', data: { id: 'bucket-1' } });
+  });
+
+  try {
+    const result = await runCli([
+      'object-storage', 'policy', '--bucket', 'bucket-1',
+      '--config', '{"Version":"2012-10-17","Statement":[]}',
+    ], { apiBase: server.apiBase });
+    assert.equal(result.code, 0, result.stderr);
+  } finally {
+    await server.close();
+  }
+});
+
+test('object storage key creation displays the one-time secret with an explicit warning', async () => {
+  const server = await withServer(async (req, res) => {
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/object-storage/access-keys');
+    assert.deepEqual(await readJson(req), {
+      name: 'backend',
+      bucket_ids: ['bucket-1'],
+      permissions: ['object:read', 'object:write'],
+      prefixes: ['uploads/', 'assets/'],
+    });
+    jsonResponse(res, 201, {
+      status: 'success',
+      data: {
+        id: 'key-1', name: 'backend', access_key_id: 'ZNFACCESS', secret_access_key: 'secret-once',
+      },
+    });
+  });
+
+  try {
+    const result = await runCli([
+      'object-storage', 'keys', 'create', '--name', 'backend', '--bucket', 'bucket-1',
+      '--permissions', 'object:read,object:write', '--prefixes', 'uploads/,assets/',
+    ], { apiBase: server.apiBase });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /não será exibido novamente/i);
+    assert.match(result.stdout, /Secret access key: secret-once/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('object storage key creation rejects unsupported permissions before making a request', async () => {
+  let requests = 0;
+  const server = await withServer(async (_req, res) => {
+    requests += 1;
+    jsonResponse(res, 500, { status: 'failed' });
+  });
+
+  try {
+    const result = await runCli([
+      'object-storage', 'keys', 'create', '--name', 'backend', '--bucket', 'bucket-1',
+      '--permissions', 'object:admin',
+    ], { apiBase: server.apiBase });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /--permissions aceita apenas/i);
+    assert.equal(requests, 0);
+  } finally {
+    await server.close();
+  }
+});
