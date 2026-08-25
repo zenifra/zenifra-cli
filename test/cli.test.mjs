@@ -30,6 +30,72 @@ const DATABASE_PLAN_CATALOG = [
   { plan: 'db-premium', prices: { hourly: 3, monthly: 30, yearly: 300 }, features: ['Até 4 réplicas'] },
   { plan: 'db-enterprise', prices: { hourly: 4, monthly: 40, yearly: 400 }, features: ['Até 5 réplicas'] },
 ];
+const VALKEY_CATALOG = {
+  engine: 'valkey',
+  version: '9.1.1',
+  currency: 'brl',
+  profiles: [
+    { id: 'key_value', persistence: true },
+    { id: 'cache', persistence: false },
+    { id: 'queue', persistence: true },
+  ],
+  plans: [
+    {
+      id: 'db-free',
+      profile: 'key_value',
+      prices: { hourly: 0, monthly: 0, yearly: 0 },
+      features: ['1 GB incluído'],
+      included_storage_gb: 1,
+      high_availability: { key_value: false, cache: false, queue: false },
+      resources: { cpu: '250m', memory: '256Mi' },
+    },
+    {
+      id: 'db-basic',
+      profile: 'key_value',
+      prices: { hourly: 2, monthly: 20, yearly: 200 },
+      features: ['Alta disponibilidade'],
+      included_storage_gb: 5,
+      high_availability: { key_value: true, cache: false, queue: true },
+      resources: { cpu: '1000m', memory: '1Gi' },
+    },
+    {
+      id: 'cache-free',
+      profile: 'cache',
+      prices: { hourly: 0, monthly: 0, yearly: 0 },
+      features: ['Dados temporários'],
+      included_storage_gb: 0,
+      high_availability: { key_value: false, cache: false, queue: false },
+      resources: { cpu: '250m', memory: '256Mi' },
+    },
+    {
+      id: 'cache-basic',
+      profile: 'cache',
+      prices: { hourly: 2, monthly: 20, yearly: 200 },
+      features: ['Dados temporários'],
+      included_storage_gb: 0,
+      high_availability: { key_value: true, cache: false, queue: true },
+      resources: { cpu: '1000m', memory: '1Gi' },
+    },
+    {
+      id: 'queue-free',
+      profile: 'queue',
+      prices: { hourly: 0, monthly: 0, yearly: 0 },
+      features: ['1 GB incluído'],
+      included_storage_gb: 1,
+      high_availability: { key_value: false, cache: false, queue: false },
+      resources: { cpu: '250m', memory: '256Mi' },
+    },
+    {
+      id: 'queue-basic',
+      profile: 'queue',
+      prices: { hourly: 2, monthly: 20, yearly: 200 },
+      features: ['Alta disponibilidade'],
+      included_storage_gb: 5,
+      high_availability: { key_value: true, cache: false, queue: true },
+      resources: { cpu: '1000m', memory: '1Gi' },
+    },
+  ],
+};
 const STORAGE_PLAN_CATALOG = [
   { storage: '1gb_persistente', prices: { hourly: 0.5, monthly: 360, yearly: 4320 }, persistent: true },
   { storage: '1gb_efêmero', prices: { hourly: 0.25, monthly: 180, yearly: 2160 }, persistent: false },
@@ -472,6 +538,12 @@ async function withPlansCatalogServer(handler, callback) {
       return;
     }
 
+    if (req.method === 'GET' && req.url === '/v1/managed-services/catalog') {
+      assert.equal(req.headers.authorization, undefined);
+      jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
+      return;
+    }
+
     await handler(req, res);
   }, callback);
 }
@@ -482,7 +554,7 @@ test('plans help works without authentication', async () => {
     for (const args of [['plans', '--help'], ['help', 'plans']]) {
       const result = await runCli(args, { configDir, envApiKey: null });
       assert.equal(result.code, 0, `${args.join(' ')}\n${result.stderr}`);
-      assert.match(result.stdout, /Usage:\n  zenifra plans \[--type <all\|http\|database\|storage>] \[--json]/);
+      assert.match(result.stdout, /Usage:\n  zenifra plans \[--type <all\|http\|database\|storage\|valkey>] \[--json]/);
       assert.match(result.stdout, /Examples:/);
       assert.doesNotMatch(result.stdout, /Voce precisa autenticar primeiro/);
     }
@@ -520,6 +592,69 @@ test('plans lists all catalogs without authentication by default', async () => {
     assert.match(result.stdout, /1 GB/);
     assert.match(result.stdout, /Persistente/);
     assert.match(result.stdout, /Efemero/);
+    assert.match(result.stdout, /Key Value/);
+    assert.match(result.stdout, /Cache/);
+    assert.match(result.stdout, /Queue/);
+  });
+});
+
+test('plans --type valkey and profile aliases use the managed services catalog', async () => {
+  const scenarios = [
+    { type: 'valkey', expectedProfile: null, expectedText: /Key Value/ },
+    { type: 'key-value', expectedProfile: 'key_value', expectedText: /db-free/ },
+    { type: 'cache', expectedProfile: 'cache', expectedText: /cache-free/ },
+    { type: 'queue', expectedProfile: 'queue', expectedText: /queue-free/ },
+  ];
+
+  for (const scenario of scenarios) {
+    await withCliServer(async (req, res) => {
+      assert.equal(req.method, 'GET');
+      assert.equal(req.url, '/v1/managed-services/catalog');
+      assert.equal(req.headers.authorization, undefined);
+      jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
+    }, async ({ apiBase, configDir, requests }) => {
+      const result = await runCli(['plans', '--type', scenario.type], { apiBase, configDir, envApiKey: null });
+
+      assert.equal(result.code, 0, `${scenario.type}\n${result.stderr}`);
+      assert.match(result.stdout, scenario.expectedText);
+      assert.deepEqual(requests.map((request) => request.url), ['/v1/managed-services/catalog']);
+      if (scenario.expectedProfile) {
+        const otherProfiles = ['key_value', 'cache', 'queue'].filter((profile) => profile !== scenario.expectedProfile);
+        for (const profile of otherProfiles) assert.doesNotMatch(result.stdout, new RegExp(profile));
+      }
+    });
+  }
+});
+
+test('plans --type valkey --json returns the live catalog without requiring authentication', async () => {
+  await withCliServer(async (req, res) => {
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/managed-services/catalog');
+    assert.equal(req.headers.authorization, undefined);
+    jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['plans', '--type', 'valkey', '--json'], { apiBase, configDir, envApiKey: null });
+
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.deepEqual(payload.http, []);
+    assert.deepEqual(payload.database, []);
+    assert.deepEqual(payload.storage, []);
+    assert.deepEqual(payload.valkey, VALKEY_CATALOG);
+  });
+});
+
+test('plans fails clearly when the Valkey catalog is malformed', async () => {
+  await withCliServer(async (req, res) => {
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/managed-services/catalog');
+    jsonResponse(res, 200, { status: 'success', data: { engine: 'valkey' } });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['plans', '--type', 'valkey'], { apiBase, configDir, envApiKey: null });
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /Falha ao carregar|catalogo.*Valkey|catalogo.*serviço/i);
   });
 });
 
@@ -587,7 +722,7 @@ test('plans fails clearly on invalid type', async () => {
 
     assert.equal(result.code, 1);
     assert.match(result.stderr, /Tipo de catalogo invalido/);
-    assert.match(result.stderr, /all, http, database, storage/);
+    assert.match(result.stderr, /all, http, database, storage, valkey/);
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }
@@ -656,6 +791,11 @@ async function withWizardCatalogServer(postHandler, callback, { httpPlans = HTTP
 
     if (req.method === 'GET' && req.url === '/v1/project/database/plans') {
       jsonResponse(res, 200, { status: 'success', data: DATABASE_PLAN_CATALOG });
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/v1/managed-services/catalog') {
+      jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
       return;
     }
 
@@ -808,6 +948,59 @@ test('deploy watch streams build logs until the build succeeds', async () => {
     assert.match(result.stdout, /\[2026-06-03T12:00:00.000Z] install: npm ci/);
     assert.match(result.stdout, /\[2026-06-03T12:00:03.000Z] build: vite build/);
     assert.match(result.stdout, /\[2026-06-03T12:00:06.000Z] build: GitHub build and deployment completed successfully/);
+  });
+});
+
+test('projects command lists Valkey projects with the public type filter', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project?type=valkey&page=1&limit=15');
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        projects: [{ id: 'proj_valkey', name: 'cache-main', status: 'running', plan: 'cache-free', type_project: 'valkey' }],
+        pagination: { page: 1, pages: 1, total: 1 },
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['projects', '--type', 'valkey'], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /proj_valkey/);
+    assert.match(result.stdout, /valkey/);
+  });
+});
+
+test('project info shows Valkey product fields without HTTP-only labels', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/proj_valkey');
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        id: 'proj_valkey',
+        name: 'cache-main',
+        status: 'running',
+        type_project: 'valkey',
+        plan: 'cache-free',
+        managed_service: {
+          engine: 'valkey',
+          profile: 'cache',
+          version: '9.1.1',
+          topology: { persistent: false },
+        },
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['project', 'info', '--project', 'proj_valkey'], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Perfil: cache/);
+    assert.match(result.stdout, /Versao: 9\.1\.1/);
+    assert.match(result.stdout, /Persistente: nao/);
+    assert.doesNotMatch(result.stdout, /URL:|Imagem:|Exposicao:/);
   });
 });
 
@@ -1666,6 +1859,172 @@ test('create project fails early when http exposure is missing', async () => {
   }
 });
 
+test('create project sends the catalog-backed payload for every Valkey profile', async () => {
+  const cases = [
+    {
+      profile: 'key_value',
+      plan: 'db-free',
+      config: {
+        type_project: 'valkey',
+        profile: 'key_value',
+        version: '9.1.1',
+        storage: { persistent: true, capacity: 1 },
+      },
+    },
+    {
+      profile: 'cache',
+      plan: 'cache-free',
+      config: {
+        type_project: 'valkey',
+        profile: 'cache',
+        version: '9.1.1',
+      },
+    },
+    {
+      profile: 'queue',
+      plan: 'queue-free',
+      config: {
+        type_project: 'valkey',
+        profile: 'queue',
+        version: '9.1.1',
+        storage: { persistent: true, capacity: 1 },
+      },
+    },
+  ];
+
+  for (const item of cases) {
+    let body;
+    await withCliServer(async (req, res) => {
+      assertApiKeyAuth(req);
+      if (req.method === 'GET' && req.url === '/v1/managed-services/catalog') {
+        jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
+        return;
+      }
+      assert.equal(req.method, 'POST');
+      assert.equal(req.url, '/v1/project');
+      body = await readJson(req);
+      jsonResponse(res, 201, {
+        status: 'success',
+        data: {
+          project_id: `proj_${item.profile}`,
+          managed_service: {
+            profile: item.profile,
+            host: `${item.profile}.managed.zenifra.com`,
+            port: 6380,
+            tls: true,
+            connection_string: 'valkeys://default:secret-value@service.example.com:6380/0',
+          },
+        },
+      });
+    }, async ({ apiBase, configDir }) => {
+      const result = await runCli([
+        'create', 'project',
+        '--name', `valkey-${item.profile}`,
+        '--plan', item.plan,
+        '--payment-mode', 'hourly',
+        '--config', JSON.stringify(item.config),
+      ], { apiBase, configDir });
+
+      assert.equal(result.code, 0, `${item.profile}\n${result.stderr}`);
+      assert.deepEqual(body.config, item.config);
+      assert.match(result.stdout, /secret-value/);
+    });
+  }
+});
+
+test('create project rejects invalid Valkey configurations before POST', async () => {
+  const cases = [
+    {
+      name: 'profile and plan mismatch',
+      plan: 'cache-free',
+      config: { type_project: 'valkey', profile: 'key_value', version: '9.1.1', storage: { persistent: true, capacity: 1 } },
+      expected: /plano.*perfil|invalido/i,
+    },
+    {
+      name: 'version outside catalog',
+      plan: 'db-free',
+      config: { type_project: 'valkey', profile: 'key_value', version: '8.0.0', storage: { persistent: true, capacity: 1 } },
+      expected: /vers[aã]o|catalogo/i,
+    },
+    {
+      name: 'cache with storage',
+      plan: 'cache-free',
+      config: { type_project: 'valkey', profile: 'cache', version: '9.1.1', storage: { persistent: true, capacity: 1 } },
+      expected: /cache.*storage|storage.*cache/i,
+    },
+    {
+      name: 'durable profile without storage',
+      plan: 'queue-free',
+      config: { type_project: 'valkey', profile: 'queue', version: '9.1.1' },
+      expected: /storage.*persistente|storage/i,
+    },
+    {
+      name: 'non-persistent durable storage',
+      plan: 'db-free',
+      config: { type_project: 'valkey', profile: 'key_value', version: '9.1.1', storage: { persistent: false, capacity: 1 } },
+      expected: /persistente/i,
+    },
+    {
+      name: 'forbidden runtime fields',
+      plan: 'cache-free',
+      config: { type_project: 'valkey', profile: 'cache', version: '9.1.1', instances: 1, image: { url: 'registry.example.com/app:1', is_public: true } },
+      expected: /nao aceita|não aceita|instances|image/i,
+    },
+  ];
+
+  for (const item of cases) {
+    let postCalls = 0;
+    await withCliServer(async (req, res) => {
+      assertApiKeyAuth(req);
+      if (req.method === 'GET' && req.url === '/v1/managed-services/catalog') {
+        jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
+        return;
+      }
+      postCalls += 1;
+      jsonResponse(res, 500, { status: 'failed', message: 'POST should not be called' });
+    }, async ({ apiBase, configDir }) => {
+      const result = await runCli([
+        'create', 'project',
+        '--name', `invalid-${item.name.replaceAll(' ', '-')}`,
+        '--plan', item.plan,
+        '--payment-mode', 'hourly',
+        '--config', JSON.stringify(item.config),
+      ], { apiBase, configDir });
+
+      assert.equal(result.code, 1, `${item.name}\n${result.stdout}\n${result.stderr}`);
+      assert.match(result.stderr, item.expected, item.name);
+      assert.equal(postCalls, 0, item.name);
+    });
+  }
+});
+
+test('create project preserves an explicit idempotency key for Valkey', async () => {
+  let receivedKey;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/managed-services/catalog') {
+      jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
+      return;
+    }
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project');
+    receivedKey = req.headers['idempotency-key'];
+    jsonResponse(res, 201, { status: 'success', data: { project_id: 'proj_idempotent' } });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'create', 'project',
+      '--name', 'valkey-idempotent',
+      '--plan', 'cache-free',
+      '--payment-mode', 'hourly',
+      '--idempotency-key', 'valkey-create-key-001',
+      '--config', JSON.stringify({ type_project: 'valkey', profile: 'cache', version: '9.1.1' }),
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(receivedKey, 'valkey-create-key-001');
+  });
+});
+
 test('create project normalizes aliases before calling API', async () => {
   let body;
   await withCliServer(async (req, res) => {
@@ -1840,7 +2199,7 @@ test('create project launches the wizard for an http OCI project', async () => {
     assert.equal(body.config.subdomain, undefined);
     assert.match(result.stdout, /Wizard interativo/);
     assert.match(result.stdout, /\[1\/\d+\] Nome do projeto\*/);
-    assert.match(result.stdout, /\[3\/\d+\] Tipo do projeto\* \[1=http 2=postgresql 3=mariadb\]/);
+    assert.match(result.stdout, /\[3\/\d+\] Tipo do projeto\* \[1=http 2=postgresql 3=mariadb 4=valkey\]/);
     assert.doesNotMatch(result.stdout, /^Obrigatorio:/m);
     assert.doesNotMatch(result.stdout, /custom domains/i);
     assert.doesNotMatch(result.stdout, /Subdomain personalizado/i);
@@ -2329,6 +2688,197 @@ test('projects create --help fails with a migration message', async () => {
   }
 });
 
+test('valkey lifecycle commands expose specific help without authentication', async () => {
+  const commands = [
+    ['valkey'],
+    ['valkey', 'status'],
+    ['valkey', 'connection'],
+    ['valkey', 'credentials'],
+    ['valkey', 'credentials', 'rotate'],
+    ['valkey', 'credentials', 'status'],
+  ];
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+
+  try {
+    for (const command of commands) {
+      const result = await runCli([...command, '--help'], { configDir, envApiKey: null });
+      assert.equal(result.code, 0, `${command.join(' ')}\n${result.stderr}`);
+      assert.match(result.stdout, new RegExp(`zenifra ${command.join(' ')}`));
+      assert.match(result.stdout, /Examples:/);
+    }
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('valkey lifecycle commands show help instead of making requests when arguments are missing', async () => {
+  const commands = [
+    ['valkey', 'status'],
+    ['valkey', 'connection'],
+    ['valkey', 'credentials', 'rotate'],
+    ['valkey', 'credentials', 'status'],
+  ];
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+
+  try {
+    for (const command of commands) {
+      const result = await runCli(command, { configDir, envApiKey: apiKey });
+      assert.equal(result.code, 1, `${command.join(' ')}\n${result.stderr}`);
+      assert.match(result.stdout, /Zenifra CLI - valkey/);
+      assert.match(result.stdout, /Usage:/);
+      assert.equal(result.stderr, '');
+    }
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('valkey status and connection preserve public response fields and masking', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/managed-services/proj_valkey/status') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: {
+          id: 'proj_valkey',
+          status: 'running',
+          engine: 'valkey',
+          profile: 'cache',
+          version: '9.1.1',
+          persistence: false,
+          instances: 1,
+        },
+      });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/managed-services/proj_valkey/connection') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: {
+          host: 'valkey.example.com',
+          port: 6380,
+          username: 'default',
+          tls: true,
+          connection_string: 'valkeys://default:********@valkey.example.com:6380/0',
+        },
+      });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    const status = await runCli(['valkey', 'status', '--project', 'proj_valkey'], { apiBase, configDir });
+    assert.equal(status.code, 0, status.stderr);
+    assert.match(status.stdout, /running/);
+    assert.match(status.stdout, /cache/);
+    assert.match(status.stdout, /9\.1\.1/);
+
+    const connection = await runCli(['valkey', 'connection', '--project', 'proj_valkey', '--json'], { apiBase, configDir });
+    assert.equal(connection.code, 0, connection.stderr);
+    const payload = JSON.parse(connection.stdout);
+    assert.equal(payload.connection_string, 'valkeys://default:********@valkey.example.com:6380/0');
+    assert.doesNotMatch(connection.stdout, /secret-value|password-value/);
+  });
+});
+
+test('valkey credential rotation sends idempotency key and returns the accepted operation', async () => {
+  let receivedKey;
+  let receivedBody;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'PATCH');
+    assert.equal(req.url, '/v1/managed-services/proj_valkey/credentials');
+    receivedKey = req.headers['idempotency-key'];
+    receivedBody = await readJson(req);
+    jsonResponse(res, 202, { status: 'accepted', data: { operation_id: 'rotation_123', state: 'accepted' } });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'valkey', 'credentials', 'rotate',
+      '--project', 'proj_valkey',
+      '--idempotency-key', 'valkey-rotation-key-001',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(receivedKey, 'valkey-rotation-key-001');
+    assert.deepEqual(receivedBody, {});
+    assert.match(result.stdout, /rotation_123/);
+    assert.match(result.stdout, /accepted/);
+  });
+});
+
+test('valkey credential status returns the new connection only after completion', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/managed-services/proj_valkey/credential-rotations/rotation_123');
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        operation_id: 'rotation_123',
+        state: 'completed',
+        credential_version: 2,
+        username: 'default',
+        host: 'valkey.example.com',
+        port: 6380,
+        tls: true,
+        connection_string: 'valkeys://default:rotated-secret@valkey.example.com:6380/0',
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'valkey', 'credentials', 'status',
+      '--project', 'proj_valkey',
+      '--operation', 'rotation_123',
+      '--json',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).connection_string, 'valkeys://default:rotated-secret@valkey.example.com:6380/0');
+    const profiles = await readFile(join(configDir, 'profiles.json'), 'utf8').catch(() => '');
+    assert.doesNotMatch(profiles, /rotated-secret/);
+  });
+});
+
+test('valkey credential rotation waits through accepted and running states', async () => {
+  let statusCalls = 0;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'PATCH' && req.url === '/v1/managed-services/proj_valkey/credentials') {
+      jsonResponse(res, 202, { status: 'accepted', data: { operation_id: 'rotation_wait', state: 'accepted' } });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/managed-services/proj_valkey/credential-rotations/rotation_wait') {
+      statusCalls += 1;
+      if (statusCalls === 1) {
+        jsonResponse(res, 200, { status: 'success', data: { operation_id: 'rotation_wait', state: 'running' } });
+        return;
+      }
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: {
+          operation_id: 'rotation_wait',
+          state: 'completed',
+          connection_string: 'valkeys://default:waited-secret@valkey.example.com:6380/0',
+        },
+      });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'valkey', 'credentials', 'rotate',
+      '--project', 'proj_valkey',
+      '--idempotency-key', 'valkey-rotation-wait-001',
+      '--wait',
+      '--interval', '0.1',
+      '--timeout', '2',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(statusCalls, 2);
+    assert.match(result.stdout, /waited-secret/);
+  });
+});
+
 test('auth api-key stores the local profile store with owner-only permissions', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
 
@@ -2340,5 +2890,60 @@ test('auth api-key stores the local profile store with owner-only permissions', 
     assert.equal(mode, 0o600);
   } finally {
     await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('create project wizard supports Key Value, Cache and Queue without invalid storage fields', async () => {
+  const cases = [
+    {
+      name: 'valkey-key-value',
+      expected: {
+        type_project: 'valkey',
+        profile: 'key_value',
+        version: '9.1.1',
+        storage: { persistent: true, capacity: 1 },
+      },
+      stdin: ['valkey-key-value', '', '4', '1', '1', '1', '1', 'n', 's'],
+    },
+    {
+      name: 'valkey-cache',
+      expected: {
+        type_project: 'valkey',
+        profile: 'cache',
+        version: '9.1.1',
+      },
+      stdin: ['valkey-cache', '', '4', '2', '1', '1', 'n', 's'],
+    },
+    {
+      name: 'valkey-queue',
+      expected: {
+        type_project: 'valkey',
+        profile: 'queue',
+        version: '9.1.1',
+        storage: { persistent: true, capacity: 1 },
+      },
+      stdin: ['valkey-queue', '', '4', '3', '1', '1', '1', 'n', 's'],
+    },
+  ];
+
+  for (const item of cases) {
+    let body;
+    await withWizardCatalogServer(async (req, res) => {
+      assert.equal(req.method, 'POST');
+      assert.equal(req.url, '/v1/project');
+      body = await readJson(req);
+      jsonResponse(res, 201, { status: 'success', data: { project_id: `proj_${item.name}` } });
+    }, async ({ apiBase, configDir }) => {
+      const result = await runCli(['create', 'project'], {
+        apiBase,
+        configDir,
+        stdin: `${item.stdin.join('\n')}\n`,
+      });
+
+      assert.equal(result.code, 0, `${item.name}\n${result.stdout}\n${result.stderr}`);
+      assert.deepEqual(body.config, item.expected);
+      assert.match(result.stdout, /Valkey|Key Value|Cache|Queue/);
+      if (item.name === 'valkey-cache') assert.doesNotMatch(result.stdout, /Capacidade de storage/i);
+    });
   }
 });

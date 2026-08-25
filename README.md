@@ -51,6 +51,7 @@ zenifra orgs
 zenifra org set
 zenifra plans
 zenifra plans --type http
+zenifra plans --type valkey
 zenifra plans --type storage --json
 zenifra create project
 zenifra create project --name <name> --plan free --payment-mode hourly --config @examples/http-project.json
@@ -58,8 +59,16 @@ zenifra create project --name <name> --plan basic --payment-mode hourly --config
 zenifra create project --name <name> --plan premium --payment-mode hourly --config @examples/http-autoscaling-project.json
 zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/postgresql-project.json
 zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/mariadb-project.json
+zenifra create project --name <name> --plan db-free --payment-mode hourly --config @examples/valkey-key-value-project.json
+zenifra create project --name <name> --plan cache-free --payment-mode hourly --config @examples/valkey-cache-project.json
+zenifra create project --name <name> --plan queue-free --payment-mode hourly --config @examples/valkey-queue-project.json
 zenifra projects --type http --page 1 --limit 15
+zenifra projects --type valkey --page 1 --limit 15
 zenifra project info --project <project-id>
+zenifra valkey status --project <project-id>
+zenifra valkey connection --project <project-id>
+zenifra valkey credentials rotate --project <project-id> --wait
+zenifra valkey credentials status --project <project-id> --operation <operation-id>
 zenifra project url --project <project-id>
 zenifra project logs --project <project-id> --instance <instance-id>
 zenifra project metrics --project <project-id> --instance <instance-id>
@@ -125,7 +134,7 @@ zenifra plans --type database
 zenifra plans --type storage --json
 ```
 
-`zenifra plans` funciona sem autenticacao e mostra os catalogos publicos de HTTP, banco e armazenamento.
+`zenifra plans` funciona sem autenticacao e mostra os catalogos publicos de HTTP, banco, armazenamento e Valkey. Use `--type valkey` para consultar Key Value, Cache e Queue.
 
 Valores de variaveis de ambiente sao mascarados por padrao, inclusive em `--json`.
 Use `--show-values` apenas quando precisar inspecionar os valores completos.
@@ -193,6 +202,9 @@ Use os arquivos em `examples/` como base para `zenifra create project`:
 - `examples/http-autoscaling-project.json`: projeto HTTP pago criado com auto-scaling
 - `examples/postgresql-project.json`: projeto PostgreSQL
 - `examples/mariadb-project.json`: projeto MariaDB
+- `examples/valkey-key-value-project.json`: projeto Valkey Key Value com armazenamento persistente
+- `examples/valkey-cache-project.json`: projeto Valkey Cache sem armazenamento persistente
+- `examples/valkey-queue-project.json`: projeto Valkey Queue com armazenamento persistente
 
 Se voce rodar apenas `zenifra create project`, a CLI abre um wizard interativo estilo `npm init` e pergunta todos os campos guiados. Cada pergunta mostra:
 
@@ -205,6 +217,7 @@ O wizard atual cobre:
 - projetos `http` com origem `github` ou `oci`
 - projetos `postgresql`
 - projetos `mariadb`
+- projetos `valkey` nos perfis `key_value`, `cache` e `queue`
 
 `zenifra create project` nao assume valores default para `--plan` e `--payment-mode`.
 Configs HTTP nao interativas tambem devem informar `config.exposure`; use `public` para criar rota/dominio publico ou `private` para manter a aplicacao sem exposicao na internet.
@@ -213,9 +226,12 @@ Antes de escolher um plano com o usuario, compare os catalogos com `zenifra plan
 Valores aceitos:
 
 - `payment_mode`: `hourly`, `monthly`, `yearly`
-- `type_project` no `config`: `http`, `postgresql`, `mariadb`
+- `type_project` no `config`: `http`, `postgresql`, `mariadb`, `valkey`
 - `exposure` no `config` HTTP: `public`, `private`
-- `plan`: `free`, `static`, `basic`, `premium`, `premium_plus`, `business`, `deep_learning_basic`, `deep_learning_premium`, `db-free`, `db-starter`, `db-basic`, `db-premium`, `db-enterprise`
+- `plan`: consulte `zenifra plans` para os planos atuais; Valkey usa `db-*` para Key Value, `cache-*` para Cache e `queue-*` para Queue
+- `config.profile` em projetos Valkey: `key_value`, `cache` ou `queue`
+- `config.version` em projetos Valkey: a versão retornada por `zenifra plans --type valkey`
+- `config.storage` em projetos Valkey: obrigatório e persistente para Key Value/Queue; omitido para Cache
 - `config.github.runtime` (quando houver GitHub em projeto HTTP): `nodejs` ou `python`
 - `config.autoscaling` (somente HTTP pago): `enabled: true`, `max_instances` maior ou igual a `config.instances` e alvos opcionais de CPU/memoria entre 1 e 100
 
@@ -226,6 +242,9 @@ Observacoes do wizard:
 - na criacao com auto-scaling, `config.instances` e o minimo inicial e `config.autoscaling.max_instances` e o maximo
 - em projetos de banco, o wizard nao pergunta `username`, `password` nem `database name`
 - em projetos de banco, a CLI preenche apenas campos tecnicos minimos exigidos pela validacao atual da API
+- em projetos Valkey, a capacidade é definida pelo plano e a CLI não pergunta instâncias, imagem, variáveis de ambiente ou exposição HTTP
+- a conexão mascarada pode ser consultada a qualquer momento; a credencial completa aparece apenas na criação ou em uma rotação concluída
+- `valkey credentials rotate` retorna uma operação assíncrona; use `--wait` ou `valkey credentials status` para acompanhar
 
 ## Regressao manual de auto-scaling em staging
 
