@@ -273,6 +273,7 @@ test('global help shows the command index and points to command-specific help', 
     assert.match(result.stdout, /Zenifra CLI/);
     assert.match(result.stdout, /zenifra help <command>/);
     assert.match(result.stdout, /project logs/);
+    assert.match(result.stdout, /project metrics capabilities/);
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }
@@ -354,6 +355,7 @@ test('commands with missing required arguments print command-specific help inste
     { args: ['project', 'url'], title: 'Zenifra CLI - project url' },
     { args: ['project', 'logs'], title: 'Zenifra CLI - project logs' },
     { args: ['project', 'metrics'], title: 'Zenifra CLI - project metrics' },
+    { args: ['project', 'metrics', 'capabilities'], title: 'Zenifra CLI - project metrics capabilities' },
     { args: ['project', 'network'], title: 'Zenifra CLI - project network' },
     { args: ['project', 'image', 'set'], title: 'Zenifra CLI - project image set' },
     { args: ['project', 'exposure', 'set'], title: 'Zenifra CLI - project exposure set' },
@@ -452,6 +454,7 @@ test('every routed command has command-specific help', async () => {
     ['project', 'url'],
     ['project', 'logs'],
     ['project', 'metrics'],
+    ['project', 'metrics', 'capabilities'],
     ['project', 'network'],
     ['project', 'image', 'set'],
     ['project', 'exposure', 'set'],
@@ -1310,6 +1313,261 @@ test('project metrics uses API-key auth without organization header and preserve
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).instance, 'web-1');
+  });
+});
+
+test('project metrics reports missing access with a user-facing message', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/proj_1/metrics?instance=instance-1');
+    jsonResponse(res, 402, { status: 'failed', message: 'plan dont support metrics' });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'metrics',
+      '--project', 'proj_1',
+      '--instance', 'instance-1',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Este projeto nao possui acesso a metricas/);
+    assert.doesNotMatch(result.stderr, /plan dont support metrics/);
+  });
+});
+
+test('project metrics renders native Valkey cache metrics for humans', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/proj_1/metrics?instance=instance-1');
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        instance: 'instance-1',
+        type: 'valkey',
+        cpu: 0.25,
+        memory: 128,
+        observed_at: '2026-08-28T12:00:00.000Z',
+        availability: 'available',
+        valkey: {
+          schema_version: 1,
+          profile: 'cache',
+          availability: 'available',
+          memory: {
+            used_bytes: 104857600,
+            peak_bytes: 125829120,
+            limit_bytes: 536870912,
+            fragmentation_ratio: 1.02,
+          },
+          clients: { connected: 12, blocked: 0 },
+          activity: {
+            operations_per_second: 240,
+            input_bytes_per_second: 1048576,
+            output_bytes_per_second: 2097152,
+          },
+          keys: { expired_total: 120, evicted_total: 3 },
+          uptime_seconds: 86400,
+          cache: { hits_total: 3900, misses_total: 100, hit_ratio: 0.975 },
+          reliability: {
+            replication: {
+              status: 'not_applicable',
+              replicas_available: null,
+              replicas_expected: 1,
+              lag_seconds: null,
+            },
+            persistence: {
+              enabled: true,
+              status: 'healthy',
+              last_success_at: '2026-08-28T11:59:55.000Z',
+            },
+          },
+        },
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'metrics',
+      '--project', 'proj_1',
+      '--instance', 'instance-1',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Perfil\s+cache/);
+    assert.match(result.stdout, /Disponibilidade\s+available/);
+    assert.match(result.stdout, /Observado em\s+2026-08-28T12:00:00.000Z/);
+    assert.match(result.stdout, /Memoria\s+128 MB/);
+    assert.match(result.stdout, /Memoria usada\s+100 MB/);
+    assert.match(result.stdout, /Clientes conectados\s+12/);
+    assert.match(result.stdout, /Operacoes por segundo\s+240/);
+    assert.match(result.stdout, /Hit ratio\s+97\.5%/);
+    assert.match(result.stdout, /Persistencia\s+healthy/);
+  });
+});
+
+test('project metrics preserves the native Valkey JSON contract', async () => {
+  const snapshot = {
+    instance: 'instance-1',
+    type: 'valkey',
+    cpu: 0.25,
+    memory: 128,
+    observed_at: '2026-08-28T12:00:00.000Z',
+    availability: 'available',
+    valkey: {
+      schema_version: 1,
+      profile: 'queue',
+      availability: 'available',
+      memory: { used_bytes: 1024, peak_bytes: 2048, limit_bytes: 4096, fragmentation_ratio: 1 },
+      clients: { connected: 1, blocked: 0 },
+      activity: { operations_per_second: 2, input_bytes_per_second: 3, output_bytes_per_second: 4 },
+      keys: { expired_total: 5, evicted_total: 6 },
+      uptime_seconds: 7,
+      reliability: null,
+    },
+  };
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/proj_1/metrics?instance=instance-1');
+    jsonResponse(res, 200, { status: 'success', data: snapshot });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'metrics',
+      '--project', 'proj_1',
+      '--instance', 'instance-1',
+      '--json',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), snapshot);
+  });
+});
+
+test('project metrics reports unavailable native Valkey snapshots without inventing values', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/proj_1/metrics?instance=instance-2');
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        instance: 'instance-2',
+        type: 'valkey',
+        cpu: 0,
+        memory: 64,
+        observed_at: null,
+        availability: 'unavailable',
+        valkey: null,
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'metrics',
+      '--project', 'proj_1',
+      '--instance', 'instance-2',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Disponibilidade\s+unavailable/);
+    assert.match(result.stdout, /CPU\s+0/);
+    assert.match(result.stdout, /Metricas Valkey\s+indisponivel/);
+    assert.doesNotMatch(result.stdout, /Memoria usada|Clientes conectados|Hit ratio/);
+  });
+});
+
+test('project metrics renders native Valkey key-value inventory', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/proj_1/metrics?instance=instance-3');
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        instance: 'instance-3',
+        type: 'valkey',
+        cpu: 0.1,
+        memory: 64,
+        availability: 'partial',
+        valkey: {
+          schema_version: 1,
+          profile: 'key-value',
+          availability: 'partial',
+          memory: { used_bytes: null, peak_bytes: null, limit_bytes: null, fragmentation_ratio: null },
+          clients: { connected: 0, blocked: 0 },
+          activity: { operations_per_second: 0, input_bytes_per_second: 0, output_bytes_per_second: 0 },
+          keys: { expired_total: 0, evicted_total: 0 },
+          uptime_seconds: 10,
+          key_value: { keys_total: 42, keys_with_expiration: 7 },
+          reliability: null,
+        },
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'metrics',
+      '--project', 'proj_1',
+      '--instance', 'instance-3',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Perfil\s+key-value/);
+    assert.match(result.stdout, /Total de chaves\s+42/);
+    assert.match(result.stdout, /Chaves com expiracao\s+7/);
+    assert.match(result.stdout, /Clientes conectados\s+0/);
+    assert.match(result.stdout, /Entrada\s+0 B\/s/);
+  });
+});
+
+test('project metrics capabilities prints public access details', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/proj_1/metrics/capabilities');
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        access: 'snapshot',
+        groups: ['resources', 'capacity', 'clients', 'activity', 'key_lifecycle', 'profile', 'reliability'],
+        refresh_seconds: 60,
+        history: null,
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'metrics', 'capabilities',
+      '--project', 'proj_1',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Acesso\s+snapshot/);
+    assert.match(result.stdout, /Atualizacao\s+60 s/);
+    assert.match(result.stdout, /Grupos\s+resources, capacity, clients, activity, key_lifecycle, profile, reliability/);
+    assert.match(result.stdout, /Historico\s+indisponivel/);
+  });
+});
+
+test('project metrics capabilities preserves the public JSON contract for unavailable access', async () => {
+  const capabilities = {
+    access: 'none',
+    groups: [],
+    refresh_seconds: null,
+    history: null,
+  };
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/proj_1/metrics/capabilities');
+    jsonResponse(res, 200, { status: 'success', data: capabilities });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'metrics', 'capabilities',
+      '--project', 'proj_1',
+      '--json',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), capabilities);
   });
 });
 
