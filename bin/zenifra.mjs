@@ -1567,14 +1567,9 @@ function formatValkeyBytes(value, suffix = '') {
   return `${formattedValue} ${units[unitIndex]}${suffix}`;
 }
 
-function formatValkeyResourceMemory(value) {
-  if (value === null || value === undefined || !Number.isFinite(Number(value))) return 'indisponivel';
-  return `${Number(value)} MB`;
-}
-
 function formatValkeyPercent(value) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return 'indisponivel';
-  return `${(Number(value) * 100).toFixed(2).replace(/0+$/, '').replace(/\\.$/, '')}%`;
+  return `${Number((Number(value) * 100).toFixed(2))}%`;
 }
 
 function valkeyMetricRows(metrics) {
@@ -1584,7 +1579,7 @@ function valkeyMetricRows(metrics) {
     { field: 'Disponibilidade', value: metrics?.availability || 'indisponivel' },
     { field: 'Observado em', value: metrics?.observed_at || 'indisponivel' },
     { field: 'CPU', value: formatValkeyNumber(metrics?.cpu) },
-    { field: 'Memoria', value: formatValkeyResourceMemory(metrics?.memory) },
+    { field: 'Memoria', value: formatValkeyBytes(metrics?.memory) },
   ];
 
   if (!native) {
@@ -4197,7 +4192,7 @@ async function main() {
       return;
     }
 
-    if (command === 'auth' && subcommand === 'login') return handleLogin(session, flags);
+    if (command === 'auth' && subcommand === 'login') return await handleLogin(session, flags);
     if (command === 'auth' && subcommand === 'api-key') return handleApiKeyLogin(session, flags);
     if (command === 'auth' && subcommand === 'logout') return handleLogout(session, flags);
     if (command === 'profile' && subcommand === 'list') return handleProfileList(session, flags);
@@ -4206,7 +4201,7 @@ async function main() {
     if (command === 'profile' && subcommand === 'edit') return handleProfileEdit(session, flags, positional);
     if (command === 'profile' && subcommand === 'use') return handleProfileUse(session, flags, positional);
     if (command === 'profile' && subcommand === 'remove') return handleProfileRemove(session, flags, positional);
-    if (command === 'login') return handleLogin(session, flags);
+    if (command === 'login') return await handleLogin(session, flags);
     if (command === 'logout') return handleLogout(session, flags);
     if (command === 'plans') return handlePlans(session, flags);
     if (command === 'create' && subcommand === 'project') return handleProjectCreate(session, flags);

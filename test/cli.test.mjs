@@ -1346,7 +1346,7 @@ test('project metrics renders native Valkey cache metrics for humans', async () 
         instance: 'instance-1',
         type: 'valkey',
         cpu: 0.25,
-        memory: 128,
+        memory: 134217728,
         observed_at: '2026-08-28T12:00:00.000Z',
         availability: 'available',
         valkey: {
@@ -1440,6 +1440,46 @@ test('project metrics preserves the native Valkey JSON contract', async () => {
 
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), snapshot);
+  });
+});
+
+test('project metrics formats zero cache hit ratio without punctuation', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/proj_1/metrics?instance=instance-zero');
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        instance: 'instance-zero',
+        type: 'valkey',
+        cpu: 0,
+        memory: 1,
+        availability: 'available',
+        valkey: {
+          schema_version: 1,
+          profile: 'cache',
+          availability: 'available',
+          memory: { used_bytes: 0, peak_bytes: 0, limit_bytes: 0, fragmentation_ratio: 0 },
+          clients: { connected: 0, blocked: 0 },
+          activity: { operations_per_second: 0, input_bytes_per_second: 0, output_bytes_per_second: 0 },
+          keys: { expired_total: 0, evicted_total: 0 },
+          uptime_seconds: 0,
+          cache: { hits_total: 0, misses_total: 0, hit_ratio: 0 },
+          reliability: null,
+        },
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'metrics',
+      '--project', 'proj_1',
+      '--instance', 'instance-zero',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Hit ratio\s+0%/);
+    assert.doesNotMatch(result.stdout, /0\.%/);
   });
 });
 
