@@ -2230,6 +2230,11 @@ function formatBrl(value) {
   }).format(Number.isFinite(number) ? number : 0);
 }
 
+function formatBrlFromCents(value) {
+  const number = Number(value ?? 0);
+  return formatBrl(Number.isFinite(number) ? number / 100 : 0);
+}
+
 function humanizeStorageName(value) {
   const raw = String(value || '').trim();
   if (!raw) return { storage: '-', type: '-' };
@@ -2377,9 +2382,9 @@ function printPlansCatalogs(payload, type) {
     process.stdout.write('HTTP\n');
     printTable(asArray(payload.http), [
       { label: 'Plano', value: (plan) => plan.plan || '-' },
-      { label: 'Hora', value: (plan) => formatBrl(plan.prices?.hourly) },
-      { label: 'Mes', value: (plan) => formatBrl(plan.prices?.monthly) },
-      { label: 'Ano', value: (plan) => formatBrl(plan.prices?.yearly) },
+      { label: 'Hora', value: (plan) => formatBrlFromCents(plan.prices?.hourly) },
+      { label: 'Mes', value: (plan) => formatBrlFromCents(plan.prices?.monthly) },
+      { label: 'Ano', value: (plan) => formatBrlFromCents(plan.prices?.yearly) },
       { label: 'Recursos', value: (plan) => asArray(plan.features).join(', ') || '-' },
     ]);
   }
@@ -2389,9 +2394,9 @@ function printPlansCatalogs(payload, type) {
     process.stdout.write('PostgreSQL / MariaDB\n');
     printTable(asArray(payload.database), [
       { label: 'Plano', value: (plan) => plan.plan || '-' },
-      { label: 'Hora', value: (plan) => formatBrl(plan.prices?.hourly) },
-      { label: 'Mes', value: (plan) => formatBrl(plan.prices?.monthly) },
-      { label: 'Ano', value: (plan) => formatBrl(plan.prices?.yearly) },
+      { label: 'Hora', value: (plan) => formatBrlFromCents(plan.prices?.hourly) },
+      { label: 'Mes', value: (plan) => formatBrlFromCents(plan.prices?.monthly) },
+      { label: 'Ano', value: (plan) => formatBrlFromCents(plan.prices?.yearly) },
       { label: 'Recursos', value: (plan) => asArray(plan.features).join(', ') || '-' },
     ]);
   }

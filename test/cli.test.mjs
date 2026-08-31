@@ -598,6 +598,40 @@ test('plans lists all catalogs without authentication by default', async () => {
   });
 });
 
+test('plans formats HTTP catalog prices from centavos to BRL', async () => {
+  await withCliServer(async (req, res) => {
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/plans');
+    jsonResponse(res, 200, { status: 'success', data: HTTP_PLAN_CATALOG });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['plans', '--type', 'http'], { apiBase, configDir, envApiKey: apiKey });
+
+    assert.equal(result.code, 0, result.stderr);
+    const premiumPlusRow = result.stdout.split('\n').find((line) => line.includes('premium_plus'));
+    assert.ok(premiumPlusRow);
+    assert.match(premiumPlusRow, /R\$[\s\u00a0]*0,04/);
+    assert.match(premiumPlusRow, /R\$[\s\u00a0]*0,40/);
+    assert.match(premiumPlusRow, /R\$[\s\u00a0]*4,00/);
+  });
+});
+
+test('plans preserves BRL units for storage catalog prices', async () => {
+  await withCliServer(async (req, res) => {
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/storage/plans');
+    jsonResponse(res, 200, { status: 'success', data: STORAGE_PLAN_CATALOG });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['plans', '--type', 'storage'], { apiBase, configDir, envApiKey: apiKey });
+
+    assert.equal(result.code, 0, result.stderr);
+    const persistentRow = result.stdout.split('\n').find((line) => line.includes('Persistente'));
+    assert.ok(persistentRow);
+    assert.match(persistentRow, /R\$[\s\u00a0]*0,50/);
+    assert.match(persistentRow, /R\$[\s\u00a0]*360,00/);
+    assert.match(persistentRow, /R\$[\s\u00a0]*4\.320,00/);
+  });
+});
+
 test('plans --type valkey and profile aliases use the managed services catalog', async () => {
   const scenarios = [
     { type: 'valkey', expectedProfile: null, expectedText: /Key Value/ },
