@@ -72,6 +72,7 @@ zenifra valkey credentials status --project <project-id> --operation <operation-
 zenifra project url --project <project-id>
 zenifra project logs --project <project-id> --instance <instance-id>
 zenifra project metrics --project <project-id> --instance <instance-id>
+zenifra project metrics capabilities --project <project-id>
 zenifra project network --project <project-id> --view summary
 zenifra project image set --project <project-id> --image ghcr.io/zenifra/app:tag
 zenifra project envs --project <project-id>
@@ -92,6 +93,41 @@ zenifra deployments --project <project-id>
 zenifra deploy --project <project-id> --branch main
 zenifra deploy watch --project <project-id> --build <build-id>
 ```
+
+## Metricas de projetos Valkey
+
+O comando `zenifra project metrics` mostra as metricas do projeto e, para projetos Valkey, o snapshot da instancia selecionada:
+
+```bash
+zenifra project metrics --project <project-id> --instance instance-1
+```
+
+A saida legivel inclui:
+
+- recursos: CPU e memoria da instancia;
+- capacidade: memoria usada, pico, limite e fragmentacao;
+- clientes conectados e bloqueados;
+- atividade: operacoes por segundo e trafego de entrada/saida;
+- ciclo de vida: chaves expiradas e removidas;
+- uptime e perfil (`cache`, `key-value` ou `queue`);
+- confiabilidade: replicacao e persistencia, quando disponiveis.
+
+Perfis especificos podem incluir:
+
+- `cache`: hits, misses e hit ratio;
+- `key-value`: total de chaves e chaves com expiracao;
+- `queue`: metricas comuns, sem estimar profundidade quando ela nao esta disponivel.
+
+Para consultar o nivel de acesso e os grupos disponiveis antes de buscar um snapshot:
+
+```bash
+zenifra project metrics capabilities --project <project-id>
+zenifra project metrics capabilities --project <project-id> --json
+```
+
+`--json` preserva a resposta publica da API. Valores ausentes sao exibidos como `indisponivel` no modo legivel; `0` continua sendo um valor valido. O historico nao esta disponivel neste momento.
+
+---
 
 ## Builds GitHub
 

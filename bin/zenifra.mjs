@@ -181,6 +181,7 @@ Usage:
   zenifra project url --project <id> [--json]
   zenifra project logs --project <id> [--instance <id>] [--json]
   zenifra project metrics --project <id> [--instance <id>] [--json]
+  zenifra project metrics capabilities --project <id> [--json]
   zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]
   zenifra project image set --project <id> --image <image> [--json]
   zenifra project exposure set --project <id> --exposure <public|private> [--json]
@@ -416,11 +417,11 @@ const HELP_SPECS = [
   },
   {
     command: 'project',
-    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project autoscaling --project <id> [--json]\n  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]\n  zenifra project autoscaling disable --project <id> [--json]\n  zenifra project autoscaling events --project <id> [--direction <scale_up|scale_down>] [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project billing usage --project <id> [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
+    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project metrics capabilities --project <id> [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project autoscaling --project <id> [--json]\n  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]\n  zenifra project autoscaling disable --project <id> [--json]\n  zenifra project autoscaling events --project <id> [--direction <scale_up|scale_down>] [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project billing usage --project <id> [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
     description: 'Agrupa comandos operacionais e de introspecao sobre um projeto especifico.',
     examples: ['zenifra project', 'zenifra project info --project proj_1', 'zenifra project env add --project proj_1 --name NODE_ENV --value production'],
     output: 'Zenifra CLI - project',
-    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, url, logs, metrics, network, image, exposure, autoscaling, billing, envs e instances.'],
+    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, url, logs, metrics, capabilities, network, image, exposure, autoscaling, billing, envs e instances.'],
   },
   {
     command: 'project info',
@@ -453,11 +454,26 @@ const HELP_SPECS = [
   {
     command: 'project metrics',
     usage: 'zenifra project metrics --project <id> [--instance <id>] [--json]',
-    description: 'Mostra CPU, memoria e dados basicos de rede do projeto.',
-    flags: ['--project <id>   ID do projeto.', '--instance <id>  Filtra uma instancia.', '--json           Imprime a resposta em JSON.'],
-    examples: ['zenifra project metrics --project 507f1f77bcf86cd799439012 --instance web-1'],
-    output: 'Instancia  Tipo         CPU  Memoria\nweb-1      application  0.2  64',
-    jsonOutput: '{"type":"application","instance":"web-1","cpu":0.2,"memory":64,"network":{"requests":120}}',
+    description: 'Mostra metricas de recursos do projeto e, para Valkey, o snapshot nativo da instancia.',
+    flags: ['--project <id>   ID do projeto.', '--instance <id>  Filtra uma instancia.', '--json           Imprime a resposta em JSON sem formatacao adicional.'],
+    examples: ['zenifra project metrics --project 507f1f77bcf86cd799439012 --instance web-1', 'zenifra project metrics --project 507f1f77bcf86cd799439012 --instance instance-1'],
+    output: 'Campo       Valor\n----------  ----------------\nPerfil      cache\nDisponibilidade  available\nMemoria usada    100 MB',
+    jsonOutput: '{"instance":"instance-1","type":"valkey","availability":"available","valkey":{"schema_version":1,"profile":"cache","memory":{"used_bytes":104857600}}}',
+    notes: [
+      'Para projetos Valkey, a saida legivel inclui recursos, capacidade, clientes, atividade, ciclo de vida de chaves, perfil e confiabilidade.',
+      'Valores ausentes sao exibidos como indisponivel; zero continua sendo um valor valido.',
+      'Use "zenifra project metrics capabilities --project <id>" para consultar o acesso e os grupos de metricas disponiveis.',
+    ],
+  },
+  {
+    command: 'project metrics capabilities',
+    usage: 'zenifra project metrics capabilities --project <id> [--json]',
+    description: 'Mostra os grupos de metricas e o nivel de acesso disponivel para o projeto.',
+    flags: ['--project <id>  ID do projeto.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project metrics capabilities --project 507f1f77bcf86cd799439012'],
+    output: 'Campo       Valor\n----------  ------------------------------------------------------------\nAcesso      snapshot\nAtualizacao 60 s\nHistorico   indisponivel',
+    jsonOutput: '{"access":"snapshot","groups":["resources","capacity","clients","activity","key_lifecycle","profile","reliability"],"refresh_seconds":60,"history":null}',
+    notes: ['A API permanece como fonte de autorizacao. A CLI nao mantem uma lista local de planos.'],
   },
   {
     command: 'project network',
@@ -1486,6 +1502,9 @@ async function request(session, flags, method, path, {
     if (response.status === 429 && Number.isFinite(Number(payload?.retry_after_seconds))) {
       throw new CliError(`${message} Tente novamente em ${Number(payload.retry_after_seconds)} segundo(s).`);
     }
+    if (response.status === 402 && path.includes('/metrics') && /support metrics/i.test(String(message))) {
+      throw new CliError('Este projeto nao possui acesso a metricas.');
+    }
     if (String(message).includes('missing x-organization-id')) {
       throw new CliError('Organizacao nao selecionada. Rode "zenifra org set" ou use --org <id>.');
     }
@@ -1524,6 +1543,128 @@ function printTable(rows, columns) {
   for (const row of rows) {
     process.stdout.write(`${columns.map((column, index) => String(column.value(row) ?? '').padEnd(widths[index])).join('  ')}\n`);
   }
+}
+
+function formatValkeyNumber(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return 'indisponivel';
+  return String(value);
+}
+
+function formatValkeyBytes(value, suffix = '') {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return 'indisponivel';
+
+  const numericValue = Number(value);
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let unitIndex = 0;
+  let normalizedValue = numericValue;
+  while (normalizedValue >= 1024 && unitIndex < units.length - 1) {
+    normalizedValue /= 1024;
+    unitIndex += 1;
+  }
+
+  const digits = normalizedValue >= 100 ? 0 : normalizedValue >= 10 ? 1 : 2;
+  const formattedValue = Number(normalizedValue.toFixed(digits)).toString();
+  return `${formattedValue} ${units[unitIndex]}${suffix}`;
+}
+
+function formatValkeyPercent(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return 'indisponivel';
+  return `${Number((Number(value) * 100).toFixed(2))}%`;
+}
+
+function valkeyMetricRows(metrics) {
+  const native = metrics?.valkey;
+  const rows = [
+    { field: 'Instancia', value: metrics?.instance || '-' },
+    { field: 'Disponibilidade', value: metrics?.availability || 'indisponivel' },
+    { field: 'Observado em', value: metrics?.observed_at || 'indisponivel' },
+    { field: 'CPU', value: formatValkeyNumber(metrics?.cpu) },
+    { field: 'Memoria', value: formatValkeyBytes(metrics?.memory) },
+  ];
+
+  if (!native) {
+    rows.push({ field: 'Metricas Valkey', value: 'indisponivel' });
+    return rows;
+  }
+
+  rows.push(
+    { field: 'Perfil', value: native.profile || '-' },
+    { field: 'Memoria usada', value: formatValkeyBytes(native.memory?.used_bytes) },
+    { field: 'Pico de memoria', value: formatValkeyBytes(native.memory?.peak_bytes) },
+    { field: 'Limite de memoria', value: formatValkeyBytes(native.memory?.limit_bytes) },
+    { field: 'Fragmentacao', value: formatValkeyNumber(native.memory?.fragmentation_ratio) },
+    { field: 'Clientes conectados', value: formatValkeyNumber(native.clients?.connected) },
+    { field: 'Clientes bloqueados', value: formatValkeyNumber(native.clients?.blocked) },
+    { field: 'Operacoes por segundo', value: formatValkeyNumber(native.activity?.operations_per_second) },
+    { field: 'Entrada', value: formatValkeyBytes(native.activity?.input_bytes_per_second, '/s') },
+    { field: 'Saida', value: formatValkeyBytes(native.activity?.output_bytes_per_second, '/s') },
+    { field: 'Chaves expiradas', value: formatValkeyNumber(native.keys?.expired_total) },
+    { field: 'Chaves removidas', value: formatValkeyNumber(native.keys?.evicted_total) },
+    { field: 'Uptime', value: `${formatValkeyNumber(native.uptime_seconds)} s` },
+  );
+
+  if (native.cache) {
+    rows.push(
+      { field: 'Cache hits', value: formatValkeyNumber(native.cache.hits_total) },
+      { field: 'Cache misses', value: formatValkeyNumber(native.cache.misses_total) },
+      { field: 'Hit ratio', value: formatValkeyPercent(native.cache.hit_ratio) },
+    );
+  }
+
+  if (native.key_value) {
+    rows.push(
+      { field: 'Total de chaves', value: formatValkeyNumber(native.key_value.keys_total) },
+      { field: 'Chaves com expiracao', value: formatValkeyNumber(native.key_value.keys_with_expiration) },
+    );
+  }
+
+  if (native.reliability) {
+    const replication = native.reliability.replication;
+    const persistence = native.reliability.persistence;
+    if (replication) {
+      rows.push(
+        { field: 'Replicacao', value: replication.status || 'indisponivel' },
+        { field: 'Repl. disponiveis', value: formatValkeyNumber(replication.replicas_available) },
+        { field: 'Repl. esperadas', value: formatValkeyNumber(replication.replicas_expected) },
+        { field: 'Lag', value: replication.lag_seconds === null || replication.lag_seconds === undefined ? 'indisponivel' : `${replication.lag_seconds} s` },
+      );
+    }
+    if (persistence) {
+      rows.push(
+        { field: 'Persistencia', value: persistence.status || 'indisponivel' },
+        { field: 'Persistencia ativa', value: persistence.enabled === null || persistence.enabled === undefined ? 'indisponivel' : persistence.enabled ? 'sim' : 'nao' },
+        { field: 'Ultimo sucesso', value: persistence.last_success_at || 'indisponivel' },
+      );
+    }
+  }
+
+  return rows;
+}
+
+function printValkeyMetrics(metrics) {
+  printTable(valkeyMetricRows(metrics), [
+    { label: 'Campo', value: (row) => row.field },
+    { label: 'Valor', value: (row) => row.value },
+  ]);
+}
+
+function printMetricsCapabilities(capabilities) {
+  const groups = Array.isArray(capabilities?.groups) && capabilities.groups.length > 0
+    ? capabilities.groups.join(', ')
+    : 'nenhum';
+  const history = capabilities?.history
+    ? `${capabilities.history.retention_seconds} s de retencao`
+    : 'indisponivel';
+
+  printTable([
+    { field: 'Acesso', value: capabilities?.access || 'indisponivel' },
+    { field: 'Grupos', value: groups },
+    { field: 'Atualizacao', value: capabilities?.refresh_seconds === null || capabilities?.refresh_seconds === undefined ? 'indisponivel' : `${capabilities.refresh_seconds} s` },
+    { field: 'Historico', value: history },
+  ], [
+    { label: 'Campo', value: (row) => row.field },
+    { label: 'Valor', value: (row) => row.value },
+  ]);
 }
 
 function asArray(value) {
@@ -3281,6 +3422,16 @@ async function handleProjectLogs(session, flags) {
   printLogs(logs, flags);
 }
 
+async function handleProjectMetricsCapabilities(session, flags) {
+  const projectId = requireProjectId(flags, 'project metrics capabilities');
+  if (!projectId) return;
+  const orgId = await resolveOrgId(session, flags);
+  const capabilities = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/metrics/capabilities`, { orgId }));
+
+  if (flags.json) return printJson(capabilities);
+  printMetricsCapabilities(capabilities);
+}
+
 async function handleProjectMetrics(session, flags) {
   const projectId = requireProjectId(flags, 'project metrics');
   if (!projectId) return
@@ -3289,6 +3440,9 @@ async function handleProjectMetrics(session, flags) {
   const metrics = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/metrics${query}`, { orgId }));
 
   if (flags.json) return printJson(metrics);
+  if (metrics?.type === 'valkey') {
+    return printValkeyMetrics(metrics);
+  }
   if (Array.isArray(metrics)) {
     return printTable(metrics, [
       { label: 'Instancia', value: (metric) => metric.instance || '-' },
@@ -4038,7 +4192,7 @@ async function main() {
       return;
     }
 
-    if (command === 'auth' && subcommand === 'login') return handleLogin(session, flags);
+    if (command === 'auth' && subcommand === 'login') return await handleLogin(session, flags);
     if (command === 'auth' && subcommand === 'api-key') return handleApiKeyLogin(session, flags);
     if (command === 'auth' && subcommand === 'logout') return handleLogout(session, flags);
     if (command === 'profile' && subcommand === 'list') return handleProfileList(session, flags);
@@ -4047,7 +4201,7 @@ async function main() {
     if (command === 'profile' && subcommand === 'edit') return handleProfileEdit(session, flags, positional);
     if (command === 'profile' && subcommand === 'use') return handleProfileUse(session, flags, positional);
     if (command === 'profile' && subcommand === 'remove') return handleProfileRemove(session, flags, positional);
-    if (command === 'login') return handleLogin(session, flags);
+    if (command === 'login') return await handleLogin(session, flags);
     if (command === 'logout') return handleLogout(session, flags);
     if (command === 'plans') return handlePlans(session, flags);
     if (command === 'create' && subcommand === 'project') return handleProjectCreate(session, flags);
@@ -4065,6 +4219,7 @@ async function main() {
     if (command === 'project' && subcommand === 'info') return handleProjectInfo(session, flags);
     if (command === 'project' && subcommand === 'url') return handleProjectUrl(session, flags);
     if (command === 'project' && subcommand === 'logs') return handleProjectLogs(session, flags);
+    if (command === 'project' && subcommand === 'metrics' && positional[2] === 'capabilities') return handleProjectMetricsCapabilities(session, flags);
     if (command === 'project' && subcommand === 'metrics') return handleProjectMetrics(session, flags);
     if (command === 'project' && subcommand === 'network') return handleProjectNetwork(session, flags);
     if (command === 'project' && subcommand === 'image' && positional[2] === 'set') return handleProjectImageSet(session, flags);
