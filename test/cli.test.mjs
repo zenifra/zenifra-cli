@@ -274,6 +274,7 @@ test('global help shows the command index and points to command-specific help', 
     assert.match(result.stdout, /zenifra help <command>/);
     assert.match(result.stdout, /project logs/);
     assert.match(result.stdout, /project metrics capabilities/);
+    assert.match(result.stdout, /project healthcheck get/);
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }
@@ -356,6 +357,10 @@ test('commands with missing required arguments print command-specific help inste
     { args: ['project', 'logs'], title: 'Zenifra CLI - project logs' },
     { args: ['project', 'metrics'], title: 'Zenifra CLI - project metrics' },
     { args: ['project', 'metrics', 'capabilities'], title: 'Zenifra CLI - project metrics capabilities' },
+    { args: ['project', 'healthcheck', 'get'], title: 'Zenifra CLI - project healthcheck get' },
+    { args: ['project', 'healthcheck', 'set'], title: 'Zenifra CLI - project healthcheck set' },
+    { args: ['project', 'healthcheck', 'disable'], title: 'Zenifra CLI - project healthcheck disable' },
+    { args: ['project', 'healthcheck', 'failures'], title: 'Zenifra CLI - project healthcheck failures' },
     { args: ['project', 'network'], title: 'Zenifra CLI - project network' },
     { args: ['project', 'image', 'set'], title: 'Zenifra CLI - project image set' },
     { args: ['project', 'exposure', 'set'], title: 'Zenifra CLI - project exposure set' },
@@ -455,6 +460,11 @@ test('every routed command has command-specific help', async () => {
     ['project', 'logs'],
     ['project', 'metrics'],
     ['project', 'metrics', 'capabilities'],
+    ['project', 'healthcheck'],
+    ['project', 'healthcheck', 'get'],
+    ['project', 'healthcheck', 'set'],
+    ['project', 'healthcheck', 'disable'],
+    ['project', 'healthcheck', 'failures'],
     ['project', 'network'],
     ['project', 'image', 'set'],
     ['project', 'exposure', 'set'],
@@ -3277,5 +3287,140 @@ test('create project wizard supports Key Value, Cache and Queue without invalid 
       assert.match(result.stdout, /Valkey|Key Value|Cache|Queue/);
       if (item.name === 'valkey-cache') assert.doesNotMatch(result.stdout, /Capacidade de storage/i);
     });
+  }
+});
+
+test('project healthcheck help covers all subcommands and required flags', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli(['help', 'project', 'healthcheck'], { configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /zenifra project healthcheck get --project <id> \[--json\]/);
+    assert.match(result.stdout, /zenifra project healthcheck set --project <id> --path \/health \[--json\]/);
+    assert.match(result.stdout, /zenifra project healthcheck disable --project <id> \[--json\]/);
+    assert.match(result.stdout, /zenifra project healthcheck failures --project <id> \[--page <n>\] \[--limit <n>\] \[--json\]/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('project healthcheck commands dispatch to public endpoints and keep text output safe', async () => {
+  const healthcheck = {
+    available: true,
+    healthcheck: {
+      enabled: true,
+      path: '/health',
+      status: 'healthy',
+      last_check_at: '2026-08-31T12:00:00.000Z',
+      last_failure_at: null,
+    },
+    interval_seconds: 60,
+    retention_days: 30,
+  };
+  const failures = {
+    failures: [{
+      occurred_at: '2026-08-31T12:00:00.000Z',
+      status_code: 503,
+    }],
+    pagination: { page: 2, limit: 10, total: 11, total_pages: 2 },
+  };
+  const calls = [];
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    calls.push({ method: req.method, url: req.url });
+
+    if (req.method === 'GET' && req.url === '/v1/project/proj_1/healthcheck') {
+      jsonResponse(res, 200, { status: 'success', data: healthcheck });
+      return;
+    }
+    if (req.method === 'PATCH' && req.url === '/v1/project/proj_1/healthcheck') {
+      const body = await readJson(req);
+      const requestedHealthcheck = body.healthcheck;
+      assert.deepEqual(body, requestedHealthcheck.enabled
+        ? { healthcheck: { enabled: true, path: '/ready' } }
+        : { healthcheck: { enabled: false } });
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: requestedHealthcheck.enabled
+          ? { healthcheck: { enabled: true, path: requestedHealthcheck.path }, interval_seconds: 60, retention_days: 30 }
+          : { healthcheck: { enabled: false, path: '/health' }, interval_seconds: 60, retention_days: 30 },
+      });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/project/proj_1/healthcheck/failures?page=2&limit=10') {
+      jsonResponse(res, 200, { status: 'success', data: failures });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    const getText = await runCli(['project', 'healthcheck', 'get', '--project', 'proj_1'], { apiBase, configDir });
+    assert.equal(getText.code, 0, getText.stderr);
+    assert.match(getText.stdout, /Status\s+ativo/);
+    assert.match(getText.stdout, /Rota\s+\/health/);
+    assert.match(getText.stdout, /Verificacao\s+healthy/);
+    assert.match(getText.stdout, /Ultima verificacao\s+2026-08-31T12:00:00.000Z/);
+
+    const getJson = await runCli(['project', 'healthcheck', 'get', '--project', 'proj_1', '--json'], { apiBase, configDir });
+    assert.equal(getJson.code, 0, getJson.stderr);
+    assert.deepEqual(JSON.parse(getJson.stdout), healthcheck);
+
+    const setText = await runCli(['project', 'healthcheck', 'set', '--project', 'proj_1', '--path', '/ready'], { apiBase, configDir });
+    assert.equal(setText.code, 0, setText.stderr);
+    assert.match(setText.stdout, /Verificacao de saude ativada/);
+    assert.match(setText.stdout, /Rota: \/ready/);
+
+    const disableJson = await runCli(['project', 'healthcheck', 'disable', '--project', 'proj_1', '--json'], { apiBase, configDir });
+    assert.equal(disableJson.code, 0, disableJson.stderr);
+    assert.deepEqual(JSON.parse(disableJson.stdout), {
+      healthcheck: { enabled: false, path: '/health' },
+      interval_seconds: 60,
+      retention_days: 30,
+    });
+
+    const failuresText = await runCli([
+      'project', 'healthcheck', 'failures', '--project', 'proj_1', '--page', '2', '--limit', '10',
+    ], { apiBase, configDir });
+    assert.equal(failuresText.code, 0, failuresText.stderr);
+    assert.match(failuresText.stdout, /503/);
+    assert.match(failuresText.stdout, /Pagina 2 de 2 - 11 falha\(s\)/);
+    assert.doesNotMatch(failuresText.stdout, /cluster|pod|deployment|internal/i);
+
+    const failuresJson = await runCli([
+      'project', 'healthcheck', 'failures', '--project', 'proj_1', '--page', '2', '--limit', '10', '--json',
+    ], { apiBase, configDir });
+    assert.equal(failuresJson.code, 0, failuresJson.stderr);
+    assert.deepEqual(JSON.parse(failuresJson.stdout), failures);
+  });
+
+  assert.deepEqual(calls, [
+    { method: 'GET', url: '/v1/project/proj_1/healthcheck' },
+    { method: 'GET', url: '/v1/project/proj_1/healthcheck' },
+    { method: 'PATCH', url: '/v1/project/proj_1/healthcheck' },
+    { method: 'PATCH', url: '/v1/project/proj_1/healthcheck' },
+    { method: 'GET', url: '/v1/project/proj_1/healthcheck/failures?page=2&limit=10' },
+    { method: 'GET', url: '/v1/project/proj_1/healthcheck/failures?page=2&limit=10' },
+  ]);
+});
+
+test('project healthcheck validates path and pagination before requesting the API', async () => {
+  const invalidCases = [
+    [['project', 'healthcheck', 'set', '--project', 'proj_1'], /Zenifra CLI - project healthcheck set/],
+    [['project', 'healthcheck', 'set', '--project', 'proj_1', '--path', 'https://example.com/health'], /rota absoluta/],
+    [['project', 'healthcheck', 'set', '--project', 'proj_1', '--path', '/health?token=secret'], /rota absoluta/],
+    [['project', 'healthcheck', 'failures', '--project', 'proj_1', '--page', '0'], /--page.*inteiro positivo/],
+    [['project', 'healthcheck', 'failures', '--project', 'proj_1', '--limit', '101'], /--limit entre 1 e 100/],
+  ];
+
+  for (const [args, expected] of invalidCases) {
+    const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+    try {
+      const result = await runCli(args, { configDir });
+      assert.equal(result.code, 1, `${args.join(' ')}\n${result.stderr}`);
+      assert.match(result.stderr || result.stdout, expected);
+    } finally {
+      await rm(configDir, { recursive: true, force: true });
+    }
   }
 });
