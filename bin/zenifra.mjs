@@ -58,6 +58,7 @@ const KNOWN_FLAG_NAMES = new Set([
   'operation',
   'page',
   'password',
+  'path',
   'paymentMode',
   'plan',
   'profile',
@@ -182,6 +183,10 @@ Usage:
   zenifra project logs --project <id> [--instance <id>] [--json]
   zenifra project metrics --project <id> [--instance <id>] [--json]
   zenifra project metrics capabilities --project <id> [--json]
+  zenifra project healthcheck get --project <id> [--json]
+  zenifra project healthcheck set --project <id> --path /health [--json]
+  zenifra project healthcheck disable --project <id> [--json]
+  zenifra project healthcheck failures --project <id> [--page <n>] [--limit <n>] [--json]
   zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]
   zenifra project image set --project <id> --image <image> [--json]
   zenifra project exposure set --project <id> --exposure <public|private> [--json]
@@ -417,7 +422,7 @@ const HELP_SPECS = [
   },
   {
     command: 'project',
-    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project metrics capabilities --project <id> [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project autoscaling --project <id> [--json]\n  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]\n  zenifra project autoscaling disable --project <id> [--json]\n  zenifra project autoscaling events --project <id> [--direction <scale_up|scale_down>] [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project billing usage --project <id> [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
+    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project metrics capabilities --project <id> [--json]\n  zenifra project healthcheck get --project <id> [--json]\n  zenifra project healthcheck set --project <id> --path /health [--json]\n  zenifra project healthcheck disable --project <id> [--json]\n  zenifra project healthcheck failures --project <id> [--page <n>] [--limit <n>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project autoscaling --project <id> [--json]\n  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]\n  zenifra project autoscaling disable --project <id> [--json]\n  zenifra project autoscaling events --project <id> [--direction <scale_up|scale_down>] [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project billing usage --project <id> [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
     description: 'Agrupa comandos operacionais e de introspecao sobre um projeto especifico.',
     examples: ['zenifra project', 'zenifra project info --project proj_1', 'zenifra project env add --project proj_1 --name NODE_ENV --value production'],
     output: 'Zenifra CLI - project',
@@ -474,6 +479,52 @@ const HELP_SPECS = [
     output: 'Campo       Valor\n----------  ------------------------------------------------------------\nAcesso      snapshot\nAtualizacao 60 s\nHistorico   indisponivel',
     jsonOutput: '{"access":"snapshot","groups":["resources","capacity","clients","activity","key_lifecycle","profile","reliability"],"refresh_seconds":60,"history":null}',
     notes: ['A API permanece como fonte de autorizacao. A CLI nao mantem uma lista local de planos.'],
+  },
+  {
+    command: 'project healthcheck',
+    usage: 'zenifra project healthcheck\n  zenifra project healthcheck get --project <id> [--json]\n  zenifra project healthcheck set --project <id> --path /health [--json]\n  zenifra project healthcheck disable --project <id> [--json]\n  zenifra project healthcheck failures --project <id> [--page <n>] [--limit <n>] [--json]',
+    description: 'Consulta e gerencia a verificacao de saude de um projeto HTTP.',
+    examples: ['zenifra project healthcheck get --project 507f1f77bcf86cd799439012', 'zenifra project healthcheck failures --project 507f1f77bcf86cd799439012'],
+    output: 'Zenifra CLI - project healthcheck',
+    notes: ['Use "zenifra help project healthcheck <subcomando>" para detalhes de get, set, disable e failures.'],
+  },
+  {
+    command: 'project healthcheck get',
+    usage: 'zenifra project healthcheck get --project <id> [--json]',
+    description: 'Mostra a configuracao e o estado atual da verificacao de saude do projeto.',
+    flags: ['--project <id>  ID do projeto.', '--json          Imprime a resposta publica em JSON.'],
+    examples: ['zenifra project healthcheck get --project 507f1f77bcf86cd799439012'],
+    output: 'Campo       Valor\n----------  ----------\nStatus      ativo\nRota        /health\nVerificacao configurada',
+    jsonOutput: '{"available":true,"healthcheck":{"enabled":true,"path":"/health"},"interval_seconds":60,"retention_days":30}',
+  },
+  {
+    command: 'project healthcheck set',
+    usage: 'zenifra project healthcheck set --project <id> --path /health [--json]',
+    description: 'Ativa a verificacao de saude do projeto usando a rota informada.',
+    flags: ['--project <id>  ID do projeto.', '--path <path>   Rota HTTP absoluta da aplicacao.', '--json          Imprime a resposta publica em JSON.'],
+    examples: ['zenifra project healthcheck set --project 507f1f77bcf86cd799439012 --path /health'],
+    output: 'Verificacao de saude ativada.\nRota: /health',
+    jsonOutput: '{"healthcheck":{"enabled":true,"path":"/health"},"interval_seconds":60,"retention_days":30}',
+    notes: ['A rota deve comecar com / e nao pode conter host, query string ou fragmento.'],
+  },
+  {
+    command: 'project healthcheck disable',
+    usage: 'zenifra project healthcheck disable --project <id> [--json]',
+    description: 'Desativa a verificacao de saude do projeto sem apagar a rota configurada.',
+    flags: ['--project <id>  ID do projeto.', '--json          Imprime a resposta publica em JSON.'],
+    examples: ['zenifra project healthcheck disable --project 507f1f77bcf86cd799439012'],
+    output: 'Verificacao de saude desativada.',
+    jsonOutput: '{"healthcheck":{"enabled":false,"path":"/health"},"interval_seconds":60,"retention_days":30}',
+  },
+  {
+    command: 'project healthcheck failures',
+    usage: 'zenifra project healthcheck failures --project <id> [--page <n>] [--limit <n>] [--json]',
+    description: 'Lista as falhas publicas de verificacao de saude dos ultimos 30 dias.',
+    flags: ['--project <id>  ID do projeto.', '--page <n>      Pagina. Padrao da API: 1.', '--limit <n>     Itens por pagina. Maximo: 100.', '--json          Imprime a resposta publica em JSON.'],
+    examples: ['zenifra project healthcheck failures --project 507f1f77bcf86cd799439012', 'zenifra project healthcheck failures --project 507f1f77bcf86cd799439012 --page 2 --limit 10'],
+    output: 'Quando                    Status\n2026-08-31T12:00:00.000Z  503',
+    jsonOutput: '{"failures":[{"occurred_at":"2026-08-31T12:00:00.000Z","status_code":503}],"pagination":{"page":1,"limit":10,"total":1,"total_pages":1}}',
+    notes: ['O historico e limitado aos 30 dias anteriores.'],
   },
   {
     command: 'project network',
@@ -1696,7 +1747,7 @@ function buildLogLineOf(log) {
 }
 
 function requireProjectId(flags, commandKey) {
-  if (!flags.project) {
+  if (!flags.project || flags.project === true) {
     printCommandHelpAndFail(commandKey)
     return null
   }
@@ -3850,6 +3901,118 @@ async function handleProjectAutoscalingEvents(session, flags) {
   printAutoscalingEvents(data);
 }
 
+function publicHealthcheckValue(value) {
+  if (value === undefined || value === null || value === '') return '-';
+  if (typeof value === 'object') return '-';
+  return String(value);
+}
+
+function healthcheckForOutput(data) {
+  if (data?.healthcheck && typeof data.healthcheck === 'object' && !Array.isArray(data.healthcheck)) {
+    return data.healthcheck;
+  }
+  return data || {};
+}
+
+function printHealthcheck(data) {
+  const healthcheck = healthcheckForOutput(data);
+  const rows = [
+    { field: 'Status', value: healthcheck.enabled === true ? 'ativo' : healthcheck.enabled === false ? 'inativo' : 'indisponivel' },
+    { field: 'Rota', value: publicHealthcheckValue(healthcheck.path) },
+    { field: 'Verificacao', value: publicHealthcheckValue(healthcheck.status || healthcheck.state || (healthcheck.enabled ? 'configurada' : 'desativada')) },
+  ];
+  if (healthcheck.last_check_at !== undefined) rows.push({ field: 'Ultima verificacao', value: publicHealthcheckValue(healthcheck.last_check_at) });
+  if (healthcheck.last_failure_at !== undefined) rows.push({ field: 'Ultima falha', value: publicHealthcheckValue(healthcheck.last_failure_at) });
+  printTable(rows, [
+    { label: 'Campo', value: (row) => row.field },
+    { label: 'Valor', value: (row) => row.value },
+  ]);
+}
+
+function validateHealthcheckPath(value) {
+  const path = String(value || '').trim();
+  if (!path.startsWith('/')
+    || path.startsWith('//')
+    || path.includes('?')
+    || path.includes('#')
+    || path.includes('\\')
+    || /\s/.test(path)) {
+    throw new CliError('Informe --path como uma rota absoluta, iniciada por /, sem host, query string ou fragmento.');
+  }
+  return path;
+}
+
+function healthcheckFailuresOf(data) {
+  if (Array.isArray(data)) return data;
+  return Array.isArray(data?.failures) ? data.failures : [];
+}
+
+function printHealthcheckFailures(data) {
+  const failures = healthcheckFailuresOf(data);
+  printTable(failures, [
+    { label: 'Quando', value: (failure) => publicHealthcheckValue(failure.occurred_at || failure.observed_at) },
+    { label: 'Status', value: (failure) => publicHealthcheckValue(failure.status_code) },
+  ]);
+
+  const pagination = data?.pagination;
+  if (pagination && pagination.total_pages === undefined && pagination.pages !== undefined) {
+    printPagination({ ...pagination, total_pages: pagination.pages }, 'falha');
+    return;
+  }
+  printPagination(pagination, 'falha');
+}
+
+async function handleProjectHealthcheckGet(session, flags) {
+  const projectId = requireProjectId(flags, 'project healthcheck get');
+  if (!projectId) return;
+  const orgId = await resolveOrgId(session, flags);
+  const data = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/healthcheck`, { orgId }));
+  if (flags.json) return printJson(data);
+  printHealthcheck(data);
+}
+
+async function handleProjectHealthcheckSet(session, flags) {
+  const projectId = requireProjectId(flags, 'project healthcheck set');
+  if (!projectId) return;
+  if (flags.path === undefined || flags.path === true || flags.path === '') {
+    printCommandHelpAndFail('project healthcheck set');
+    return;
+  }
+  const path = validateHealthcheckPath(flags.path);
+  const orgId = await resolveOrgId(session, flags);
+  const payload = await request(session, flags, 'PATCH', `/project/${projectId}/healthcheck`, {
+    orgId,
+    body: { healthcheck: { enabled: true, path } },
+  });
+  const data = unwrapData(payload);
+  if (flags.json) return printJson(data);
+  process.stdout.write(`Verificacao de saude ativada.\nRota: ${path}\n`);
+}
+
+async function handleProjectHealthcheckDisable(session, flags) {
+  const projectId = requireProjectId(flags, 'project healthcheck disable');
+  if (!projectId) return;
+  const orgId = await resolveOrgId(session, flags);
+  const payload = await request(session, flags, 'PATCH', `/project/${projectId}/healthcheck`, {
+    orgId,
+    body: { healthcheck: { enabled: false } },
+  });
+  const data = unwrapData(payload);
+  if (flags.json) return printJson(data);
+  process.stdout.write('Verificacao de saude desativada.\n');
+}
+
+async function handleProjectHealthcheckFailures(session, flags) {
+  const projectId = requireProjectId(flags, 'project healthcheck failures');
+  if (!projectId) return;
+  validateProjectListFlags(flags, { maxLimit: 100 });
+  const orgId = await resolveOrgId(session, flags);
+  const query = buildQuery(flags, ['page', 'limit']);
+  const data = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/healthcheck/failures${query}`, { orgId }));
+  if (flags.json) return printJson(data);
+  printHealthcheckFailures(data);
+}
+
 async function handleProjectBillingUsage(session, flags) {
   const projectId = requireProjectId(flags, 'project billing usage');
   if (!projectId) return;
@@ -4221,6 +4384,14 @@ async function main() {
     if (command === 'valkey' && subcommand === 'connection') return handleValkeyConnection(session, flags);
     if (command === 'valkey' && subcommand === 'credentials' && positional[2] === 'rotate') return handleValkeyCredentialRotate(session, flags);
     if (command === 'valkey' && subcommand === 'credentials' && positional[2] === 'status') return handleValkeyCredentialStatus(session, flags);
+    if (command === 'project' && subcommand === 'healthcheck' && positional.length === 2) {
+      process.stdout.write(commandHelp(['project', 'healthcheck']));
+      return;
+    }
+    if (command === 'project' && subcommand === 'healthcheck' && positional[2] === 'get') return handleProjectHealthcheckGet(session, flags);
+    if (command === 'project' && subcommand === 'healthcheck' && positional[2] === 'set') return handleProjectHealthcheckSet(session, flags);
+    if (command === 'project' && subcommand === 'healthcheck' && positional[2] === 'disable') return handleProjectHealthcheckDisable(session, flags);
+    if (command === 'project' && subcommand === 'healthcheck' && positional[2] === 'failures') return handleProjectHealthcheckFailures(session, flags);
     if (command === 'project' && subcommand === 'info') return handleProjectInfo(session, flags);
     if (command === 'project' && subcommand === 'url') return handleProjectUrl(session, flags);
     if (command === 'project' && subcommand === 'logs') return handleProjectLogs(session, flags);
