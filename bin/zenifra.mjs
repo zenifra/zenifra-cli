@@ -64,6 +64,8 @@ const KNOWN_FLAG_NAMES = new Set([
   'profile',
   'project',
   'revoke',
+  'run',
+  'runId',
   'showValues',
   'status',
   'timeout',
@@ -98,9 +100,12 @@ const ALLOWED_PLAN_VALUES = new Set([
   'queue-basic',
   'queue-premium',
   'queue-enterprise',
+  'job_basic',
+  'job_premium',
+  'job_business',
 ]);
-const ALLOWED_PAYMENT_MODE_VALUES = new Set(['hourly', 'monthly', 'yearly']);
-const ALLOWED_TYPE_PROJECT_VALUES = new Set(['http', 'postgresql', 'mariadb', 'valkey']);
+const ALLOWED_PAYMENT_MODE_VALUES = new Set(['hourly', 'monthly', 'yearly', 'per_minute']);
+const ALLOWED_TYPE_PROJECT_VALUES = new Set(['http', 'postgresql', 'mariadb', 'valkey', 'job']);
 const ALLOWED_RUNTIME_VALUES = new Set(['nodejs', 'python']);
 const ALLOWED_EXPOSURE_VALUES = new Set(['public', 'private']);
 const GITHUB_RUNTIME_VERSIONS = {
@@ -131,6 +136,7 @@ const WIZARD_DATABASE_PLAN_OPTIONS = [
   'db-free',
 ];
 const WIZARD_PAYMENT_MODE_OPTIONS = ['hourly', 'monthly', 'yearly'];
+const WIZARD_JOB_PLAN_OPTIONS = ['job_basic', 'job_premium', 'job_business'];
 const WIZARD_TYPE_PROJECT_OPTIONS = ['http', 'postgresql', 'mariadb', 'valkey'];
 const WIZARD_VALKEY_PROFILE_OPTIONS = ['key_value', 'cache', 'queue'];
 const WIZARD_HTTP_EXPOSURE_OPTIONS = ['public', 'private'];
@@ -170,10 +176,10 @@ Usage:
   zenifra profile remove <name> [--json]
   zenifra orgs [--json]
   zenifra org set [--org <id>]
-  zenifra plans [--type <all|http|database|storage|valkey>] [--json]
+  zenifra plans [--type <all|http|database|storage|valkey|job>] [--json]
   zenifra create project
   zenifra create project --name <name> --plan <plan> --payment-mode <mode> --config <json|@file> [--description <text>] [--org <id>] [--json]
-  zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|valkey>] [--page <n>] [--limit <n>]
+  zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|valkey|job>] [--page <n>] [--limit <n>]
   zenifra valkey status --project <id> [--json]
   zenifra valkey connection --project <id> [--json]
   zenifra valkey credentials rotate --project <id> [--idempotency-key <key>] [--wait] [--interval <seconds>] [--timeout <seconds>] [--json]
@@ -181,6 +187,8 @@ Usage:
   zenifra project info --project <id> [--json]
   zenifra project url --project <id> [--json]
   zenifra project logs --project <id> [--instance <id>] [--json]
+  zenifra project runs --project <id> [--page <n>] [--limit <n>] [--json]
+  zenifra project runs logs --project <id> --run <id> [--json]
   zenifra project metrics --project <id> [--instance <id>] [--json]
   zenifra project metrics capabilities --project <id> [--json]
   zenifra project healthcheck get --project <id> [--json]
@@ -346,11 +354,11 @@ const HELP_SPECS = [
   {
     command: 'plans',
     usage: 'zenifra plans [--type <all|http|database|storage|valkey>] [--json]',
-    description: 'Lista os catalogos publicos de preco de planos HTTP, banco, armazenamento e Valkey.',
-    flags: ['--type <type>  Filtra o catalogo: all, http, database, storage, valkey, key-value, cache ou queue.', '--json         Imprime a resposta em JSON.'],
-    examples: ['zenifra plans', 'zenifra plans --type http', 'zenifra plans --type valkey --json'],
-    output: 'HTTP\nPlano  Hora     Mes      Ano      Recursos\nfree   R$ 0,00  R$ 0,00  R$ 0,00  1 GB Armazenamento Efemero',
-    jsonOutput: '{"http":[{"plan":"free","prices":{"hourly":0,"monthly":0,"yearly":0},"features":["1 GB Armazenamento Efemero"]}],"database":[],"storage":[]}',
+    description: 'Lista os catalogos publicos de preco de planos HTTP, banco, armazenamento, Valkey e Jobs agendados.',
+    flags: ['--type <type>  Filtra o catalogo: all, http, database, storage, valkey, job, key-value, cache ou queue.', '--json         Imprime a resposta em JSON.'],
+    examples: ['zenifra plans', 'zenifra plans --type http', 'zenifra plans --type job --json'],
+    output: 'Jobs agendados\nPlano       Por minuto  Recursos\njob_basic   R$ 0,02      500m / 512Mi',
+    jsonOutput: '{"http":[],"database":[],"storage":[],"job":[{"plan":"job_basic","payment_mode":"per_minute","unit_amount":2}]}',
   },
   {
     command: 'valkey',
@@ -403,7 +411,7 @@ const HELP_SPECS = [
   },
   {
     command: 'projects',
-    usage: 'zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|valkey>] [--page <n>] [--limit <n>]',
+    usage: 'zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|valkey|job>] [--page <n>] [--limit <n>]',
     description: 'Lista projetos da organizacao ativa ou da API key.',
     flags: ['--json       Imprime a resposta em JSON.', '--org <id>   Usa uma organizacao especifica com sessao de usuario.', '--type <type> Filtra por tipo de projeto.', '--page <n>   Pagina. Padrao: 1.', '--limit <n>  Itens por pagina. Padrao: 15.'],
     examples: ['zenifra projects --type http --page 1 --limit 15', 'zenifra projects --json'],
@@ -422,7 +430,7 @@ const HELP_SPECS = [
   },
   {
     command: 'project',
-    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project metrics capabilities --project <id> [--json]\n  zenifra project healthcheck get --project <id> [--json]\n  zenifra project healthcheck set --project <id> --path /health [--json]\n  zenifra project healthcheck disable --project <id> [--json]\n  zenifra project healthcheck failures --project <id> [--page <n>] [--limit <n>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project autoscaling --project <id> [--json]\n  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]\n  zenifra project autoscaling disable --project <id> [--json]\n  zenifra project autoscaling events --project <id> [--direction <scale_up|scale_down>] [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project billing usage --project <id> [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
+    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project runs --project <id> [--page <n>] [--limit <n>] [--json]\n  zenifra project runs logs --project <id> --run <id> [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project metrics capabilities --project <id> [--json]\n  zenifra project healthcheck get --project <id> [--json]\n  zenifra project healthcheck set --project <id> --path /health [--json]\n  zenifra project healthcheck disable --project <id> [--json]\n  zenifra project healthcheck failures --project <id> [--page <n>] [--limit <n>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project autoscaling --project <id> [--json]\n  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]\n  zenifra project autoscaling disable --project <id> [--json]\n  zenifra project autoscaling events --project <id> [--direction <scale_up|scale_down>] [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project billing usage --project <id> [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
     description: 'Agrupa comandos operacionais e de introspecao sobre um projeto especifico.',
     examples: ['zenifra project', 'zenifra project info --project proj_1', 'zenifra project env add --project proj_1 --name NODE_ENV --value production'],
     output: 'Zenifra CLI - project',
@@ -455,6 +463,25 @@ const HELP_SPECS = [
     output: 'server started\nGET /health 200',
     jsonOutput: '"server started\\nGET /health 200"',
     notes: ['Nao faz streaming continuo; retorna o snapshot disponibilizado pela API.'],
+  },
+  {
+    command: 'project runs',
+    usage: 'zenifra project runs --project <id> [--page <n>] [--limit <n>] [--json]',
+    description: 'Lista as execucoes de um Job agendado com o historico de cobranca.',
+    flags: ['--project <id>  ID do projeto.', '--page <n>      Pagina. Padrao: 1.', '--limit <n>     Itens por pagina. Maximo: 50.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project runs --project 507f1f77bcf86cd799439012', 'zenifra project runs --project 507f1f77bcf86cd799439012 --page 2 --limit 20 --json'],
+    output: 'ID      Status     Agendada                  Minutos cobrados  Valor\nrun_1   succeeded  2026-09-01T12:00:00.000Z  2                 R$ 0,04',
+    jsonOutput: '{"runs":[{"id":"run_1","status":"succeeded","billed_minutes":2,"currency":"brl","amount":0.04}],"pagination":{"page":1,"limit":20,"total":1,"total_pages":1}}',
+  },
+  {
+    command: 'project runs logs',
+    usage: 'zenifra project runs logs --project <id> --run <id> [--json]',
+    description: 'Mostra os logs de uma execucao especifica de um Job agendado.',
+    flags: ['--project <id>  ID do projeto.', '--run <id>      ID publico da execucao.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project runs logs --project 507f1f77bcf86cd799439012 --run run_1', 'zenifra project runs logs --project 507f1f77bcf86cd799439012 --run run_1 --json'],
+    output: 'started\ncompleted',
+    jsonOutput: '{"logs":"started\\ncompleted","truncated":false}',
+    notes: ['Os logs pertencem a uma execucao identificada pelo ID publico retornado em project runs.'],
   },
   {
     command: 'project metrics',
@@ -767,7 +794,8 @@ function commandHelp(positionals) {
   const key = helpKeyFromPositionals(positionals);
   if (!key) return usage();
 
-  const spec = HELP_BY_COMMAND.get(key);
+  const spec = HELP_BY_COMMAND.get(key)
+    || (key === 'project run logs' ? HELP_BY_COMMAND.get('project runs logs') : undefined);
   if (!spec) {
     throw new CliError(`Ajuda nao encontrada para: ${key}. Use "zenifra help <command>".`);
   }
@@ -1327,9 +1355,9 @@ async function promptWizardBoolean({ label, docs, examples = ['sim', 'nao'] }) {
   }
 }
 
-async function promptWizardSelect({ label, options, docs, examples = [] }) {
+async function promptWizardSelect({ label, options, docs, examples = [], extraValues = [] }) {
   while (true) {
-    const allowedValues = options.map((option) => option.value);
+    const allowedValues = [...options.map((option) => option.value), ...extraValues];
     const answer = await prompt(buildWizardPromptLine({
       ui: promptWizardSelect.ui,
       label,
@@ -1350,6 +1378,8 @@ async function promptWizardSelect({ label, options, docs, examples = [] }) {
     const normalized = normalizeFreeText(answer);
     const found = options.find((option) => normalizeFreeText(option.value) === normalized);
     if (found) return found.value;
+    const extraValue = extraValues.find((value) => normalizeFreeText(value) === normalized);
+    if (extraValue) return extraValue;
     process.stdout.write(`${tone(`valor invalido: escolha um item entre ${options.map((_, index) => index + 1).join(', ')} ou um dos valores aceitos.`, 'red')}\n`);
     promptWizardSelect.ui.step -= 1;
   }
@@ -1482,6 +1512,14 @@ function httpTimeoutMs() {
   return value;
 }
 
+function publicApiErrorMessage(value) {
+  const message = String(value || 'Nao foi possivel concluir a operacao.');
+  if (/kubernetes|k8s|namespace|cluster|pod|serviceaccount|deployment|internal[_ -]/i.test(message)) {
+    return 'Nao foi possivel concluir a operacao. Tente novamente mais tarde.';
+  }
+  return message;
+}
+
 async function request(session, flags, method, path, {
   body,
   orgId,
@@ -1540,7 +1578,7 @@ async function request(session, flags, method, path, {
   }
 
   if (!response.ok) {
-    const message = payload?.message || payload?.error || `Zenifra API retornou HTTP ${response.status}`;
+    const message = publicApiErrorMessage(payload?.message || payload?.error || `Zenifra API retornou HTTP ${response.status}`);
     if (response.status === 401) {
       if (credential?.type === 'api_key') {
         throw new CliError(`${message}. Verifique se a API key esta ativa e se o IP atual esta permitido.`);
@@ -1782,9 +1820,66 @@ function printEnvs(envs, flags) {
   ]);
 }
 
+function isJobProject(project) {
+  return project?.type_project === 'job' || project?.config?.type_project === 'job';
+}
+
+const JOB_INFO_HIDDEN_KEYS = new Set(['domain', 'url', 'exposure', 'port', 'instances']);
+const JOB_CONFIG_HIDDEN_KEYS = new Set(['exposure', 'port', 'instances', 'network_access', 'domain', 'custom_domains', 'autoscaling', 'healthcheck']);
+const INTERNAL_PROJECT_KEYS = new Set([
+  'current_instances',
+  'runtime_name',
+  'namespace',
+  'k8s_job_name',
+]);
+
+function sanitizePublicProjectValue(value) {
+  if (Array.isArray(value)) return value.map(sanitizePublicProjectValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !INTERNAL_PROJECT_KEYS.has(key))
+    .map(([key, entryValue]) => [key, sanitizePublicProjectValue(entryValue)]));
+}
+
+function sanitizeJobConfigInfo(value) {
+  if (Array.isArray(value)) return value.map(sanitizeJobConfigInfo);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !JOB_CONFIG_HIDDEN_KEYS.has(key))
+    .map(([key, entryValue]) => [key, sanitizeJobConfigInfo(entryValue)]));
+}
+
+function sanitizePublicProject(project) {
+  const sanitized = sanitizePublicProjectValue(project);
+  if (!sanitized || typeof sanitized !== 'object' || Array.isArray(sanitized)) return sanitized;
+  return Object.fromEntries(Object.entries(sanitized)
+    .filter(([key]) => !JOB_INFO_HIDDEN_KEYS.has(key))
+    .map(([key, value]) => [key, key === 'config' ? sanitizeJobConfigInfo(value) : value]));
+}
+
+function sanitizeJobProjectResponse(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  if (payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)) {
+    return { ...payload, data: sanitizePublicProject(payload.data) };
+  }
+  return sanitizePublicProjectValue(payload);
+}
+
+function publicProjectsData(data) {
+  if (Array.isArray(data)) return data.map((project) => isJobProject(project) ? sanitizePublicProject(project) : project);
+  if (!data || typeof data !== 'object') return data;
+  return {
+    ...data,
+    projects: Array.isArray(data.projects)
+      ? data.projects.map((project) => isJobProject(project) ? sanitizePublicProject(project) : project)
+      : data.projects,
+  };
+}
+
 function printProject(project) {
   const managedService = project.managed_service;
   const isValkey = project.type_project === 'valkey' || managedService?.engine === 'valkey';
+  const isJob = isJobProject(project);
   const rows = [
     { label: 'ID', value: projectIdOf(project) || '-' },
     { label: 'Nome', value: project.name || '-' },
@@ -1793,7 +1888,13 @@ function printProject(project) {
     { label: 'Plano', value: project.plan || '-' },
   ];
 
-  if (isValkey) {
+  if (isJob) {
+    const schedule = project.job || project.config?.job || {};
+    rows.push(
+      { label: 'Agendamento', value: schedule.cron || '-' },
+      { label: 'Armazenamento', value: project.storage?.persistent === true || project.config?.storage?.persistent === true ? 'persistente' : 'efemero' },
+    );
+  } else if (isValkey) {
     rows.push(
       { label: 'Perfil', value: managedService?.profile || '-' },
       { label: 'Versao', value: managedService?.version || '-' },
@@ -2165,9 +2266,10 @@ async function handleProjects(session, flags) {
   };
   const query = buildQuery(projectFlags, ['type', 'page', 'limit']);
   const data = unwrapData(await request(session, flags, 'GET', `/project${query}`, { orgId }));
-  const projects = asArray(data);
+  const publicData = publicProjectsData(data);
+  const projects = asArray(publicData);
 
-  if (flags.json) return printJson(data);
+  if (flags.json) return printJson(publicData);
   printTable(projects, [
     { label: 'ID', value: projectIdOf },
     { label: 'Nome', value: (project) => project.name || '-' },
@@ -2267,6 +2369,10 @@ function normalizePaymentMode(value) {
     ['annual', 'yearly'],
     ['anual', 'yearly'],
     ['por ano', 'yearly'],
+    ['per_minute', 'per_minute'],
+    ['per-minute', 'per_minute'],
+    ['por minuto', 'per_minute'],
+    ['minuto', 'per_minute'],
   ]);
   return aliases.get(raw) || raw;
 }
@@ -2401,12 +2507,21 @@ async function fetchWizardCatalogs(session, flags) {
   return { httpPlans, availableInstances, databasePlans };
 }
 
+function requireJobPlans(value) {
+  const plans = Array.isArray(value) ? value : value?.plans;
+  if (!Array.isArray(plans)) {
+    throw new CliError('Falha ao carregar o catalogo de Jobs agendados. Tente novamente mais tarde.');
+  }
+  return plans;
+}
+
 function normalizePlansCatalogType(value) {
   const normalized = normalizeFreeText(value || 'all');
   if (!normalized || normalized === 'all') return 'all';
   if (normalized === 'http') return 'http';
   if (['database', 'db', 'postgresql', 'mariadb'].includes(normalized)) return 'database';
   if (normalized === 'valkey') return 'valkey';
+  if (normalized === 'job' || normalized === 'jobs' || normalized === 'scheduled job' || normalized === 'scheduled jobs') return 'job';
   if (normalized === 'key-value' || normalized === 'key value' || normalized === 'key_value') return 'valkey-key_value';
   if (normalized === 'cache') return 'valkey-cache';
   if (normalized === 'queue') return 'valkey-queue';
@@ -2524,6 +2639,17 @@ async function fetchPlansCatalogs(session, flags, type) {
     };
   }
 
+  if (type === 'job') {
+    return {
+      http: [],
+      database: [],
+      storage: [],
+      job: requireJobPlans(
+        unwrapData(await request(session, flags, 'GET', '/project/job/plans', { tokenRequired: false })),
+      ),
+    };
+  }
+
   if (type === 'valkey' || type.startsWith('valkey-')) {
     const catalog = requireValkeyCatalog(
       unwrapData(await request(session, flags, 'GET', '/managed-services/catalog', { tokenRequired: false })),
@@ -2569,6 +2695,15 @@ function printValkeyCatalog(catalog, profileFilter) {
   });
 }
 
+function printJobCatalog(plans) {
+  process.stdout.write('Jobs agendados\n');
+  printTable(asArray(plans), [
+    { label: 'Plano', value: (plan) => plan.plan || plan.id || '-' },
+    { label: 'Por minuto', value: (plan) => formatBrlFromCents(plan.unit_amount ?? plan.prices?.per_minute) },
+    { label: 'Recursos', value: (plan) => plan.resources ? `${plan.resources.cpu || '-'} / ${plan.resources.memory || '-'}` : asArray(plan.features).join(', ') || '-' },
+  ]);
+}
+
 function printPlansCatalogs(payload, type) {
   if (type === 'all' || type === 'http') {
     process.stdout.write('HTTP\n');
@@ -2605,6 +2740,11 @@ function printPlansCatalogs(payload, type) {
     ]);
   }
 
+  if (type === 'job') {
+    printJobCatalog(payload.job);
+    return;
+  }
+
   if (type === 'all' || type === 'valkey' || type.startsWith('valkey-')) {
     if (type === 'all') process.stdout.write('\n');
     printValkeyCatalog(payload.valkey, valkeyProfileFilter(type));
@@ -2614,7 +2754,7 @@ function printPlansCatalogs(payload, type) {
 async function handlePlans(session, flags) {
   const type = normalizePlansCatalogType(flags.type);
   if (!type) {
-    throw new CliError('Tipo de catalogo invalido. Valores aceitos: all, http, database, storage, valkey.');
+    throw new CliError('Tipo de catalogo invalido. Valores aceitos: all, http, database, storage, valkey ou job.');
   }
 
   const payload = await fetchPlansCatalogs(session, flags, type);
@@ -2624,6 +2764,81 @@ async function handlePlans(session, flags) {
 
 function formatAllowedValues(values) {
   return [...values].join(', ');
+}
+
+function validateJobConfig(config) {
+  if (!isRecord(config)) throw new CliError('config deve ser um objeto.');
+
+  if (!isRecord(config.job)) throw new CliError('Jobs exigem config.job.');
+  const cron = String(config.job.cron || '').trim();
+  if (cron.split(/\s+/).filter(Boolean).length !== 5) {
+    throw new CliError('config.job.cron deve conter exatamente cinco campos em UTC.');
+  }
+  for (const field of ['command', 'args']) {
+    if (config.job[field] === undefined) continue;
+    if (!Array.isArray(config.job[field]) || config.job[field].some((value) => typeof value !== 'string' || !value.length)) {
+      throw new CliError(`config.job.${field} deve ser um array de textos.`);
+    }
+    if (config.job[field].length > 64) throw new CliError(`config.job.${field} nao pode conter mais de 64 itens.`);
+    if (config.job[field].some((value) => value.length > 4096)) {
+      throw new CliError(`Cada item de config.job.${field} deve ter no maximo 4096 caracteres.`);
+    }
+  }
+
+  const forbiddenFields = ['instances', 'port', 'exposure', 'network_access', 'domain', 'custom_domains', 'autoscaling', 'healthcheck'];
+  const forbiddenField = forbiddenFields.find((field) => config[field] !== undefined);
+  if (forbiddenField) {
+    throw new CliError(`Jobs nao aceitam config.${forbiddenField}.`);
+  }
+
+  const hasImage = config.image !== undefined;
+  const hasGithub = config.github !== undefined;
+  if (hasImage === hasGithub) {
+    throw new CliError('Jobs exigem exatamente uma origem: config.image ou config.github.');
+  }
+  if (hasImage && (!isRecord(config.image) || typeof config.image.url !== 'string' || !config.image.url.trim())) {
+    throw new CliError('config.image deve conter uma URL de imagem valida.');
+  }
+  if (hasGithub && !isRecord(config.github)) {
+    throw new CliError('config.github deve ser um objeto de origem GitHub valido.');
+  }
+
+  if (!Array.isArray(config.envs)) {
+    throw new CliError('config.envs deve ser um array.');
+  }
+  if (config.envs.length > 100) throw new CliError('config.envs nao pode conter mais de 100 variaveis.');
+  for (const env of config.envs) {
+    if (!isRecord(env) || typeof env.name !== 'string' || typeof env.value !== 'string') {
+      throw new CliError('Cada item de config.envs deve conter name e value como texto.');
+    }
+  }
+
+  if (!isRecord(config.storage)) throw new CliError('Jobs exigem config.storage.');
+  if (typeof config.storage.persistent !== 'boolean') {
+    throw new CliError('config.storage.persistent deve ser booleano.');
+  }
+  const capacity = Number(config.storage.capacity);
+  if (!Number.isInteger(capacity) || capacity < 1 || capacity > 250) {
+    throw new CliError('config.storage.capacity deve ser um inteiro entre 1 e 250 GiB.');
+  }
+  if (config.storage.persistent) {
+    if (typeof config.storage.dir_path_to_persist !== 'string' || !config.storage.dir_path_to_persist.trim()) {
+      throw new CliError('config.storage.dir_path_to_persist e obrigatorio para storage persistente.');
+    }
+  } else if (config.storage.dir_path_to_persist !== undefined) {
+    throw new CliError('config.storage.dir_path_to_persist nao e aceito para storage efemero.');
+  }
+
+  return { ...config, type_project: 'job', job: { ...config.job, cron } };
+}
+
+function validateJobPlanAndPayment(plan, paymentMode) {
+  if (!WIZARD_JOB_PLAN_OPTIONS.includes(plan)) {
+    throw new CliError(`Plano invalido para Jobs: "${plan}". Valores aceitos: ${formatAllowedValues(WIZARD_JOB_PLAN_OPTIONS)}.`);
+  }
+  if (paymentMode !== 'per_minute') {
+    throw new CliError('Jobs agendados aceitam somente o modo de pagamento per_minute.');
+  }
 }
 
 function validateCreateAutoscaling(config, plan, typeProject) {
@@ -2718,13 +2933,26 @@ function validateValkeyConfig(config, plan, catalog) {
 function validateCreateInput({ plan, paymentMode, config, valkeyCatalog }) {
   const nextTypeProject = normalizeTypeProject(config?.type_project);
   const nextPlan = normalizePlan(plan);
+  const nextPaymentMode = normalizePaymentMode(paymentMode);
+
+  if (nextTypeProject === 'job') {
+    validateJobPlanAndPayment(nextPlan, nextPaymentMode);
+    return {
+      plan: nextPlan,
+      paymentMode: nextPaymentMode,
+      config: validateJobConfig({ ...config, type_project: nextTypeProject }),
+    };
+  }
+
   if (!nextPlan || (nextTypeProject !== 'valkey' && !ALLOWED_PLAN_VALUES.has(nextPlan))) {
     throw new CliError(`Plano invalido: "${plan}". Valores aceitos: ${formatAllowedValues(ALLOWED_PLAN_VALUES)}. Docs: ${DOCS_CREATE_HTTP_URL}`);
   }
+  if (WIZARD_JOB_PLAN_OPTIONS.includes(nextPlan)) {
+    throw new CliError(`Plano ${nextPlan} deve ser usado com type_project=job.`);
+  }
 
-  const nextPaymentMode = normalizePaymentMode(paymentMode);
-  if (!nextPaymentMode || !ALLOWED_PAYMENT_MODE_VALUES.has(nextPaymentMode)) {
-    throw new CliError(`Modo de pagamento invalido: "${paymentMode}". Valores aceitos: ${formatAllowedValues(ALLOWED_PAYMENT_MODE_VALUES)}. Docs: ${DOCS_PAYMENTS_URL}`);
+  if (!nextPaymentMode || !ALLOWED_PAYMENT_MODE_VALUES.has(nextPaymentMode) || nextPaymentMode === 'per_minute') {
+    throw new CliError(`Modo de pagamento invalido: "${paymentMode}". Valores aceitos: ${formatAllowedValues(new Set(['hourly', 'monthly', 'yearly']))}. Docs: ${DOCS_PAYMENTS_URL}`);
   }
 
   if (!nextTypeProject || !ALLOWED_TYPE_PROJECT_VALUES.has(nextTypeProject)) {
@@ -2804,6 +3032,12 @@ function printWizardSummary(payload) {
 
   if (masked.config.type_project === 'postgresql' || masked.config.type_project === 'mariadb') {
     lines.push(`  banco: versao ${masked.config.version} | instancias ${masked.config.instances} | storage ${masked.config.storage.capacity}Gi`);
+  }
+
+  if (masked.config.type_project === 'job') {
+    lines.push(`  Job: cron ${masked.config.job.cron} UTC | storage ${masked.config.storage.capacity}Gi (${masked.config.storage.persistent ? 'persistente' : 'efemero'})`);
+    if (masked.config.image) lines.push(`  imagem: ${masked.config.image.url} | publica: ${masked.config.image.is_public ? 'sim' : 'nao'}`);
+    if (masked.config.github) lines.push(`  github: ${masked.config.github.repository_owner}/${masked.config.github.repository_name}@${masked.config.github.branch}`);
   }
 
   if (masked.config.type_project === 'valkey') {
@@ -3260,6 +3494,87 @@ async function buildValkeyConfig({ profile, plan, catalog }) {
   };
 }
 
+async function buildJobConfig() {
+  const source = await promptWizardSelect({
+    label: 'Origem do Job',
+    docs: DOCS_CREATE_HTTP_URL,
+    examples: ['github', 'image'],
+    options: [
+      { value: 'github', description: 'build a partir de repositorio GitHub' },
+      { value: 'image', description: 'imagem pronta' },
+    ],
+  });
+  const sourceConfig = source === 'github'
+    ? { github: await buildHttpGithubConfig() }
+    : { image: await buildHttpImageConfig() };
+  const persistent = await promptWizardBoolean({
+    label: 'Armazenamento persistente',
+    docs: DOCS_CONFIGURATION_URL,
+    examples: ['sim', 'nao'],
+  });
+  const storage = {
+    persistent,
+    capacity: await promptWizardNumber({
+      label: 'Capacidade de armazenamento (Gi)',
+      docs: DOCS_CONFIGURATION_URL,
+      examples: ['1', '5', '10'],
+      min: 1,
+      max: 250,
+    }),
+    ...(persistent ? {
+      dir_path_to_persist: await promptWizardText({
+        label: 'Diretorio persistente',
+        required: true,
+        examples: ['/data'],
+        docs: DOCS_CONFIGURATION_URL,
+      }),
+    } : {}),
+  };
+  const envs = await promptWizardPairs({
+    introLabel: 'Deseja adicionar variaveis de ambiente?',
+    docs: DOCS_CONFIGURATION_URL,
+    examples: ['sim', 'nao'],
+    stateKey: 'jobEnvs',
+    itemLabels: [
+      { key: 'name', label: 'Nome da env', required: true, examples: ['MODE'], docs: DOCS_CONFIGURATION_URL },
+      { key: 'value', label: 'Valor da env', required: true, examples: ['daily'], docs: DOCS_CONFIGURATION_URL },
+    ],
+  });
+  const cron = await promptWizardText({
+    label: 'Cron em UTC (cinco campos)',
+    required: true,
+    examples: ['0 * * * *'],
+    docs: DOCS_CONFIGURATION_URL,
+    validate: (value) => value.split(/\s+/).filter(Boolean).length === 5 ? null : 'use exatamente cinco campos em UTC',
+  });
+  const command = await promptWizardText({
+    label: 'Comando opcional',
+    examples: ['node'],
+    docs: DOCS_CONFIGURATION_URL,
+    emptyValue: null,
+  });
+  const argsInput = await promptWizardText({
+    label: 'Argumentos opcionais em JSON',
+    examples: ['["script.js"]', '[]'],
+    docs: DOCS_CONFIGURATION_URL,
+    emptyValue: '',
+    validate: (value) => {
+      try {
+        const args = JSON.parse(value);
+        return Array.isArray(args) && args.every((arg) => typeof arg === 'string') ? null : 'use um array JSON de textos';
+      } catch {
+        return 'use um array JSON de textos';
+      }
+    },
+  });
+  const job = {
+    cron,
+    ...(command ? { command: [command] } : {}),
+    ...(argsInput ? { args: JSON.parse(argsInput) } : {}),
+  };
+  return { type_project: 'job', ...sourceConfig, envs, storage, job };
+}
+
 async function runProjectCreateWizard(session, flags) {
   const catalogs = await fetchWizardCatalogs(session, flags);
   const ui = createWizardUi();
@@ -3288,10 +3603,14 @@ async function runProjectCreateWizard(session, flags) {
     docs: DOCS_CONFIGURATION_URL,
     examples: WIZARD_TYPE_PROJECT_OPTIONS,
     options: WIZARD_TYPE_PROJECT_OPTIONS.map((value) => ({ value })),
+    extraValues: ['job'],
   });
   ui.state.typeProject = typeProject;
   const valkeyCatalog = typeProject === 'valkey'
     ? requireValkeyCatalog(unwrapData(await request(session, flags, 'GET', '/managed-services/catalog')))
+    : undefined;
+  const jobPlans = typeProject === 'job'
+    ? requireJobPlans(unwrapData(await request(session, flags, 'GET', '/project/job/plans')))
     : undefined;
   const profile = typeProject === 'valkey'
     ? await promptWizardSelect({
@@ -3310,6 +3629,8 @@ async function runProjectCreateWizard(session, flags) {
       ? valkeyCatalog.plans
         .filter((planDefinition) => planDefinition.profile === profile)
         .map((planDefinition) => planDefinition.id)
+      : typeProject === 'job'
+        ? sortWizardOptions(jobPlans.map((plan) => plan?.plan || plan?.id).filter(Boolean), WIZARD_JOB_PLAN_OPTIONS)
     : sortWizardOptions(catalogs.databasePlans
       .map((plan) => plan?.plan)
       .filter((plan) => WIZARD_DATABASE_PLAN_OPTIONS.includes(plan) && (typeProject !== 'mariadb' || plan !== 'db-free')), WIZARD_DATABASE_PLAN_OPTIONS);
@@ -3317,7 +3638,8 @@ async function runProjectCreateWizard(session, flags) {
     label: 'Plano',
     docs: typeProject === 'http'
       ? DOCS_CREATE_HTTP_URL
-      : typeProject === 'valkey' ? DOCS_CREATE_VALKEY_URL : DOCS_DATABASE_CONFIGURATION_URL,
+      : typeProject === 'valkey' ? DOCS_CREATE_VALKEY_URL
+        : typeProject === 'job' ? DOCS_CONFIGURATION_URL : DOCS_DATABASE_CONFIGURATION_URL,
     examples: [planOptions[0], planOptions.at(-1)],
     options: planOptions.map((value) => ({ value })),
   });
@@ -3327,11 +3649,12 @@ async function runProjectCreateWizard(session, flags) {
     ui.state.planAllowsSubdomain = isSubdomainCustomizable(catalogs.httpPlans, plan);
     ui.state.planAllowsAutoscaling = isAutoscalingEnabledForPlan(catalogs.httpPlans, plan);
   }
+  const paymentOptions = typeProject === 'job' ? ['per_minute'] : WIZARD_PAYMENT_MODE_OPTIONS;
   const paymentMode = await promptWizardSelect({
     label: 'Modo de pagamento',
     docs: DOCS_PAYMENTS_URL,
-    examples: WIZARD_PAYMENT_MODE_OPTIONS,
-    options: WIZARD_PAYMENT_MODE_OPTIONS.map((value) => ({ value })),
+    examples: paymentOptions,
+    options: paymentOptions.map((value) => ({ value })),
   });
 
   let config;
@@ -3345,6 +3668,8 @@ async function runProjectCreateWizard(session, flags) {
     config = await buildPostgresqlConfig({ plan, databasePlans: catalogs.databasePlans });
   } else if (typeProject === 'valkey') {
     config = await buildValkeyConfig({ profile, plan, catalog: valkeyCatalog });
+  } else if (typeProject === 'job') {
+    config = await buildJobConfig();
   } else {
     config = await buildMariadbConfig();
   }
@@ -3404,14 +3729,16 @@ async function handleProjectCreate(session, flags) {
     },
   });
 
-  if (flags.json) return printJson(payload);
+  if (flags.json) {
+    return printJson(validated.config.type_project === 'job' ? sanitizeJobProjectResponse(payload) : payload);
+  }
   if (wizardPayload) {
     closePromptResources();
   }
   const project = unwrapData(payload);
   const rows = [
     { field: 'Projeto', value: projectIdOf(project) || 'id indisponivel' },
-    ...(project.domain ? [{ field: 'Dominio', value: formatPublicUrl(project.domain) }] : []),
+    ...(validated.config.type_project === 'job' ? [] : project.domain ? [{ field: 'Dominio', value: formatPublicUrl(project.domain) }] : []),
     ...(project.api_key ? [{ field: 'API key', value: project.api_key }] : []),
   ];
   if (validated.config.type_project === 'valkey') {
@@ -3446,7 +3773,7 @@ async function handleProjectInfo(session, flags) {
   const orgId = await resolveOrgId(session, flags);
   const project = await getProject(session, flags, projectId, orgId);
 
-  if (flags.json) return printJson(project);
+  if (flags.json) return printJson(isJobProject(project) ? sanitizePublicProject(project) : project);
   printProject({ ...project, id: projectId });
 }
 
@@ -3476,6 +3803,126 @@ async function handleProjectLogs(session, flags) {
   const logs = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/logs${query}`, { orgId }));
 
   printLogs(logs, flags);
+}
+
+const PUBLIC_JOB_RUN_KEYS = [
+  'status',
+  'scheduled_at',
+  'started_at',
+  'finished_at',
+  'duration_ms',
+  'billed_minutes',
+  'currency',
+  'amount',
+  'value',
+  'total_amount',
+];
+
+function sanitizeJobRun(run) {
+  if (!run || typeof run !== 'object' || Array.isArray(run)) return {};
+  const output = {};
+  const id = run.id || run._id || run.run_id;
+  if (id !== undefined) output.id = id;
+  for (const key of PUBLIC_JOB_RUN_KEYS) {
+    if (run[key] !== undefined) output[key] = run[key];
+  }
+  return output;
+}
+
+function jobRunsDataOf(data) {
+  if (Array.isArray(data)) return { runs: data.map(sanitizeJobRun), pagination: null };
+  if (!data || typeof data !== 'object') return { runs: [], pagination: null };
+  return {
+    runs: Array.isArray(data.runs) ? data.runs.map(sanitizeJobRun) : [],
+    pagination: data.pagination ?? null,
+  };
+}
+
+function formatJobRunDuration(durationMs) {
+  if (durationMs === undefined || durationMs === null || !Number.isFinite(Number(durationMs))) return '-';
+  const seconds = Number(durationMs) / 1000;
+  return `${Number(seconds.toFixed(1))} s`;
+}
+
+function formatJobRunAmount(run) {
+  const amount = run.amount ?? run.value ?? run.total_amount;
+  if (amount === undefined || amount === null) return '-';
+  return formatMoney(amount, run.currency);
+}
+
+function printJobRuns(data) {
+  const runs = asArray(data?.runs);
+  printTable(runs, [
+    { label: 'ID', value: (run) => run.id || '-' },
+    { label: 'Status', value: (run) => run.status || '-' },
+    { label: 'Agendada', value: (run) => run.scheduled_at || '-' },
+    { label: 'Iniciada', value: (run) => run.started_at || '-' },
+    { label: 'Finalizada', value: (run) => run.finished_at || '-' },
+    { label: 'Duracao', value: (run) => formatJobRunDuration(run.duration_ms) },
+    { label: 'Minutos cobrados', value: (run) => run.billed_minutes ?? '-' },
+    { label: 'Valor', value: formatJobRunAmount },
+  ]);
+  printPagination(data?.pagination, 'execucao');
+}
+
+function sanitizeJobRunLogEntries(logs) {
+  if (!Array.isArray(logs)) return logs;
+  return logs.map((entry) => {
+    if (typeof entry === 'string') return entry;
+    if (!entry || typeof entry !== 'object') return String(entry ?? '');
+    return Object.fromEntries(['sequence', 'timestamp', 'level', 'message']
+      .filter((key) => entry[key] !== undefined)
+      .map((key) => [key, entry[key]]));
+  });
+}
+
+function sanitizeJobRunLogs(data) {
+  if (typeof data === 'string') return data;
+  if (Array.isArray(data)) return sanitizeJobRunLogEntries(data);
+  if (!data || typeof data !== 'object') return data;
+  const output = {};
+  for (const key of ['logs', 'next_cursor', 'truncated', 'finished', 'status']) {
+    if (data[key] !== undefined) output[key] = key === 'logs' ? sanitizeJobRunLogEntries(data[key]) : data[key];
+  }
+  return output;
+}
+
+async function handleProjectRuns(session, flags) {
+  const projectId = requireProjectId(flags, 'project runs');
+  if (!projectId) return;
+  validateProjectListFlags(flags, { maxLimit: 50 });
+  const orgId = await resolveOrgId(session, flags);
+  const query = buildQuery(flags, ['page', 'limit']);
+  const data = jobRunsDataOf(unwrapData(await request(session, flags, 'GET', `/project/${projectId}/job-runs${query}`, { orgId })));
+
+  if (flags.json) return printJson(data);
+  printJobRuns(data);
+}
+
+async function handleProjectRunLogs(session, flags) {
+  const projectId = requireProjectId(flags, 'project runs logs');
+  if (!projectId) return;
+  if (!flags.run && !flags.runId || flags.run === true || flags.runId === true) {
+    printCommandHelpAndFail('project runs logs');
+    return;
+  }
+  const runId = String(flags.run || flags.runId);
+  const orgId = await resolveOrgId(session, flags);
+  const data = sanitizeJobRunLogs(unwrapData(await request(
+    session,
+    flags,
+    'GET',
+    `/project/${projectId}/job-runs/${encodeURIComponent(runId)}/logs`,
+    { orgId },
+  )));
+
+  if (flags.json) return printJson(data);
+  const logs = typeof data === 'object' && data !== null && !Array.isArray(data) ? data.logs : data;
+  if (Array.isArray(logs)) {
+    for (const log of logs) process.stdout.write(`${typeof log === 'string' ? log : buildLogLineOf(log)}\n`);
+    return;
+  }
+  printLogs(logs, { json: false });
 }
 
 async function handleProjectMetricsCapabilities(session, flags) {
@@ -4394,6 +4841,9 @@ async function main() {
     if (command === 'project' && subcommand === 'healthcheck' && positional[2] === 'failures') return handleProjectHealthcheckFailures(session, flags);
     if (command === 'project' && subcommand === 'info') return handleProjectInfo(session, flags);
     if (command === 'project' && subcommand === 'url') return handleProjectUrl(session, flags);
+    if (command === 'project' && subcommand === 'runs' && positional[2] === 'logs') return handleProjectRunLogs(session, flags);
+    if (command === 'project' && subcommand === 'runs') return handleProjectRuns(session, flags);
+    if (command === 'project' && subcommand === 'run' && positional[2] === 'logs') return handleProjectRunLogs(session, flags);
     if (command === 'project' && subcommand === 'logs') return handleProjectLogs(session, flags);
     if (command === 'project' && subcommand === 'metrics' && positional[2] === 'capabilities') return handleProjectMetricsCapabilities(session, flags);
     if (command === 'project' && subcommand === 'metrics') return handleProjectMetrics(session, flags);
@@ -4429,6 +4879,6 @@ main().catch((error) => {
     process.exit(error.exitCode);
   }
 
-  process.stderr.write(`${error.stack || error.message}\n`);
+  process.stderr.write('Nao foi possivel concluir a operacao. Tente novamente mais tarde.\n');
   process.exit(1);
 });

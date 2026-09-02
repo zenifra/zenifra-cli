@@ -3424,3 +3424,248 @@ test('project healthcheck validates path and pagination before requesting the AP
     }
   }
 });
+
+test('plans recognizes the public Scheduled Jobs catalog and keeps the grouped JSON envelope', async () => {
+  const jobPlans = [
+    {
+      plan: 'job_basic',
+      product_type: 'job',
+      payment_mode: 'per_minute',
+      unit_amount: 2,
+      currency: 'brl',
+      resources: { cpu: '500m', memory: '512Mi' },
+    },
+  ];
+
+  await withCliServer(async (req, res) => {
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/job/plans');
+    assert.equal(req.headers.authorization, undefined);
+    jsonResponse(res, 200, { status: 'success', data: jobPlans });
+  }, async ({ apiBase, configDir }) => {
+    const text = await runCli(['plans', '--type', 'job'], { apiBase, configDir, envApiKey: null });
+    assert.equal(text.code, 0, text.stderr);
+    assert.match(text.stdout, /Jobs agendados/);
+    assert.match(text.stdout, /job_basic/);
+    assert.match(text.stdout, /por minuto/i);
+    assert.doesNotMatch(text.stdout, /namespace|runtime_name|k8s/i);
+
+    const json = await runCli(['plans', '--type', 'job', '--json'], { apiBase, configDir, envApiKey: null });
+    assert.equal(json.code, 0, json.stderr);
+    assert.deepEqual(JSON.parse(json.stdout), {
+      http: [],
+      database: [],
+      storage: [],
+      job: jobPlans,
+    });
+  });
+});
+
+test('create project accepts a scheduled Job and sends only its public configuration', async () => {
+  let body;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project');
+    body = await readJson(req);
+    jsonResponse(res, 201, {
+      status: 'success',
+      data: {
+        id: 'job_project_1',
+        name: 'nightly-report',
+        runtime_name: 'internal-job-123',
+        namespace: 'private-namespace',
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const config = {
+      type_project: 'job',
+      image: { url: 'ghcr.io/example/report@sha256:abc123', is_public: true },
+      envs: [{ name: 'MODE', value: 'daily' }],
+      storage: { persistent: false, capacity: 1 },
+      job: { cron: '0 * * * *', command: ['node'], args: ['report.js'] },
+    };
+    const result = await runCli([
+      'create', 'project',
+      '--name', 'nightly-report',
+      '--plan', 'job_basic',
+      '--payment-mode', 'per_minute',
+      '--config', JSON.stringify(config),
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(body, {
+      name: 'nightly-report',
+      plan: 'job_basic',
+      payment_mode: 'per_minute',
+      config,
+    });
+    assert.match(result.stdout, /job_project_1/);
+    assert.doesNotMatch(result.stdout, /internal-job-123|private-namespace|namespace|runtime_name/i);
+  });
+});
+
+test('create project rejects invalid scheduled Job fields before calling the API', async () => {
+  const cases = [
+    {
+      plan: 'job_basic',
+      paymentMode: 'hourly',
+      config: { type_project: 'job', job: { cron: '0 * * * *' } },
+      expected: /per_minute|modo de pagamento/i,
+    },
+    {
+      plan: 'job_basic',
+      paymentMode: 'per_minute',
+      config: { type_project: 'job', instances: 1, job: { cron: '0 * * * *' } },
+      expected: /nao aceita|não aceita|instances/i,
+    },
+    {
+      plan: 'job_basic',
+      paymentMode: 'per_minute',
+      config: { type_project: 'job', job: { cron: '0 * *' } },
+      expected: /cron.*cinco|cinco.*campo/i,
+    },
+    {
+      plan: 'job_basic',
+      paymentMode: 'per_minute',
+      config: { type_project: 'job', job: { cron: '0 * * * *', command: 'node' } },
+      expected: /command.*array/i,
+    },
+  ];
+
+  for (const item of cases) {
+    let postCalls = 0;
+    await withCliServer(async (req, res) => {
+      if (req.method === 'POST' && req.url === '/v1/project') postCalls += 1;
+      jsonResponse(res, 500, { status: 'failed', message: 'unexpected API call' });
+    }, async ({ apiBase, configDir }) => {
+      const result = await runCli([
+        'create', 'project',
+        '--name', 'invalid-job',
+        '--plan', item.plan,
+        '--payment-mode', item.paymentMode,
+        '--config', JSON.stringify(item.config),
+      ], { apiBase, configDir });
+
+      assert.equal(result.code, 1, result.stderr);
+      assert.match(result.stderr, item.expected);
+      assert.equal(postCalls, 0);
+    });
+  }
+});
+
+test('projects lists Jobs and project info omits HTTP exposure fields for Jobs', async () => {
+  const jobProject = {
+    id: 'job_project_1',
+    name: 'nightly-report',
+    status: 'running',
+    type_project: 'job',
+    plan: 'job_basic',
+    payment_mode: 'per_minute',
+    domain: 'must-not-show.example.com',
+    url: 'https://must-not-show.example.com',
+    exposure: 'public',
+    port: 8080,
+    instances: 3,
+    runtime_name: 'internal-job-123',
+    namespace: 'private-namespace',
+    job: { cron: '0 * * * *' },
+  };
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/project?type=job&page=1&limit=15') {
+      jsonResponse(res, 200, { status: 'success', data: { projects: [jobProject], pagination: { page: 1, pages: 1, total: 1 } } });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/project/job_project_1') {
+      jsonResponse(res, 200, { status: 'success', data: jobProject });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+  }, async ({ apiBase, configDir }) => {
+    const projects = await runCli(['projects', '--type', 'job'], { apiBase, configDir });
+    assert.equal(projects.code, 0, projects.stderr);
+    assert.match(projects.stdout, /nightly-report/);
+    assert.match(projects.stdout, /job/);
+
+    const info = await runCli(['project', 'info', '--project', 'job_project_1'], { apiBase, configDir });
+    assert.equal(info.code, 0, info.stderr);
+    assert.match(info.stdout, /Agendamento|Cron/);
+    assert.doesNotMatch(info.stdout, /URL:|Exposicao:|Porta:|Instancias:|must-not-show|internal-job-123|private-namespace/i);
+
+    const infoJson = await runCli(['project', 'info', '--project', 'job_project_1', '--json'], { apiBase, configDir });
+    assert.equal(infoJson.code, 0, infoJson.stderr);
+    const publicInfo = JSON.parse(infoJson.stdout);
+    for (const key of ['domain', 'url', 'exposure', 'port', 'instances', 'runtime_name', 'namespace']) {
+      assert.equal(publicInfo[key], undefined, key);
+    }
+    assert.deepEqual(publicInfo.job, { cron: '0 * * * *' });
+  });
+});
+
+test('project runs returns sanitized runs with pagination and run logs use the public run endpoint', async () => {
+  const run = {
+    id: 'run_1',
+    status: 'succeeded',
+    scheduled_at: '2026-09-01T12:00:00.000Z',
+    started_at: '2026-09-01T12:00:01.000Z',
+    finished_at: '2026-09-01T12:01:11.000Z',
+    duration_ms: 70000,
+    billed_minutes: 2,
+    currency: 'brl',
+    amount: 0.04,
+    k8s_job_name: 'internal-job-123',
+    namespace: 'private-namespace',
+  };
+  const pagination = { page: 2, limit: 1, total: 3, total_pages: 3 };
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/project/job_project_1/job-runs?page=2&limit=1') {
+      jsonResponse(res, 200, { status: 'success', data: { runs: [run], pagination } });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/project/job_project_1/job-runs/run_1/logs') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: {
+          logs: 'started\ncompleted',
+          next_cursor: 2,
+          truncated: false,
+          runtime_name: 'internal-job-123',
+          namespace: 'private-namespace',
+        },
+      });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+  }, async ({ apiBase, configDir }) => {
+    const runs = await runCli([
+      'project', 'runs', '--project', 'job_project_1', '--page', '2', '--limit', '1', '--json',
+    ], { apiBase, configDir });
+    assert.equal(runs.code, 0, runs.stderr);
+    assert.deepEqual(JSON.parse(runs.stdout), {
+      runs: [{
+        id: 'run_1',
+        status: 'succeeded',
+        scheduled_at: run.scheduled_at,
+        started_at: run.started_at,
+        finished_at: run.finished_at,
+        duration_ms: 70000,
+        billed_minutes: 2,
+        currency: 'brl',
+        amount: 0.04,
+      }],
+      pagination,
+    });
+    assert.doesNotMatch(runs.stdout, /k8s|namespace|internal-job/i);
+
+    const logs = await runCli([
+      'project', 'runs', 'logs', '--project', 'job_project_1', '--run', 'run_1', '--json',
+    ], { apiBase, configDir });
+    assert.equal(logs.code, 0, logs.stderr);
+    assert.deepEqual(JSON.parse(logs.stdout), { logs: 'started\ncompleted', next_cursor: 2, truncated: false });
+    assert.doesNotMatch(logs.stdout, /k8s|namespace|internal-job/i);
+  });
+});

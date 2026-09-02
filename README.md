@@ -53,6 +53,7 @@ zenifra plans
 zenifra plans --type http
 zenifra plans --type valkey
 zenifra plans --type storage --json
+zenifra plans --type job
 zenifra create project
 zenifra create project --name <name> --plan free --payment-mode hourly --config @examples/http-project.json
 zenifra create project --name <name> --plan basic --payment-mode hourly --config @examples/http-github-project.json
@@ -62,6 +63,7 @@ zenifra create project --name <name> --plan db-basic --payment-mode monthly --co
 zenifra create project --name <name> --plan db-free --payment-mode hourly --config @examples/valkey-key-value-project.json
 zenifra create project --name <name> --plan cache-free --payment-mode hourly --config @examples/valkey-cache-project.json
 zenifra create project --name <name> --plan queue-free --payment-mode hourly --config @examples/valkey-queue-project.json
+zenifra create project --name nightly-report --plan job_basic --payment-mode per_minute --config @examples/job-project.json
 zenifra projects --type http --page 1 --limit 15
 zenifra projects --type valkey --page 1 --limit 15
 zenifra project info --project <project-id>
@@ -71,6 +73,8 @@ zenifra valkey credentials rotate --project <project-id> --wait
 zenifra valkey credentials status --project <project-id> --operation <operation-id>
 zenifra project url --project <project-id>
 zenifra project logs --project <project-id> --instance <instance-id>
+zenifra project runs --project <project-id> --page 1 --limit 20
+zenifra project runs logs --project <project-id> --run <run-id>
 zenifra project metrics --project <project-id> --instance <instance-id>
 zenifra project metrics capabilities --project <project-id>
 zenifra project network --project <project-id> --view summary
@@ -241,6 +245,7 @@ Use os arquivos em `examples/` como base para `zenifra create project`:
 - `examples/valkey-key-value-project.json`: projeto Valkey Key Value com armazenamento persistente
 - `examples/valkey-cache-project.json`: projeto Valkey Cache sem armazenamento persistente
 - `examples/valkey-queue-project.json`: projeto Valkey Queue com armazenamento persistente
+- `examples/job-project.json`: Job agendado com cron UTC, imagem e armazenamento efêmero
 
 Se voce rodar apenas `zenifra create project`, a CLI abre um wizard interativo estilo `npm init` e pergunta todos os campos guiados. Cada pergunta mostra:
 
@@ -261,8 +266,8 @@ Antes de escolher um plano com o usuario, compare os catalogos com `zenifra plan
 
 Valores aceitos:
 
-- `payment_mode`: `hourly`, `monthly`, `yearly`
-- `type_project` no `config`: `http`, `postgresql`, `mariadb`, `valkey`
+- `payment_mode`: `hourly`, `monthly`, `yearly`, `per_minute` (somente Jobs)
+- `type_project` no `config`: `http`, `postgresql`, `mariadb`, `valkey`, `job`
 - `exposure` no `config` HTTP: `public`, `private`
 - `plan`: consulte `zenifra plans` para os planos atuais; Valkey usa `db-*` para Key Value, `cache-*` para Cache e `queue-*` para Queue
 - `config.profile` em projetos Valkey: `key_value`, `cache` ou `queue`
@@ -270,6 +275,7 @@ Valores aceitos:
 - `config.storage` em projetos Valkey: obrigatório e persistente para Key Value/Queue; omitido para Cache
 - `config.github.runtime` (quando houver GitHub em projeto HTTP): `nodejs` ou `python`
 - `config.autoscaling` (somente HTTP pago): `enabled: true`, `max_instances` maior ou igual a `config.instances` e alvos opcionais de CPU/memoria entre 1 e 100
+- `config.job` (somente Jobs): cron com cinco campos em UTC, `command` e `args` como arrays de textos; Jobs nao possuem URL, exposicao, porta ou instancias
 
 Observacoes do wizard:
 
@@ -279,6 +285,7 @@ Observacoes do wizard:
 - em projetos de banco, o wizard nao pergunta `username`, `password` nem `database name`
 - em projetos de banco, a CLI preenche apenas campos tecnicos minimos exigidos pela validacao atual da API
 - em projetos Valkey, a capacidade é definida pelo plano e a CLI não pergunta instâncias, imagem, variáveis de ambiente ou exposição HTTP
+- em Jobs, o cron usa cinco campos em UTC, a cobrança é por minuto inteiro e a CLI não pergunta exposição HTTP, porta ou instâncias
 - a conexão mascarada pode ser consultada a qualquer momento; a credencial completa aparece apenas na criação ou em uma rotação concluída
 - `valkey credentials rotate` retorna uma operação assíncrona; use `--wait` ou `valkey credentials status` para acompanhar
 
