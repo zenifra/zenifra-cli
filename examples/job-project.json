@@ -1,0 +1,22 @@
+{
+  "type_project": "job",
+  "image": {
+    "url": "ghcr.io/example/report@sha256:replace-with-an-approved-digest",
+    "is_public": true
+  },
+  "envs": [
+    {
+      "name": "MODE",
+      "value": "daily"
+    }
+  ],
+  "storage": {
+    "persistent": false,
+    "capacity": 1
+  },
+  "job": {
+    "cron": "0 3 * * *",
+    "command": ["node"],
+    "args": ["report.js"]
+  }
+}
