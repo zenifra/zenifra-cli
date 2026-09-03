@@ -3433,7 +3433,7 @@ test('plans recognizes the public Scheduled Jobs catalog and keeps the grouped J
       payment_mode: 'per_minute',
       unit_amount: 2,
       currency: 'brl',
-      resources: { cpu: '500m', memory: '512Mi' },
+      features: ['500m CPU', '512Mi memory'],
     },
   ];
 
@@ -3448,6 +3448,8 @@ test('plans recognizes the public Scheduled Jobs catalog and keeps the grouped J
     assert.match(text.stdout, /Jobs agendados/);
     assert.match(text.stdout, /basic/);
     assert.match(text.stdout, /por minuto/i);
+    assert.match(text.stdout, /Features/);
+    assert.doesNotMatch(text.stdout, /Recursos/);
     assert.doesNotMatch(text.stdout, /namespace|runtime_name|k8s/i);
 
     const json = await runCli(['plans', '--type', 'job', '--json'], { apiBase, configDir, envApiKey: null });

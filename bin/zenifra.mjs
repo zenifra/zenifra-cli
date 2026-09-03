@@ -355,7 +355,7 @@ const HELP_SPECS = [
     description: 'Lista os catalogos publicos de preco de planos HTTP, banco, armazenamento, Valkey e Jobs agendados.',
     flags: ['--type <type>  Filtra o catalogo: all, http, database, storage, valkey, job, key-value, cache ou queue.', '--json         Imprime a resposta em JSON.'],
     examples: ['zenifra plans', 'zenifra plans --type http', 'zenifra plans --type job --json'],
-    output: 'Jobs agendados\nPlano       Por minuto  Recursos\nbasic   R$ 0,02      500m / 512Mi',
+    output: 'Jobs agendados\nPlano       Por minuto  Features\nbasic   R$ 0,02      500m CPU, 512Mi memory',
     jsonOutput: '{"http":[],"database":[],"storage":[],"job":[{"plan":"basic","payment_mode":"per_minute","unit_amount":2}]}',
   },
   {
@@ -2703,11 +2703,11 @@ function printValkeyCatalog(catalog, profileFilter) {
 }
 
 function printJobCatalog(plans) {
-  process.stdout.write('Jobs agendados\n');
+  process.stdout.write('Jobs agendados' + String.fromCharCode(10));
   printTable(asArray(plans), [
     { label: 'Plano', value: (plan) => plan.plan || plan.id || '-' },
     { label: 'Por minuto', value: (plan) => formatBrlFromCents(plan.unit_amount ?? plan.prices?.per_minute) },
-    { label: 'Recursos', value: (plan) => plan.resources ? `${plan.resources.cpu || '-'} / ${plan.resources.memory || '-'}` : asArray(plan.features).join(', ') || '-' },
+    { label: 'Features', value: (plan) => asArray(plan.features).join(', ') || '-' },
   ]);
 }
 
