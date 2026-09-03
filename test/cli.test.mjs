@@ -3428,8 +3428,8 @@ test('project healthcheck validates path and pagination before requesting the AP
 test('plans recognizes the public Scheduled Jobs catalog and keeps the grouped JSON envelope', async () => {
   const jobPlans = [
     {
-      plan: 'job_basic',
-      product_type: 'job',
+      plan: 'basic',
+      product_type: 'computation',
       payment_mode: 'per_minute',
       unit_amount: 2,
       currency: 'brl',
@@ -3446,7 +3446,7 @@ test('plans recognizes the public Scheduled Jobs catalog and keeps the grouped J
     const text = await runCli(['plans', '--type', 'job'], { apiBase, configDir, envApiKey: null });
     assert.equal(text.code, 0, text.stderr);
     assert.match(text.stdout, /Jobs agendados/);
-    assert.match(text.stdout, /job_basic/);
+    assert.match(text.stdout, /basic/);
     assert.match(text.stdout, /por minuto/i);
     assert.doesNotMatch(text.stdout, /namespace|runtime_name|k8s/i);
 
@@ -3458,6 +3458,37 @@ test('plans recognizes the public Scheduled Jobs catalog and keeps the grouped J
       storage: [],
       job: jobPlans,
     });
+  });
+});
+
+test('project runs cancel sends the public cancellation request and hides runtime details', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project/job_project_1/job-runs/run_1/cancel');
+    const body = await readJson(req);
+    assert.deepEqual(body, {});
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        run: {
+          id: 'run_1',
+          status: 'cancelled',
+          billed_minutes: 2,
+          runtime_name: 'internal-job-123',
+          namespace: 'private-namespace',
+        },
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'runs', 'cancel',
+      '--project', 'job_project_1',
+      '--run', 'run_1',
+    ], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /cancelled/);
+    assert.doesNotMatch(result.stdout, /internal-job-123|private-namespace|namespace|runtime_name/i);
   });
 });
 
@@ -3488,7 +3519,7 @@ test('create project accepts a scheduled Job and sends only its public configura
     const result = await runCli([
       'create', 'project',
       '--name', 'nightly-report',
-      '--plan', 'job_basic',
+      '--plan', 'basic',
       '--payment-mode', 'per_minute',
       '--config', JSON.stringify(config),
     ], { apiBase, configDir });
@@ -3496,7 +3527,7 @@ test('create project accepts a scheduled Job and sends only its public configura
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(body, {
       name: 'nightly-report',
-      plan: 'job_basic',
+      plan: 'basic',
       payment_mode: 'per_minute',
       config,
     });
@@ -3508,25 +3539,25 @@ test('create project accepts a scheduled Job and sends only its public configura
 test('create project rejects invalid scheduled Job fields before calling the API', async () => {
   const cases = [
     {
-      plan: 'job_basic',
+      plan: 'basic',
       paymentMode: 'hourly',
       config: { type_project: 'job', job: { cron: '0 * * * *' } },
       expected: /per_minute|modo de pagamento/i,
     },
     {
-      plan: 'job_basic',
+      plan: 'basic',
       paymentMode: 'per_minute',
       config: { type_project: 'job', instances: 1, job: { cron: '0 * * * *' } },
       expected: /nao aceita|não aceita|instances/i,
     },
     {
-      plan: 'job_basic',
+      plan: 'basic',
       paymentMode: 'per_minute',
       config: { type_project: 'job', job: { cron: '0 * *' } },
       expected: /cron.*cinco|cinco.*campo/i,
     },
     {
-      plan: 'job_basic',
+      plan: 'basic',
       paymentMode: 'per_minute',
       config: { type_project: 'job', job: { cron: '0 * * * *', command: 'node' } },
       expected: /command.*array/i,
@@ -3560,7 +3591,7 @@ test('projects lists Jobs and project info omits HTTP exposure fields for Jobs',
     name: 'nightly-report',
     status: 'running',
     type_project: 'job',
-    plan: 'job_basic',
+    plan: 'basic',
     payment_mode: 'per_minute',
     domain: 'must-not-show.example.com',
     url: 'https://must-not-show.example.com',

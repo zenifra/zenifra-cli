@@ -100,9 +100,6 @@ const ALLOWED_PLAN_VALUES = new Set([
   'queue-basic',
   'queue-premium',
   'queue-enterprise',
-  'job_basic',
-  'job_premium',
-  'job_business',
 ]);
 const ALLOWED_PAYMENT_MODE_VALUES = new Set(['hourly', 'monthly', 'yearly', 'per_minute']);
 const ALLOWED_TYPE_PROJECT_VALUES = new Set(['http', 'postgresql', 'mariadb', 'valkey', 'job']);
@@ -136,7 +133,7 @@ const WIZARD_DATABASE_PLAN_OPTIONS = [
   'db-free',
 ];
 const WIZARD_PAYMENT_MODE_OPTIONS = ['hourly', 'monthly', 'yearly'];
-const WIZARD_JOB_PLAN_OPTIONS = ['job_basic', 'job_premium', 'job_business'];
+const WIZARD_JOB_PLAN_OPTIONS = WIZARD_HTTP_PLAN_OPTIONS;
 const WIZARD_TYPE_PROJECT_OPTIONS = ['http', 'postgresql', 'mariadb', 'valkey'];
 const WIZARD_VALKEY_PROFILE_OPTIONS = ['key_value', 'cache', 'queue'];
 const WIZARD_HTTP_EXPOSURE_OPTIONS = ['public', 'private'];
@@ -188,6 +185,7 @@ Usage:
   zenifra project url --project <id> [--json]
   zenifra project logs --project <id> [--instance <id>] [--json]
   zenifra project runs --project <id> [--page <n>] [--limit <n>] [--json]
+  zenifra project runs cancel --project <id> --run <id> [--json]
   zenifra project runs logs --project <id> --run <id> [--json]
   zenifra project metrics --project <id> [--instance <id>] [--json]
   zenifra project metrics capabilities --project <id> [--json]
@@ -357,8 +355,8 @@ const HELP_SPECS = [
     description: 'Lista os catalogos publicos de preco de planos HTTP, banco, armazenamento, Valkey e Jobs agendados.',
     flags: ['--type <type>  Filtra o catalogo: all, http, database, storage, valkey, job, key-value, cache ou queue.', '--json         Imprime a resposta em JSON.'],
     examples: ['zenifra plans', 'zenifra plans --type http', 'zenifra plans --type job --json'],
-    output: 'Jobs agendados\nPlano       Por minuto  Recursos\njob_basic   R$ 0,02      500m / 512Mi',
-    jsonOutput: '{"http":[],"database":[],"storage":[],"job":[{"plan":"job_basic","payment_mode":"per_minute","unit_amount":2}]}',
+    output: 'Jobs agendados\nPlano       Por minuto  Recursos\nbasic   R$ 0,02      500m / 512Mi',
+    jsonOutput: '{"http":[],"database":[],"storage":[],"job":[{"plan":"basic","payment_mode":"per_minute","unit_amount":2}]}',
   },
   {
     command: 'valkey',
@@ -472,6 +470,15 @@ const HELP_SPECS = [
     examples: ['zenifra project runs --project 507f1f77bcf86cd799439012', 'zenifra project runs --project 507f1f77bcf86cd799439012 --page 2 --limit 20 --json'],
     output: 'ID      Status     Agendada                  Minutos cobrados  Valor\nrun_1   succeeded  2026-09-01T12:00:00.000Z  2                 R$ 0,04',
     jsonOutput: '{"runs":[{"id":"run_1","status":"succeeded","billed_minutes":2,"currency":"brl","amount":0.04}],"pagination":{"page":1,"limit":20,"total":1,"total_pages":1}}',
+  },
+  {
+    command: 'project runs cancel',
+    usage: 'zenifra project runs cancel --project <id> --run <id> [--json]',
+    description: 'Cancela uma execucao ativa de um Job e cobra somente o tempo consumido.',
+    flags: ['--project <id>  ID do projeto.', '--run <id>      ID publico da execucao.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project runs cancel --project 507f1f77bcf86cd799439012 --run run_1'],
+    output: 'Execucao: cancelled',
+    jsonOutput: '{"run":{"id":"run_1","status":"cancelled","billed_minutes":2}}',
   },
   {
     command: 'project runs logs',
@@ -2947,10 +2954,6 @@ function validateCreateInput({ plan, paymentMode, config, valkeyCatalog }) {
   if (!nextPlan || (nextTypeProject !== 'valkey' && !ALLOWED_PLAN_VALUES.has(nextPlan))) {
     throw new CliError(`Plano invalido: "${plan}". Valores aceitos: ${formatAllowedValues(ALLOWED_PLAN_VALUES)}. Docs: ${DOCS_CREATE_HTTP_URL}`);
   }
-  if (WIZARD_JOB_PLAN_OPTIONS.includes(nextPlan)) {
-    throw new CliError(`Plano ${nextPlan} deve ser usado com type_project=job.`);
-  }
-
   if (!nextPaymentMode || !ALLOWED_PAYMENT_MODE_VALUES.has(nextPaymentMode) || nextPaymentMode === 'per_minute') {
     throw new CliError(`Modo de pagamento invalido: "${paymentMode}". Valores aceitos: ${formatAllowedValues(new Set(['hourly', 'monthly', 'yearly']))}. Docs: ${DOCS_PAYMENTS_URL}`);
   }
@@ -3899,6 +3902,28 @@ async function handleProjectRuns(session, flags) {
   printJobRuns(data);
 }
 
+async function handleProjectRunCancel(session, flags) {
+  const projectId = requireProjectId(flags, 'project runs cancel');
+  if (!projectId) return;
+  if (!flags.run && !flags.runId || flags.run === true || flags.runId === true) {
+    printCommandHelpAndFail('project runs cancel');
+    return;
+  }
+  const runId = String(flags.run || flags.runId);
+  const orgId = await resolveOrgId(session, flags);
+  const data = unwrapData(await request(
+    session,
+    flags,
+    'POST',
+    `/project/${projectId}/job-runs/${encodeURIComponent(runId)}/cancel`,
+    { orgId, body: {} },
+  ));
+
+  if (flags.json) return printJson(data);
+  const run = data?.run || data;
+  process.stdout.write(`Execucao: ${run?.status || 'cancelled'}\\n`);
+}
+
 async function handleProjectRunLogs(session, flags) {
   const projectId = requireProjectId(flags, 'project runs logs');
   if (!projectId) return;
@@ -4841,6 +4866,7 @@ async function main() {
     if (command === 'project' && subcommand === 'healthcheck' && positional[2] === 'failures') return handleProjectHealthcheckFailures(session, flags);
     if (command === 'project' && subcommand === 'info') return handleProjectInfo(session, flags);
     if (command === 'project' && subcommand === 'url') return handleProjectUrl(session, flags);
+    if (command === 'project' && subcommand === 'runs' && positional[2] === 'cancel') return handleProjectRunCancel(session, flags);
     if (command === 'project' && subcommand === 'runs' && positional[2] === 'logs') return handleProjectRunLogs(session, flags);
     if (command === 'project' && subcommand === 'runs') return handleProjectRuns(session, flags);
     if (command === 'project' && subcommand === 'run' && positional[2] === 'logs') return handleProjectRunLogs(session, flags);
