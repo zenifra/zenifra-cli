@@ -78,6 +78,7 @@ zenifra valkey credentials status --project <project-id> --operation <operation-
 zenifra project url --project <project-id>
 zenifra project logs --project <project-id> --instance <instance-id>
 zenifra project runs --project <project-id> --page 1 --limit 20
+zenifra project runs cancel --project <project-id> --run <run-id>
 zenifra project runs logs --project <project-id> --run <run-id>
 zenifra project metrics --project <project-id> --instance <instance-id>
 zenifra project metrics capabilities --project <project-id>
@@ -222,7 +223,7 @@ zenifra plans --type database
 zenifra plans --type storage --json
 ```
 
-`zenifra plans` funciona sem autenticacao e mostra os catalogos publicos de HTTP, banco, armazenamento e Valkey. Use `--type valkey` para consultar Key Value, Cache e Queue.
+`zenifra plans` funciona sem autenticacao e mostra os catalogos publicos de HTTP, banco, armazenamento, Jobs agendados e Valkey. Use `--type job` para consultar Jobs agendados ou `--type valkey` para consultar Key Value, Cache e Queue.
 
 Para planos HTTP, a saida legivel tambem mostra as capacidades disponiveis, como logs, metricas, verificacao de saude, auto-scaling, subdominio personalizado e acesso de rede. Use `--json` quando precisar consumir o catalogo sem formatacao.
 
