@@ -3726,6 +3726,8 @@ test('project runs returns sanitized runs with pagination and run logs use the p
     plan: 'job-basic',
     currency: 'brl',
     amount: 4,
+    value: 400,
+    total_amount: 400,
     k8s_job_name: 'internal-job-123',
     namespace: 'private-namespace',
   };
@@ -3733,7 +3735,7 @@ test('project runs returns sanitized runs with pagination and run logs use the p
 
   await withCliServer(async (req, res) => {
     assertApiKeyAuth(req);
-    if (req.method === 'GET' && ['/v1/project/job_project_1/job-runs', '/v1/project/job_project_1/job-runs?page=2&limit=1'].includes(req.url)) {
+    if (req.method === 'GET' && req.url === '/v1/project/job_project_1/job-runs?page=2&limit=1') {
       jsonResponse(res, 200, { status: 'success', data: { runs: [run], pagination } });
       return;
     }
@@ -3756,7 +3758,8 @@ test('project runs returns sanitized runs with pagination and run logs use the p
       'project', 'runs', '--project', 'job_project_1', '--page', '2', '--limit', '1', '--json',
     ], { apiBase, configDir });
     assert.equal(runs.code, 0, runs.stderr);
-    assert.deepEqual(JSON.parse(runs.stdout), {
+    const publicRuns = JSON.parse(runs.stdout);
+    assert.deepEqual(publicRuns, {
       runs: [{
         id: 'run_1',
         status: 'succeeded',
@@ -3771,6 +3774,8 @@ test('project runs returns sanitized runs with pagination and run logs use the p
       }],
       pagination,
     });
+    assert.equal(publicRuns.runs[0].value, undefined);
+    assert.equal(publicRuns.runs[0].total_amount, undefined);
     assert.doesNotMatch(runs.stdout, /k8s|namespace|internal-job/i);
 
     const humanRuns = await runCli([
