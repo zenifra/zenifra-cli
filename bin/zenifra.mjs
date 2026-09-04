@@ -136,7 +136,7 @@ const WIZARD_DATABASE_PLAN_OPTIONS = [
   'db-free',
 ];
 const WIZARD_PAYMENT_MODE_OPTIONS = ['hourly', 'monthly', 'yearly'];
-const WIZARD_JOB_PLAN_OPTIONS = WIZARD_HTTP_PLAN_OPTIONS;
+const WIZARD_JOB_PLAN_OPTIONS = WIZARD_HTTP_PLAN_OPTIONS.map((plan) => `job-${plan}`);
 const WIZARD_TYPE_PROJECT_OPTIONS = ['http', 'postgresql', 'mariadb', 'valkey'];
 const WIZARD_VALKEY_PROFILE_OPTIONS = ['key_value', 'cache', 'queue'];
 const WIZARD_HTTP_EXPOSURE_OPTIONS = ['public', 'private'];
@@ -358,8 +358,8 @@ const HELP_SPECS = [
     description: 'Lista os catalogos publicos de preco de planos HTTP, banco, armazenamento, Valkey e Jobs agendados.',
     flags: ['--type <type>  Filtra o catalogo: all, http, database, storage, valkey, job, key-value, cache ou queue.', '--json         Imprime a resposta em JSON.'],
     examples: ['zenifra plans', 'zenifra plans --type http', 'zenifra plans --type job --json'],
-    output: 'Jobs agendados\nPlano       Por minuto  Features\nbasic   R$ 0,02      500m CPU, 512Mi memory',
-    jsonOutput: '{"http":[],"database":[],"storage":[],"job":[{"plan":"basic","payment_mode":"per_minute","unit_amount":2}]}',
+    output: 'Jobs agendados\nPlano       Por minuto  Features\njob-basic   R$ 0,02      500m CPU, 512Mi memory',
+    jsonOutput: '{"http":[],"database":[],"storage":[],"job":[{"plan":"job-basic","payment_mode":"per_minute","price_per_minute":2}]}',
   },
   {
     command: 'valkey',
@@ -2360,6 +2360,8 @@ function normalizePlan(value) {
   ]);
 
   if (aliases.has(normalized)) return aliases.get(normalized);
+  const normalizedJobPlan = normalized.startsWith('job_') ? `job-${normalized.slice(4)}` : '';
+  if (WIZARD_JOB_PLAN_OPTIONS.includes(normalizedJobPlan)) return normalizedJobPlan;
   if (ALLOWED_PLAN_VALUES.has(normalized)) return normalized;
   return normalized;
 }
@@ -2709,7 +2711,7 @@ function printJobCatalog(plans) {
   process.stdout.write('Jobs agendados' + String.fromCharCode(10));
   printTable(asArray(plans), [
     { label: 'Plano', value: (plan) => plan.plan || plan.id || '-' },
-    { label: 'Por minuto', value: (plan) => formatBrlFromCents(plan.unit_amount ?? plan.prices?.per_minute) },
+    { label: 'Por minuto', value: (plan) => formatBrlFromCents(plan.price_per_minute) },
     { label: 'Features', value: (plan) => asArray(plan.features).join(', ') || '-' },
   ]);
 }
@@ -3794,8 +3796,9 @@ const PUBLIC_JOB_RUN_KEYS = [
   'scheduled_at',
   'started_at',
   'finished_at',
-  'duration_ms',
+  'duration_seconds',
   'billed_minutes',
+  'plan',
   'currency',
   'amount',
   'value',
@@ -3822,16 +3825,15 @@ function jobRunsDataOf(data) {
   };
 }
 
-function formatJobRunDuration(durationMs) {
-  if (durationMs === undefined || durationMs === null || !Number.isFinite(Number(durationMs))) return '-';
-  const seconds = Number(durationMs) / 1000;
-  return `${Number(seconds.toFixed(1))} s`;
+function formatJobRunDuration(durationSeconds) {
+  if (durationSeconds === undefined || durationSeconds === null || !Number.isFinite(Number(durationSeconds))) return '-';
+  return `${Number(Number(durationSeconds).toFixed(1))} s`;
 }
 
 function formatJobRunAmount(run) {
   const amount = run.amount ?? run.value ?? run.total_amount;
   if (amount === undefined || amount === null) return '-';
-  return formatMoney(amount, run.currency);
+  return formatBrlFromCents(amount);
 }
 
 function printJobRuns(data) {
@@ -3842,7 +3844,7 @@ function printJobRuns(data) {
     { label: 'Agendada', value: (run) => run.scheduled_at || '-' },
     { label: 'Iniciada', value: (run) => run.started_at || '-' },
     { label: 'Finalizada', value: (run) => run.finished_at || '-' },
-    { label: 'Duracao', value: (run) => formatJobRunDuration(run.duration_ms) },
+    { label: 'Duracao', value: (run) => formatJobRunDuration(run.duration_seconds) },
     { label: 'Minutos cobrados', value: (run) => run.billed_minutes ?? '-' },
     { label: 'Valor', value: formatJobRunAmount },
   ]);
