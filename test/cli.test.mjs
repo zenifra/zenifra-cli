@@ -2165,6 +2165,30 @@ test('create project fails early when payment mode is invalid', async () => {
   }
 });
 
+test('create scheduled Job rejects an invalid image reference before calling the API', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli([
+      'create', 'project',
+      '--name', 'nightly-job',
+      '--plan', 'basic',
+      '--payment-mode', 'per_minute',
+      '--config', JSON.stringify({
+        type_project: 'job',
+        image: { url: 'invalid-image-without-tag', is_public: true },
+        envs: [],
+        storage: { persistent: false, capacity: 1 },
+        job: { cron: '0 3 * * *' },
+      }),
+    ], { configDir });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /config\.image\.url|referencia.*imagem|imagem.*valida/i);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
 test('create project fails when github runtime is missing for http github project', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {
@@ -3494,6 +3518,54 @@ test('project runs cancel sends the public cancellation request and hides runtim
   });
 });
 
+test('create project wizard creates a Job without payment, source, command or argument prompts', async () => {
+  let body;
+  const jobPlans = [{
+    plan: 'basic',
+    product_type: 'computation',
+    payment_mode: 'per_minute',
+    unit_amount: 2,
+    currency: 'brl',
+    features: ['500m CPU', '512Mi memory'],
+  }];
+
+  await withWizardCatalogServer(async (req, res) => {
+    if (req.method === 'GET' && req.url === '/v1/project/job/plans') {
+      jsonResponse(res, 200, { status: 'success', data: jobPlans });
+      return;
+    }
+
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project');
+    body = await readJson(req);
+    jsonResponse(res, 201, { status: 'success', data: { id: 'job_project_1' } });
+  }, async ({ apiBase, configDir }) => {
+    const stdin = [
+      'nightly-job',
+      '',
+      'job',
+      '1',
+      'registry.example.com/team/job:1.0.0',
+      'n',
+      '1',
+      'n',
+      '0 3 * * *',
+      's',
+    ].join('\n');
+
+    const result = await runCli(['create', 'project'], { apiBase, configDir, stdin });
+
+    assert.equal(result.code, 0, `${result.stderr}\n${result.stdout}`);
+    assert.equal(body.payment_mode, 'per_minute');
+    assert.deepEqual(body.config.image, { url: 'registry.example.com/team/job:1.0.0', is_public: true });
+    assert.deepEqual(body.config.job, { cron: '0 3 * * *' });
+    assert.equal(body.config.job.command, undefined);
+    assert.equal(body.config.job.args, undefined);
+    assert.doesNotMatch(result.stdout, /Modo de pagamento|Origem do Job|Comando opcional|Argumentos opcionais/);
+  });
+});
+
 test('create project accepts a scheduled Job and sends only its public configuration', async () => {
   let body;
   await withCliServer(async (req, res) => {
@@ -3513,10 +3585,10 @@ test('create project accepts a scheduled Job and sends only its public configura
   }, async ({ apiBase, configDir }) => {
     const config = {
       type_project: 'job',
-      image: { url: 'ghcr.io/example/report@sha256:abc123', is_public: true },
+      image: { url: `ghcr.io/example/report@sha256:${'a'.repeat(64)}`, is_public: true },
       envs: [{ name: 'MODE', value: 'daily' }],
       storage: { persistent: false, capacity: 1 },
-      job: { cron: '0 * * * *', command: ['node'], args: ['report.js'] },
+      job: { cron: '0 * * * *' },
     };
     const result = await runCli([
       'create', 'project',
@@ -3561,8 +3633,14 @@ test('create project rejects invalid scheduled Job fields before calling the API
     {
       plan: 'basic',
       paymentMode: 'per_minute',
-      config: { type_project: 'job', job: { cron: '0 * * * *', command: 'node' } },
-      expected: /command.*array/i,
+      config: {
+        type_project: 'job',
+        image: { url: 'ghcr.io/example/report:1.0.0', is_public: true },
+        envs: [],
+        storage: { persistent: false, capacity: 1 },
+        job: { cron: '0 * * * *', command: ['node'] },
+      },
+      expected: /nao aceita.*config\.job\.command|imagem.*comando/i,
     },
   ];
 

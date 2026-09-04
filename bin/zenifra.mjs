@@ -24,6 +24,9 @@ const PROFILES_FILE = join(SESSION_DIR, 'profiles.json');
 const PROFILE_STORE_VERSION = 1;
 const DEFAULT_PROFILE_NAME = 'default';
 const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
+const OCI_IMAGE_REFERENCE_PATTERN = /^[a-z0-9._-]+\/(?:[a-z0-9._-]+\/)*[a-z0-9._-]+(?::[a-z0-9._-]+|@sha256:[a-f0-9]{64})$/;
+const OCI_IMAGE_REFERENCE_MIN_LENGTH = 8;
+const OCI_IMAGE_REFERENCE_MAX_LENGTH = 256;
 const KNOWN_FLAG_NAMES = new Set([
   'apiBase',
   'branch',
@@ -175,7 +178,7 @@ Usage:
   zenifra org set [--org <id>]
   zenifra plans [--type <all|http|database|storage|valkey|job>] [--json]
   zenifra create project
-  zenifra create project --name <name> --plan <plan> --payment-mode <mode> --config <json|@file> [--description <text>] [--org <id>] [--json]
+  zenifra create project --name <name> --plan <plan> [--payment-mode <mode>] --config <json|@file> [--description <text>] [--org <id>] [--json]
   zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|valkey|job>] [--page <n>] [--limit <n>]
   zenifra valkey status --project <id> [--json]
   zenifra valkey connection --project <id> [--json]
@@ -418,9 +421,9 @@ const HELP_SPECS = [
   },
   {
     command: 'create project',
-    usage: 'zenifra create project\n  zenifra create project --name <name> --plan <plan> --payment-mode <mode> --config <json|@file> [--description <text>] [--idempotency-key <key>] [--org <id>] [--json]',
+    usage: 'zenifra create project\n  zenifra create project --name <name> --plan <plan> [--payment-mode <mode>] --config <json|@file> [--description <text>] [--idempotency-key <key>] [--org <id>] [--json]',
     description: 'Cria um projeto via wizard interativo ou via payload de configuracao JSON.',
-    flags: ['--name <name>             Nome do projeto.', '--plan <plan>             Plano do projeto.', '--payment-mode <mode>     Modo de pagamento.', '--config <json|@file>     JSON inline ou arquivo.', '--description <text>      Descricao opcional.', '--idempotency-key <key>   Chave para repetir a mesma criacao com seguranca.', '--json                    Imprime a resposta em JSON.'],
+    flags: ['--name <name>             Nome do projeto.', '--plan <plan>             Plano do projeto.', '--payment-mode <mode>     Opcional para Jobs; demais tipos seguem a validacao do catalogo.', '--config <json|@file>     JSON inline ou arquivo.', '--description <text>      Descricao opcional.', '--idempotency-key <key>   Chave para repetir a mesma criacao com seguranca.', '--json                    Imprime a resposta em JSON.'],
     examples: ['zenifra create project', 'zenifra create project --name api-web --plan free --payment-mode hourly --config @examples/http-project.json'],
     output: 'Campo    Valor\n-------  --------------------------------------\nProjeto  507f1f77bcf86cd799439012\nDominio  https://api-web.client.zenifra.com',
     jsonOutput: '{"status":"success","data":{"id":"507f1f77bcf86cd799439012","name":"api-web"}}',
@@ -2781,33 +2784,27 @@ function validateJobConfig(config) {
   if (cron.split(/\s+/).filter(Boolean).length !== 5) {
     throw new CliError('config.job.cron deve conter exatamente cinco campos em UTC.');
   }
-  for (const field of ['command', 'args']) {
-    if (config.job[field] === undefined) continue;
-    if (!Array.isArray(config.job[field]) || config.job[field].some((value) => typeof value !== 'string' || !value.length)) {
-      throw new CliError(`config.job.${field} deve ser um array de textos.`);
-    }
-    if (config.job[field].length > 64) throw new CliError(`config.job.${field} nao pode conter mais de 64 itens.`);
-    if (config.job[field].some((value) => value.length > 4096)) {
-      throw new CliError(`Cada item de config.job.${field} deve ter no maximo 4096 caracteres.`);
-    }
-  }
-
   const forbiddenFields = ['instances', 'port', 'exposure', 'network_access', 'domain', 'custom_domains', 'autoscaling', 'healthcheck'];
   const forbiddenField = forbiddenFields.find((field) => config[field] !== undefined);
   if (forbiddenField) {
     throw new CliError(`Jobs nao aceitam config.${forbiddenField}.`);
   }
+  const forbiddenJobField = ['command', 'args'].find((field) => config.job[field] !== undefined);
+  if (forbiddenJobField) {
+    throw new CliError(`Jobs nao aceitam config.job.${forbiddenJobField}. A imagem ja define o comando e os argumentos.`);
+  }
 
-  const hasImage = config.image !== undefined;
-  const hasGithub = config.github !== undefined;
-  if (hasImage === hasGithub) {
-    throw new CliError('Jobs exigem exatamente uma origem: config.image ou config.github.');
+  if (!isRecord(config.image) || typeof config.image.url !== 'string' || !config.image.url.trim()) {
+    throw new CliError('Jobs exigem uma imagem OCI em config.image. O fluxo GitHub ainda nao esta disponivel para Jobs.');
   }
-  if (hasImage && (!isRecord(config.image) || typeof config.image.url !== 'string' || !config.image.url.trim())) {
-    throw new CliError('config.image deve conter uma URL de imagem valida.');
+  const imageReference = config.image.url.trim();
+  if (imageReference.length < OCI_IMAGE_REFERENCE_MIN_LENGTH
+    || imageReference.length > OCI_IMAGE_REFERENCE_MAX_LENGTH
+    || !OCI_IMAGE_REFERENCE_PATTERN.test(imageReference)) {
+    throw new CliError('config.image.url deve ser uma referencia OCI completa com registro e tag ou digest.');
   }
-  if (hasGithub && !isRecord(config.github)) {
-    throw new CliError('config.github deve ser um objeto de origem GitHub valido.');
+  if (config.github !== undefined) {
+    throw new CliError('Jobs aceitam somente config.image. O fluxo GitHub ainda nao esta disponivel para Jobs.');
   }
 
   if (!Array.isArray(config.envs)) {
@@ -3012,10 +3009,13 @@ function maskWizardSummary(value, key = '') {
 
 function printWizardSummary(payload) {
   const masked = maskWizardSummary(payload);
+  const projectSummary = masked.config.type_project === 'job'
+    ? `  projeto: ${masked.name} | plano: ${masked.plan}`
+    : `  projeto: ${masked.name} | plano: ${masked.plan} | pagamento: ${masked.payment_mode}`;
   const lines = [
     '',
     tone('Resumo da criacao', 'green'),
-    `  projeto: ${masked.name} | plano: ${masked.plan} | pagamento: ${masked.payment_mode}`,
+    projectSummary,
     `  tipo: ${masked.config.type_project}`,
   ];
 
@@ -3498,18 +3498,23 @@ async function buildValkeyConfig({ profile, plan, catalog }) {
 }
 
 async function buildJobConfig() {
-  const source = await promptWizardSelect({
-    label: 'Origem do Job',
-    docs: DOCS_CREATE_HTTP_URL,
-    examples: ['github', 'image'],
-    options: [
-      { value: 'github', description: 'build a partir de repositorio GitHub' },
-      { value: 'image', description: 'imagem pronta' },
-    ],
-  });
-  const sourceConfig = source === 'github'
-    ? { github: await buildHttpGithubConfig() }
-    : { image: await buildHttpImageConfig() };
+  const image = {
+    url: await promptWizardText({
+      label: 'Imagem OCI da tarefa',
+      required: true,
+      examples: ['ghcr.io/example/report:1.0.0', 'registry.example.com/team/job@sha256:digest'],
+      docs: DOCS_CONFIGURATION_URL,
+      validate: (value) => {
+        const reference = value.trim();
+        return reference.length >= OCI_IMAGE_REFERENCE_MIN_LENGTH
+          && reference.length <= OCI_IMAGE_REFERENCE_MAX_LENGTH
+          && OCI_IMAGE_REFERENCE_PATTERN.test(reference)
+          ? null
+          : 'use uma referencia OCI com registro e tag ou digest';
+      },
+    }),
+    is_public: true,
+  };
   const persistent = await promptWizardBoolean({
     label: 'Armazenamento persistente',
     docs: DOCS_CONFIGURATION_URL,
@@ -3550,32 +3555,7 @@ async function buildJobConfig() {
     docs: DOCS_CONFIGURATION_URL,
     validate: (value) => value.split(/\s+/).filter(Boolean).length === 5 ? null : 'use exatamente cinco campos em UTC',
   });
-  const command = await promptWizardText({
-    label: 'Comando opcional',
-    examples: ['node'],
-    docs: DOCS_CONFIGURATION_URL,
-    emptyValue: null,
-  });
-  const argsInput = await promptWizardText({
-    label: 'Argumentos opcionais em JSON',
-    examples: ['["script.js"]', '[]'],
-    docs: DOCS_CONFIGURATION_URL,
-    emptyValue: '',
-    validate: (value) => {
-      try {
-        const args = JSON.parse(value);
-        return Array.isArray(args) && args.every((arg) => typeof arg === 'string') ? null : 'use um array JSON de textos';
-      } catch {
-        return 'use um array JSON de textos';
-      }
-    },
-  });
-  const job = {
-    cron,
-    ...(command ? { command: [command] } : {}),
-    ...(argsInput ? { args: JSON.parse(argsInput) } : {}),
-  };
-  return { type_project: 'job', ...sourceConfig, envs, storage, job };
+  return { type_project: 'job', image, envs, storage, job: { cron } };
 }
 
 async function runProjectCreateWizard(session, flags) {
@@ -3652,12 +3632,11 @@ async function runProjectCreateWizard(session, flags) {
     ui.state.planAllowsSubdomain = isSubdomainCustomizable(catalogs.httpPlans, plan);
     ui.state.planAllowsAutoscaling = isAutoscalingEnabledForPlan(catalogs.httpPlans, plan);
   }
-  const paymentOptions = typeProject === 'job' ? ['per_minute'] : WIZARD_PAYMENT_MODE_OPTIONS;
-  const paymentMode = await promptWizardSelect({
+  const paymentMode = typeProject === 'job' ? 'per_minute' : await promptWizardSelect({
     label: 'Modo de pagamento',
     docs: DOCS_PAYMENTS_URL,
-    examples: paymentOptions,
-    options: paymentOptions.map((value) => ({ value })),
+    examples: WIZARD_PAYMENT_MODE_OPTIONS,
+    options: WIZARD_PAYMENT_MODE_OPTIONS.map((value) => ({ value })),
   });
 
   let config;
@@ -3709,9 +3688,11 @@ async function handleProjectCreate(session, flags) {
   const name = wizardPayload?.name || flags.name || await prompt('Nome do projeto');
   const description = wizardPayload?.description || flags.description;
   const plan = wizardPayload?.plan || flags.plan || await prompt('Plano');
-  const paymentMode = wizardPayload?.payment_mode || flags.paymentMode || await prompt('Modo de pagamento');
   const config = wizardPayload?.config || await parseConfig(flags.config || await prompt('Config JSON ou @arquivo'));
   const typeProject = normalizeTypeProject(config?.type_project);
+  const paymentMode = typeProject === 'job'
+    ? flags.paymentMode || 'per_minute'
+    : wizardPayload?.payment_mode || flags.paymentMode || await prompt('Modo de pagamento');
   const valkeyCatalog = typeProject === 'valkey'
     ? requireValkeyCatalog(unwrapData(await request(session, flags, 'GET', '/managed-services/catalog')))
     : undefined;
