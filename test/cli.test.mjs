@@ -2421,7 +2421,7 @@ test('create scheduled Job rejects an invalid image reference before calling the
     const result = await runCli([
       'create', 'project',
       '--name', 'nightly-job',
-      '--plan', 'basic',
+      '--plan', 'job-basic',
       '--payment-mode', 'per_minute',
       '--config', JSON.stringify({
         type_project: 'job',
@@ -4629,11 +4629,10 @@ test('project stop and resume read the project state after one direct mutation',
 test('plans recognizes the public Scheduled Jobs catalog and keeps the grouped JSON envelope', async () => {
   const jobPlans = [
     {
-      plan: 'basic',
-      product_type: 'computation',
-      payment_mode: 'per_minute',
-      unit_amount: 2,
+      plan: 'job-basic',
+      price_per_minute: 2,
       currency: 'brl',
+      payment_mode: 'per_minute',
       features: ['500m CPU', '512Mi memory'],
     },
   ];
@@ -4647,7 +4646,7 @@ test('plans recognizes the public Scheduled Jobs catalog and keeps the grouped J
     const text = await runCli(['plans', '--type', 'job'], { apiBase, configDir, envApiKey: null });
     assert.equal(text.code, 0, text.stderr);
     assert.match(text.stdout, /Jobs agendados/);
-    assert.match(text.stdout, /basic/);
+    assert.match(text.stdout, /job-basic/);
     assert.match(text.stdout, /por minuto/i);
     assert.match(text.stdout, /Features/);
     assert.doesNotMatch(text.stdout, /Recursos/);
@@ -4698,10 +4697,9 @@ test('project runs cancel sends the public cancellation request and hides runtim
 test('create project wizard creates a Job without payment, source, command or argument prompts', async () => {
   let body;
   const jobPlans = [{
-    plan: 'basic',
-    product_type: 'computation',
+    plan: 'job-basic',
+    price_per_minute: 2,
     payment_mode: 'per_minute',
-    unit_amount: 2,
     currency: 'brl',
     features: ['500m CPU', '512Mi memory'],
   }];
@@ -4770,7 +4768,7 @@ test('create project accepts a scheduled Job and sends only its public configura
     const result = await runCli([
       'create', 'project',
       '--name', 'nightly-report',
-      '--plan', 'basic',
+      '--plan', 'job-basic',
       '--payment-mode', 'per_minute',
       '--config', JSON.stringify(config),
     ], { apiBase, configDir });
@@ -4778,7 +4776,7 @@ test('create project accepts a scheduled Job and sends only its public configura
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(body, {
       name: 'nightly-report',
-      plan: 'basic',
+      plan: 'job-basic',
       payment_mode: 'per_minute',
       config,
     });
@@ -4790,25 +4788,25 @@ test('create project accepts a scheduled Job and sends only its public configura
 test('create project rejects invalid scheduled Job fields before calling the API', async () => {
   const cases = [
     {
-      plan: 'basic',
+      plan: 'job-basic',
       paymentMode: 'hourly',
       config: { type_project: 'job', job: { cron: '0 * * * *' } },
       expected: /per_minute|modo de pagamento/i,
     },
     {
-      plan: 'basic',
+      plan: 'job-basic',
       paymentMode: 'per_minute',
       config: { type_project: 'job', instances: 1, job: { cron: '0 * * * *' } },
       expected: /nao aceita|não aceita|instances/i,
     },
     {
-      plan: 'basic',
+      plan: 'job-basic',
       paymentMode: 'per_minute',
       config: { type_project: 'job', job: { cron: '0 * *' } },
       expected: /cron.*cinco|cinco.*campo/i,
     },
     {
-      plan: 'basic',
+      plan: 'job-basic',
       paymentMode: 'per_minute',
       config: {
         type_project: 'job',
@@ -4848,7 +4846,7 @@ test('projects lists Jobs and project info omits HTTP exposure fields for Jobs',
     name: 'nightly-report',
     status: 'running',
     type_project: 'job',
-    plan: 'basic',
+    plan: 'job-basic',
     payment_mode: 'per_minute',
     domain: 'must-not-show.example.com',
     url: 'https://must-not-show.example.com',
@@ -5513,10 +5511,11 @@ test('project runs returns sanitized runs with pagination and run logs use the p
     scheduled_at: '2026-09-01T12:00:00.000Z',
     started_at: '2026-09-01T12:00:01.000Z',
     finished_at: '2026-09-01T12:01:11.000Z',
-    duration_ms: 70000,
+    duration_seconds: 70,
     billed_minutes: 2,
+    plan: 'job-basic',
     currency: 'brl',
-    amount: 0.04,
+    amount: 4,
     k8s_job_name: 'internal-job-123',
     namespace: 'private-namespace',
   };
@@ -5554,10 +5553,11 @@ test('project runs returns sanitized runs with pagination and run logs use the p
         scheduled_at: run.scheduled_at,
         started_at: run.started_at,
         finished_at: run.finished_at,
-        duration_ms: 70000,
+        duration_seconds: 70,
         billed_minutes: 2,
+        plan: 'job-basic',
         currency: 'brl',
-        amount: 0.04,
+        amount: 4,
       }],
       pagination,
     });
