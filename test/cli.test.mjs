@@ -23,6 +23,15 @@ const HTTP_PLAN_CATALOG = [
   { plan: 'deep_learning_basic', prices: { hourly: 6, monthly: 60, yearly: 600 }, features: ['2 instâncias'] },
   { plan: 'deep_learning_premium', prices: { hourly: 7, monthly: 70, yearly: 700 }, features: ['Bloqueio de IPs', '4 instâncias'] },
 ];
+const JOB_PLAN_CATALOG = [
+  {
+    plan: 'job-basic',
+    price_per_minute: 2,
+    currency: 'brl',
+    payment_mode: 'per_minute',
+    features: ['500m CPU', '512Mi memory'],
+  },
+];
 const DATABASE_PLAN_CATALOG = [
   { plan: 'db-free', prices: { hourly: 0, monthly: 0, yearly: 0 }, features: ['1 réplica'] },
   { plan: 'db-starter', prices: { hourly: 1, monthly: 10, yearly: 100 }, features: ['1 réplica'] },
@@ -275,6 +284,18 @@ test('global help shows the command index and points to command-specific help', 
     assert.match(result.stdout, /project logs/);
     assert.match(result.stdout, /project metrics capabilities/);
     assert.match(result.stdout, /project healthcheck get/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('project namespace help includes scheduled Job run cancellation', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli(['help', 'project'], { configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /zenifra project runs cancel --project <id> --run <id>/);
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }
@@ -551,6 +572,11 @@ async function withPlansCatalogServer(handler, callback) {
       return;
     }
 
+    if (req.method === 'GET' && req.url === '/v1/project/job/plans') {
+      jsonResponse(res, 200, { status: 'success', data: JOB_PLAN_CATALOG });
+      return;
+    }
+
     if (req.method === 'GET' && req.url === '/v1/managed-services/catalog') {
       assert.equal(req.headers.authorization, undefined);
       jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
@@ -593,13 +619,15 @@ test('builds logs help is specific and documents follow mode', async () => {
 test('plans lists all catalogs without authentication by default', async () => {
   await withPlansCatalogServer(async (req, res) => {
     jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
-  }, async ({ apiBase, configDir }) => {
+  }, async ({ apiBase, configDir, requests }) => {
     const result = await runCli(['plans'], { apiBase, configDir, envApiKey: null });
 
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /HTTP/);
     assert.match(result.stdout, /PostgreSQL \/ MariaDB/);
     assert.match(result.stdout, /Armazenamento/);
+    assert.match(result.stdout, /Jobs agendados/);
+    assert.match(result.stdout, /job-basic/);
     assert.match(result.stdout, /free/);
     assert.match(result.stdout, /db-basic/);
     assert.match(result.stdout, /1 GB/);
@@ -608,6 +636,10 @@ test('plans lists all catalogs without authentication by default', async () => {
     assert.match(result.stdout, /Key Value/);
     assert.match(result.stdout, /Cache/);
     assert.match(result.stdout, /Queue/);
+    assert.deepEqual(
+      requests.map((request) => request.url).sort(),
+      ['/v1/managed-services/catalog', '/v1/project/database/plans', '/v1/project/job/plans', '/v1/project/plans', '/v1/project/storage/plans'].sort(),
+    );
   });
 });
 
@@ -789,6 +821,11 @@ test('plans fails instead of printing partial data when one requested catalog fa
 
     if (req.method === 'GET' && req.url === '/v1/project/storage/plans') {
       jsonResponse(res, 200, { status: 'success', data: STORAGE_PLAN_CATALOG });
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/v1/project/job/plans') {
+      jsonResponse(res, 200, { status: 'success', data: JOB_PLAN_CATALOG });
       return;
     }
 
@@ -3501,6 +3538,8 @@ test('project runs cancel sends the public cancellation request and hides runtim
           id: 'run_1',
           status: 'cancelled',
           billed_minutes: 2,
+          value: 400,
+          total_amount: 400,
           runtime_name: 'internal-job-123',
           namespace: 'private-namespace',
         },
@@ -3513,8 +3552,17 @@ test('project runs cancel sends the public cancellation request and hides runtim
       '--run', 'run_1',
     ], { apiBase, configDir });
     assert.equal(result.code, 0, result.stderr);
-    assert.match(result.stdout, /cancelled/);
+    assert.equal(result.stdout, 'Execucao: cancelled\n');
     assert.doesNotMatch(result.stdout, /internal-job-123|private-namespace|namespace|runtime_name/i);
+
+    const json = await runCli([
+      'project', 'runs', 'cancel', '--project', 'job_project_1', '--run', 'run_1', '--json',
+    ], { apiBase, configDir });
+    assert.equal(json.code, 0, json.stderr);
+    assert.deepEqual(JSON.parse(json.stdout), {
+      run: { id: 'run_1', status: 'cancelled', billed_minutes: 2 },
+    });
+    assert.doesNotMatch(json.stdout, /internal-job-123|private-namespace|namespace|runtime_name|value|total_amount/i);
   });
 });
 

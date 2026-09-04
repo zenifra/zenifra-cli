@@ -431,11 +431,11 @@ const HELP_SPECS = [
   },
   {
     command: 'project',
-    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project runs --project <id> [--page <n>] [--limit <n>] [--json]\n  zenifra project runs logs --project <id> --run <id> [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project metrics capabilities --project <id> [--json]\n  zenifra project healthcheck get --project <id> [--json]\n  zenifra project healthcheck set --project <id> --path /health [--json]\n  zenifra project healthcheck disable --project <id> [--json]\n  zenifra project healthcheck failures --project <id> [--page <n>] [--limit <n>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project autoscaling --project <id> [--json]\n  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]\n  zenifra project autoscaling disable --project <id> [--json]\n  zenifra project autoscaling events --project <id> [--direction <scale_up|scale_down>] [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project billing usage --project <id> [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
+    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project runs --project <id> [--page <n>] [--limit <n>] [--json]\n  zenifra project runs cancel --project <id> --run <id> [--json]\n  zenifra project runs logs --project <id> --run <id> [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project metrics capabilities --project <id> [--json]\n  zenifra project healthcheck get --project <id> [--json]\n  zenifra project healthcheck set --project <id> --path /health [--json]\n  zenifra project healthcheck disable --project <id> [--json]\n  zenifra project healthcheck failures --project <id> [--page <n>] [--limit <n>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project autoscaling --project <id> [--json]\n  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]\n  zenifra project autoscaling disable --project <id> [--json]\n  zenifra project autoscaling events --project <id> [--direction <scale_up|scale_down>] [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project billing usage --project <id> [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
     description: 'Agrupa comandos operacionais e de introspecao sobre um projeto especifico.',
     examples: ['zenifra project', 'zenifra project info --project proj_1', 'zenifra project env add --project proj_1 --name NODE_ENV --value production'],
     output: 'Zenifra CLI - project',
-    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, url, logs, metrics, capabilities, network, image, exposure, autoscaling, billing, envs e instances.'],
+    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, url, logs, runs, cancelamento, metrics, capabilities, network, image, exposure, autoscaling, billing, envs e instances.'],
   },
   {
     command: 'project info',
@@ -2674,10 +2674,11 @@ async function fetchPlansCatalogs(session, flags, type) {
     };
   }
 
-  const [httpPayload, databasePayload, storagePayload, valkeyPayload] = await Promise.all([
+  const [httpPayload, databasePayload, storagePayload, jobPayload, valkeyPayload] = await Promise.all([
     request(session, flags, 'GET', '/project/plans', { tokenRequired: false }),
     request(session, flags, 'GET', '/project/database/plans', { tokenRequired: false }),
     request(session, flags, 'GET', '/project/storage/plans', { tokenRequired: false }),
+    request(session, flags, 'GET', '/project/job/plans', { tokenRequired: false }),
     request(session, flags, 'GET', '/managed-services/catalog', { tokenRequired: false }),
   ]);
 
@@ -2685,6 +2686,7 @@ async function fetchPlansCatalogs(session, flags, type) {
     http: requireWizardCatalogArray(unwrapData(httpPayload), 'os planos HTTP'),
     database: requireWizardCatalogArray(unwrapData(databasePayload), 'os planos de banco'),
     storage: requireWizardCatalogArray(unwrapData(storagePayload), 'os planos de storage'),
+    job: requireJobPlans(unwrapData(jobPayload)),
     valkey: requireValkeyCatalog(unwrapData(valkeyPayload)),
   };
 }
@@ -2752,6 +2754,11 @@ function printPlansCatalogs(payload, type) {
     ]);
   }
 
+  if (type === 'all') {
+    process.stdout.write('\n');
+    printJobCatalog(payload.job);
+  }
+
   if (type === 'job') {
     printJobCatalog(payload.job);
     return;
@@ -2766,7 +2773,7 @@ function printPlansCatalogs(payload, type) {
 async function handlePlans(session, flags) {
   const type = normalizePlansCatalogType(flags.type);
   if (!type) {
-    throw new CliError('Tipo de catalogo invalido. Valores aceitos: all, http, database, storage, valkey ou job.');
+    throw new CliError('Tipo de catalogo invalido. Valores aceitos: all, http, database, storage, valkey, job, key-value, cache ou queue.');
   }
 
   const payload = await fetchPlansCatalogs(session, flags, type);
@@ -3823,6 +3830,13 @@ function jobRunsDataOf(data) {
   };
 }
 
+function sanitizeJobRunResponse(data) {
+  if (data && typeof data === 'object' && !Array.isArray(data) && data.run !== undefined) {
+    return { run: sanitizeJobRun(data.run) };
+  }
+  return sanitizeJobRun(data);
+}
+
 function formatJobRunDuration(durationSeconds) {
   if (durationSeconds === undefined || durationSeconds === null || !Number.isFinite(Number(durationSeconds))) return '-';
   return `${Number(Number(durationSeconds).toFixed(1))} s`;
@@ -3900,9 +3914,9 @@ async function handleProjectRunCancel(session, flags) {
     { orgId, body: {} },
   ));
 
-  if (flags.json) return printJson(data);
+  if (flags.json) return printJson(sanitizeJobRunResponse(data));
   const run = data?.run || data;
-  process.stdout.write(`Execucao: ${run?.status || 'cancelled'}\\n`);
+  process.stdout.write(`Execucao: ${run?.status || 'cancelled'}\n`);
 }
 
 async function handleProjectRunLogs(session, flags) {
