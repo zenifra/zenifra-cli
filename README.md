@@ -371,10 +371,11 @@ O wizard atual cobre:
 - projetos `postgresql`
 - projetos `mariadb`
 - projetos `valkey` nos perfis `key_value`, `cache` e `queue`
+- Jobs agendados com uma imagem OCI pronta
 
 Projetos `clickhouse` usam atualmente o fluxo nao interativo com `--config`, como em `examples/clickhouse-project.json`.
 
-`zenifra create project` nao assume valores default para `--plan` e `--payment-mode`.
+`zenifra create project` nao assume valores default para `--plan` e `--payment-mode`, exceto para Jobs, que usam `per_minute` automaticamente.
 Configs HTTP nao interativas tambem devem informar `config.exposure`; use `public` para criar rota/dominio publico ou `private` para manter a aplicacao sem exposicao na internet.
 Antes de escolher um plano com o usuario, compare os catalogos com `zenifra plans` para evitar suposicoes sobre custo.
 
@@ -392,7 +393,7 @@ Valores aceitos:
 - `config.github.version_deploy`: use `enabled: true`, `event: "tag"` ou `"release"` e um `tag_pattern` explicito; `include_prereleases` e opcional e padrao `false`
 - `config.source` e `config.build` (quando houver origem Git por conexao): use os IDs retornados pela configuracao segura no Console/API; nao informe credenciais Git nesses campos
 - `config.autoscaling` (somente HTTP pago): `enabled: true`, `max_instances` maior ou igual a `config.instances` e alvos opcionais de CPU/memoria entre 1 e 100
-- `config.job` (somente Jobs): cron com cinco campos em UTC, `command` e `args` como arrays de textos; Jobs nao possuem URL, exposicao, porta ou instancias
+- `config.job` (somente Jobs): cron com cinco campos em UTC; o wizard usa a imagem OCI pronta e nao pergunta comando, argumentos, URL, exposicao, porta ou instancias
 
 Observacoes do wizard:
 
@@ -403,7 +404,7 @@ Observacoes do wizard:
 - em projetos de banco, o wizard nao pergunta `username`, `password` nem `database name`
 - em projetos de banco, a CLI preenche apenas campos tecnicos minimos exigidos pela validacao atual da API
 - em projetos Valkey, a capacidade é definida pelo plano e a CLI não pergunta instâncias, imagem, variáveis de ambiente ou exposição HTTP
-- em Jobs, o cron usa cinco campos em UTC, a cobrança é por minuto inteiro e a CLI não pergunta exposição HTTP, porta ou instâncias
+- em Jobs, a imagem OCI pronta é obrigatória, o cron usa cinco campos em UTC, a cobrança é por minuto inteiro e a CLI não pergunta origem GitHub, tipo de pagamento, comando, argumentos, exposição HTTP, porta ou instâncias
 - a conexão mascarada pode ser consultada a qualquer momento; a credencial completa aparece apenas na criação ou em uma rotação concluída, podendo ser salva em arquivo privado com `--connection-file <path>`
 - `valkey credentials rotate` retorna uma operação assíncrona; use `--wait` ou `valkey credentials status` para acompanhar
 
