@@ -643,6 +643,18 @@ test('plans lists all catalogs without authentication by default', async () => {
   });
 });
 
+test('plans --json includes Scheduled Jobs in the default grouped payload', async () => {
+  await withPlansCatalogServer(async (req, res) => {
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['plans', '--json'], { apiBase, configDir, envApiKey: null });
+
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.deepEqual(payload.job, JOB_PLAN_CATALOG);
+  });
+});
+
 test('plans formats HTTP catalog prices from centavos to BRL', async () => {
   await withCliServer(async (req, res) => {
     assert.equal(req.method, 'GET');
