@@ -567,7 +567,7 @@ test('plans help works without authentication', async () => {
     for (const args of [['plans', '--help'], ['help', 'plans']]) {
       const result = await runCli(args, { configDir, envApiKey: null });
       assert.equal(result.code, 0, `${args.join(' ')}\n${result.stderr}`);
-      assert.match(result.stdout, /Usage:\n  zenifra plans \[--type <all\|http\|database\|storage\|valkey>] \[--json]/);
+      assert.match(result.stdout, /Usage:\n  zenifra plans \[--type <all\|http\|database\|storage\|valkey\|job>] \[--json]/);
       assert.match(result.stdout, /Examples:/);
       assert.doesNotMatch(result.stdout, /Voce precisa autenticar primeiro/);
     }
@@ -3470,6 +3470,7 @@ test('plans recognizes the public Scheduled Jobs catalog and keeps the grouped J
     assert.equal(text.code, 0, text.stderr);
     assert.match(text.stdout, /Jobs agendados/);
     assert.match(text.stdout, /job-basic/);
+    assert.match(text.stdout, /R\$[\s\u00a0]*0,02/);
     assert.match(text.stdout, /por minuto/i);
     assert.match(text.stdout, /Features/);
     assert.doesNotMatch(text.stdout, /Recursos/);
@@ -3732,7 +3733,7 @@ test('project runs returns sanitized runs with pagination and run logs use the p
 
   await withCliServer(async (req, res) => {
     assertApiKeyAuth(req);
-    if (req.method === 'GET' && req.url === '/v1/project/job_project_1/job-runs?page=2&limit=1') {
+    if (req.method === 'GET' && ['/v1/project/job_project_1/job-runs', '/v1/project/job_project_1/job-runs?page=2&limit=1'].includes(req.url)) {
       jsonResponse(res, 200, { status: 'success', data: { runs: [run], pagination } });
       return;
     }
@@ -3771,6 +3772,13 @@ test('project runs returns sanitized runs with pagination and run logs use the p
       pagination,
     });
     assert.doesNotMatch(runs.stdout, /k8s|namespace|internal-job/i);
+
+    const humanRuns = await runCli([
+      'project', 'runs', '--project', 'job_project_1', '--page', '2', '--limit', '1',
+    ], { apiBase, configDir });
+    assert.equal(humanRuns.code, 0, humanRuns.stderr);
+    assert.match(humanRuns.stdout, /70 s/);
+    assert.match(humanRuns.stdout, /R\$[\s\u00a0]*0,04/);
 
     const logs = await runCli([
       'project', 'runs', 'logs', '--project', 'job_project_1', '--run', 'run_1', '--json',

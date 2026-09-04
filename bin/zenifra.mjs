@@ -354,7 +354,7 @@ const HELP_SPECS = [
   },
   {
     command: 'plans',
-    usage: 'zenifra plans [--type <all|http|database|storage|valkey>] [--json]',
+    usage: 'zenifra plans [--type <all|http|database|storage|valkey|job>] [--json]',
     description: 'Lista os catalogos publicos de preco de planos HTTP, banco, armazenamento, Valkey e Jobs agendados.',
     flags: ['--type <type>  Filtra o catalogo: all, http, database, storage, valkey, job, key-value, cache ou queue.', '--json         Imprime a resposta em JSON.'],
     examples: ['zenifra plans', 'zenifra plans --type http', 'zenifra plans --type job --json'],
@@ -471,8 +471,8 @@ const HELP_SPECS = [
     description: 'Lista as execucoes de um Job agendado com o historico de cobranca.',
     flags: ['--project <id>  ID do projeto.', '--page <n>      Pagina. Padrao: 1.', '--limit <n>     Itens por pagina. Maximo: 50.', '--json          Imprime a resposta em JSON.'],
     examples: ['zenifra project runs --project 507f1f77bcf86cd799439012', 'zenifra project runs --project 507f1f77bcf86cd799439012 --page 2 --limit 20 --json'],
-    output: 'ID      Status     Agendada                  Minutos cobrados  Valor\nrun_1   succeeded  2026-09-01T12:00:00.000Z  2                 R$ 0,04',
-    jsonOutput: '{"runs":[{"id":"run_1","status":"succeeded","billed_minutes":2,"currency":"brl","amount":0.04}],"pagination":{"page":1,"limit":20,"total":1,"total_pages":1}}',
+    output: 'ID      Status     Agendada                  Duracao  Minutos cobrados  Valor\nrun_1   succeeded  2026-09-01T12:00:00.000Z  70 s     2                 R$ 0,04',
+    jsonOutput: '{"runs":[{"id":"run_1","status":"succeeded","duration_seconds":70,"billed_minutes":2,"plan":"job-basic","currency":"brl","amount":4}],"pagination":{"page":1,"limit":20,"total":1,"total_pages":1}}',
   },
   {
     command: 'project runs cancel',
@@ -3801,8 +3801,6 @@ const PUBLIC_JOB_RUN_KEYS = [
   'plan',
   'currency',
   'amount',
-  'value',
-  'total_amount',
 ];
 
 function sanitizeJobRun(run) {
@@ -3831,7 +3829,7 @@ function formatJobRunDuration(durationSeconds) {
 }
 
 function formatJobRunAmount(run) {
-  const amount = run.amount ?? run.value ?? run.total_amount;
+  const amount = run.amount;
   if (amount === undefined || amount === null) return '-';
   return formatBrlFromCents(amount);
 }
