@@ -23,6 +23,15 @@ const HTTP_PLAN_CATALOG = [
   { plan: 'deep_learning_basic', prices: { hourly: 6, monthly: 60, yearly: 600 }, features: ['2 instâncias'] },
   { plan: 'deep_learning_premium', prices: { hourly: 7, monthly: 70, yearly: 700 }, features: ['Bloqueio de IPs', '4 instâncias'] },
 ];
+const JOB_PLAN_CATALOG = [
+  {
+    plan: 'job-basic',
+    price_per_minute: 2,
+    currency: 'brl',
+    payment_mode: 'per_minute',
+    features: ['500m CPU', '512Mi memory'],
+  },
+];
 const DATABASE_PLAN_CATALOG = [
   { plan: 'db-free', prices: { hourly: 0, monthly: 0, yearly: 0 }, features: ['1 réplica'] },
   { plan: 'db-starter', prices: { hourly: 1, monthly: 10, yearly: 100 }, features: ['1 réplica'] },
@@ -275,6 +284,18 @@ test('global help shows the command index and points to command-specific help', 
     assert.match(result.stdout, /project logs/);
     assert.match(result.stdout, /project metrics capabilities/);
     assert.match(result.stdout, /project healthcheck get/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('project namespace help includes scheduled Job run cancellation', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli(['help', 'project'], { configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /zenifra project runs cancel --project <id> --run <id>/);
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }
@@ -551,6 +572,11 @@ async function withPlansCatalogServer(handler, callback) {
       return;
     }
 
+    if (req.method === 'GET' && req.url === '/v1/project/job/plans') {
+      jsonResponse(res, 200, { status: 'success', data: JOB_PLAN_CATALOG });
+      return;
+    }
+
     if (req.method === 'GET' && req.url === '/v1/managed-services/catalog') {
       assert.equal(req.headers.authorization, undefined);
       jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
@@ -567,7 +593,7 @@ test('plans help works without authentication', async () => {
     for (const args of [['plans', '--help'], ['help', 'plans']]) {
       const result = await runCli(args, { configDir, envApiKey: null });
       assert.equal(result.code, 0, `${args.join(' ')}\n${result.stderr}`);
-      assert.match(result.stdout, /Usage:\n  zenifra plans \[--type <all\|http\|database\|storage\|valkey>] \[--json]/);
+      assert.match(result.stdout, /Usage:\n  zenifra plans \[--type <all\|http\|database\|storage\|valkey\|job>] \[--json]/);
       assert.match(result.stdout, /Examples:/);
       assert.doesNotMatch(result.stdout, /Voce precisa autenticar primeiro/);
     }
@@ -593,13 +619,15 @@ test('builds logs help is specific and documents follow mode', async () => {
 test('plans lists all catalogs without authentication by default', async () => {
   await withPlansCatalogServer(async (req, res) => {
     jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
-  }, async ({ apiBase, configDir }) => {
+  }, async ({ apiBase, configDir, requests }) => {
     const result = await runCli(['plans'], { apiBase, configDir, envApiKey: null });
 
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /HTTP/);
     assert.match(result.stdout, /PostgreSQL \/ MariaDB/);
     assert.match(result.stdout, /Armazenamento/);
+    assert.match(result.stdout, /Jobs agendados/);
+    assert.match(result.stdout, /job-basic/);
     assert.match(result.stdout, /free/);
     assert.match(result.stdout, /db-basic/);
     assert.match(result.stdout, /1 GB/);
@@ -608,6 +636,22 @@ test('plans lists all catalogs without authentication by default', async () => {
     assert.match(result.stdout, /Key Value/);
     assert.match(result.stdout, /Cache/);
     assert.match(result.stdout, /Queue/);
+    assert.deepEqual(
+      requests.map((request) => request.url).sort(),
+      ['/v1/managed-services/catalog', '/v1/project/database/plans', '/v1/project/job/plans', '/v1/project/plans', '/v1/project/storage/plans'].sort(),
+    );
+  });
+});
+
+test('plans --json includes Scheduled Jobs in the default grouped payload', async () => {
+  await withPlansCatalogServer(async (req, res) => {
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['plans', '--json'], { apiBase, configDir, envApiKey: null });
+
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.deepEqual(payload.job, JOB_PLAN_CATALOG);
   });
 });
 
@@ -789,6 +833,11 @@ test('plans fails instead of printing partial data when one requested catalog fa
 
     if (req.method === 'GET' && req.url === '/v1/project/storage/plans') {
       jsonResponse(res, 200, { status: 'success', data: STORAGE_PLAN_CATALOG });
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/v1/project/job/plans') {
+      jsonResponse(res, 200, { status: 'success', data: JOB_PLAN_CATALOG });
       return;
     }
 
@@ -2165,6 +2214,30 @@ test('create project fails early when payment mode is invalid', async () => {
   }
 });
 
+test('create scheduled Job rejects an invalid image reference before calling the API', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli([
+      'create', 'project',
+      '--name', 'nightly-job',
+      '--plan', 'job-basic',
+      '--payment-mode', 'per_minute',
+      '--config', JSON.stringify({
+        type_project: 'job',
+        image: { url: 'invalid-image-without-tag', is_public: true },
+        envs: [],
+        storage: { persistent: false, capacity: 1 },
+        job: { cron: '0 3 * * *' },
+      }),
+    ], { configDir });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /config\.image\.url|referencia.*imagem|imagem.*valida/i);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
 test('create project fails when github runtime is missing for http github project', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {
@@ -3423,4 +3496,360 @@ test('project healthcheck validates path and pagination before requesting the AP
       await rm(configDir, { recursive: true, force: true });
     }
   }
+});
+
+test('plans recognizes the public Scheduled Jobs catalog and keeps the grouped JSON envelope', async () => {
+  const jobPlans = [
+    {
+      plan: 'job-basic',
+      price_per_minute: 2,
+      currency: 'brl',
+      payment_mode: 'per_minute',
+      features: ['500m CPU', '512Mi memory'],
+    },
+  ];
+
+  await withCliServer(async (req, res) => {
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/job/plans');
+    assert.equal(req.headers.authorization, undefined);
+    jsonResponse(res, 200, { status: 'success', data: jobPlans });
+  }, async ({ apiBase, configDir }) => {
+    const text = await runCli(['plans', '--type', 'job'], { apiBase, configDir, envApiKey: null });
+    assert.equal(text.code, 0, text.stderr);
+    assert.match(text.stdout, /Jobs agendados/);
+    assert.match(text.stdout, /job-basic/);
+    assert.match(text.stdout, /R\$[\s\u00a0]*0,02/);
+    assert.match(text.stdout, /por minuto/i);
+    assert.match(text.stdout, /Features/);
+    assert.doesNotMatch(text.stdout, /Recursos/);
+    assert.doesNotMatch(text.stdout, /namespace|runtime_name|k8s/i);
+
+    const json = await runCli(['plans', '--type', 'job', '--json'], { apiBase, configDir, envApiKey: null });
+    assert.equal(json.code, 0, json.stderr);
+    assert.deepEqual(JSON.parse(json.stdout), {
+      http: [],
+      database: [],
+      storage: [],
+      job: jobPlans,
+    });
+  });
+});
+
+test('project runs cancel sends the public cancellation request and hides runtime details', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project/job_project_1/job-runs/run_1/cancel');
+    const body = await readJson(req);
+    assert.deepEqual(body, {});
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        run: {
+          id: 'run_1',
+          status: 'cancelled',
+          billed_minutes: 2,
+          value: 400,
+          total_amount: 400,
+          runtime_name: 'internal-job-123',
+          namespace: 'private-namespace',
+        },
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'runs', 'cancel',
+      '--project', 'job_project_1',
+      '--run', 'run_1',
+    ], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'Execucao: cancelled\n');
+    assert.doesNotMatch(result.stdout, /internal-job-123|private-namespace|namespace|runtime_name/i);
+
+    const json = await runCli([
+      'project', 'runs', 'cancel', '--project', 'job_project_1', '--run', 'run_1', '--json',
+    ], { apiBase, configDir });
+    assert.equal(json.code, 0, json.stderr);
+    assert.deepEqual(JSON.parse(json.stdout), {
+      run: { id: 'run_1', status: 'cancelled', billed_minutes: 2 },
+    });
+    assert.doesNotMatch(json.stdout, /internal-job-123|private-namespace|namespace|runtime_name|value|total_amount/i);
+  });
+});
+
+test('create project wizard creates a Job without payment, source, command or argument prompts', async () => {
+  let body;
+  const jobPlans = [{
+    plan: 'job-basic',
+    price_per_minute: 2,
+    payment_mode: 'per_minute',
+    currency: 'brl',
+    features: ['500m CPU', '512Mi memory'],
+  }];
+
+  await withWizardCatalogServer(async (req, res) => {
+    if (req.method === 'GET' && req.url === '/v1/project/job/plans') {
+      jsonResponse(res, 200, { status: 'success', data: jobPlans });
+      return;
+    }
+
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project');
+    body = await readJson(req);
+    jsonResponse(res, 201, { status: 'success', data: { id: 'job_project_1' } });
+  }, async ({ apiBase, configDir }) => {
+    const stdin = [
+      'nightly-job',
+      '',
+      'job',
+      '1',
+      'registry.example.com/team/job:1.0.0',
+      'n',
+      '1',
+      'n',
+      '0 3 * * *',
+      's',
+    ].join('\n');
+
+    const result = await runCli(['create', 'project'], { apiBase, configDir, stdin });
+
+    assert.equal(result.code, 0, `${result.stderr}\n${result.stdout}`);
+    assert.equal(body.payment_mode, 'per_minute');
+    assert.deepEqual(body.config.image, { url: 'registry.example.com/team/job:1.0.0', is_public: true });
+    assert.deepEqual(body.config.job, { cron: '0 3 * * *' });
+    assert.equal(body.config.job.command, undefined);
+    assert.equal(body.config.job.args, undefined);
+    assert.doesNotMatch(result.stdout, /Modo de pagamento|Origem do Job|Comando opcional|Argumentos opcionais/);
+  });
+});
+
+test('create project accepts a scheduled Job and sends only its public configuration', async () => {
+  let body;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project');
+    body = await readJson(req);
+    jsonResponse(res, 201, {
+      status: 'success',
+      data: {
+        id: 'job_project_1',
+        name: 'nightly-report',
+        runtime_name: 'internal-job-123',
+        namespace: 'private-namespace',
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const config = {
+      type_project: 'job',
+      image: { url: `ghcr.io/example/report@sha256:${'a'.repeat(64)}`, is_public: true },
+      envs: [{ name: 'MODE', value: 'daily' }],
+      storage: { persistent: false, capacity: 1 },
+      job: { cron: '0 * * * *' },
+    };
+    const result = await runCli([
+      'create', 'project',
+      '--name', 'nightly-report',
+      '--plan', 'job-basic',
+      '--payment-mode', 'per_minute',
+      '--config', JSON.stringify(config),
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(body, {
+      name: 'nightly-report',
+      plan: 'job-basic',
+      payment_mode: 'per_minute',
+      config,
+    });
+    assert.match(result.stdout, /job_project_1/);
+    assert.doesNotMatch(result.stdout, /internal-job-123|private-namespace|namespace|runtime_name/i);
+  });
+});
+
+test('create project rejects invalid scheduled Job fields before calling the API', async () => {
+  const cases = [
+    {
+      plan: 'job-basic',
+      paymentMode: 'hourly',
+      config: { type_project: 'job', job: { cron: '0 * * * *' } },
+      expected: /per_minute|modo de pagamento/i,
+    },
+    {
+      plan: 'job-basic',
+      paymentMode: 'per_minute',
+      config: { type_project: 'job', instances: 1, job: { cron: '0 * * * *' } },
+      expected: /nao aceita|não aceita|instances/i,
+    },
+    {
+      plan: 'job-basic',
+      paymentMode: 'per_minute',
+      config: { type_project: 'job', job: { cron: '0 * *' } },
+      expected: /cron.*cinco|cinco.*campo/i,
+    },
+    {
+      plan: 'job-basic',
+      paymentMode: 'per_minute',
+      config: {
+        type_project: 'job',
+        image: { url: 'ghcr.io/example/report:1.0.0', is_public: true },
+        envs: [],
+        storage: { persistent: false, capacity: 1 },
+        job: { cron: '0 * * * *', command: ['node'] },
+      },
+      expected: /nao aceita.*config\.job\.command|imagem.*comando/i,
+    },
+  ];
+
+  for (const item of cases) {
+    let postCalls = 0;
+    await withCliServer(async (req, res) => {
+      if (req.method === 'POST' && req.url === '/v1/project') postCalls += 1;
+      jsonResponse(res, 500, { status: 'failed', message: 'unexpected API call' });
+    }, async ({ apiBase, configDir }) => {
+      const result = await runCli([
+        'create', 'project',
+        '--name', 'invalid-job',
+        '--plan', item.plan,
+        '--payment-mode', item.paymentMode,
+        '--config', JSON.stringify(item.config),
+      ], { apiBase, configDir });
+
+      assert.equal(result.code, 1, result.stderr);
+      assert.match(result.stderr, item.expected);
+      assert.equal(postCalls, 0);
+    });
+  }
+});
+
+test('projects lists Jobs and project info omits HTTP exposure fields for Jobs', async () => {
+  const jobProject = {
+    id: 'job_project_1',
+    name: 'nightly-report',
+    status: 'running',
+    type_project: 'job',
+    plan: 'job-basic',
+    payment_mode: 'per_minute',
+    domain: 'must-not-show.example.com',
+    url: 'https://must-not-show.example.com',
+    exposure: 'public',
+    port: 8080,
+    instances: 3,
+    runtime_name: 'internal-job-123',
+    namespace: 'private-namespace',
+    job: { cron: '0 * * * *' },
+  };
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/project?type=job&page=1&limit=15') {
+      jsonResponse(res, 200, { status: 'success', data: { projects: [jobProject], pagination: { page: 1, pages: 1, total: 1 } } });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/project/job_project_1') {
+      jsonResponse(res, 200, { status: 'success', data: jobProject });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+  }, async ({ apiBase, configDir }) => {
+    const projects = await runCli(['projects', '--type', 'job'], { apiBase, configDir });
+    assert.equal(projects.code, 0, projects.stderr);
+    assert.match(projects.stdout, /nightly-report/);
+    assert.match(projects.stdout, /job/);
+
+    const info = await runCli(['project', 'info', '--project', 'job_project_1'], { apiBase, configDir });
+    assert.equal(info.code, 0, info.stderr);
+    assert.match(info.stdout, /Agendamento|Cron/);
+    assert.doesNotMatch(info.stdout, /URL:|Exposicao:|Porta:|Instancias:|must-not-show|internal-job-123|private-namespace/i);
+
+    const infoJson = await runCli(['project', 'info', '--project', 'job_project_1', '--json'], { apiBase, configDir });
+    assert.equal(infoJson.code, 0, infoJson.stderr);
+    const publicInfo = JSON.parse(infoJson.stdout);
+    for (const key of ['domain', 'url', 'exposure', 'port', 'instances', 'runtime_name', 'namespace']) {
+      assert.equal(publicInfo[key], undefined, key);
+    }
+    assert.deepEqual(publicInfo.job, { cron: '0 * * * *' });
+  });
+});
+
+test('project runs returns sanitized runs with pagination and run logs use the public run endpoint', async () => {
+  const run = {
+    id: 'run_1',
+    status: 'succeeded',
+    scheduled_at: '2026-09-01T12:00:00.000Z',
+    started_at: '2026-09-01T12:00:01.000Z',
+    finished_at: '2026-09-01T12:01:11.000Z',
+    duration_seconds: 70,
+    billed_minutes: 2,
+    plan: 'job-basic',
+    currency: 'brl',
+    amount: 4,
+    value: 400,
+    total_amount: 400,
+    k8s_job_name: 'internal-job-123',
+    namespace: 'private-namespace',
+  };
+  const pagination = { page: 2, limit: 1, total: 3, total_pages: 3 };
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/project/job_project_1/job-runs?page=2&limit=1') {
+      jsonResponse(res, 200, { status: 'success', data: { runs: [run], pagination } });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/project/job_project_1/job-runs/run_1/logs') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: {
+          logs: 'started\ncompleted',
+          next_cursor: 2,
+          truncated: false,
+          runtime_name: 'internal-job-123',
+          namespace: 'private-namespace',
+        },
+      });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+  }, async ({ apiBase, configDir }) => {
+    const runs = await runCli([
+      'project', 'runs', '--project', 'job_project_1', '--page', '2', '--limit', '1', '--json',
+    ], { apiBase, configDir });
+    assert.equal(runs.code, 0, runs.stderr);
+    const publicRuns = JSON.parse(runs.stdout);
+    assert.deepEqual(publicRuns, {
+      runs: [{
+        id: 'run_1',
+        status: 'succeeded',
+        scheduled_at: run.scheduled_at,
+        started_at: run.started_at,
+        finished_at: run.finished_at,
+        duration_seconds: 70,
+        billed_minutes: 2,
+        plan: 'job-basic',
+        currency: 'brl',
+        amount: 4,
+      }],
+      pagination,
+    });
+    assert.equal(publicRuns.runs[0].value, undefined);
+    assert.equal(publicRuns.runs[0].total_amount, undefined);
+    assert.doesNotMatch(runs.stdout, /k8s|namespace|internal-job/i);
+
+    const humanRuns = await runCli([
+      'project', 'runs', '--project', 'job_project_1', '--page', '2', '--limit', '1',
+    ], { apiBase, configDir });
+    assert.equal(humanRuns.code, 0, humanRuns.stderr);
+    assert.match(humanRuns.stdout, /70 s/);
+    assert.match(humanRuns.stdout, /R\$[\s\u00a0]*0,04/);
+
+    const logs = await runCli([
+      'project', 'runs', 'logs', '--project', 'job_project_1', '--run', 'run_1', '--json',
+    ], { apiBase, configDir });
+    assert.equal(logs.code, 0, logs.stderr);
+    assert.deepEqual(JSON.parse(logs.stdout), { logs: 'started\ncompleted', next_cursor: 2, truncated: false });
+    assert.doesNotMatch(logs.stdout, /k8s|namespace|internal-job/i);
+  });
 });
