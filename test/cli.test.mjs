@@ -409,6 +409,24 @@ test('help command resolves compound commands with examples and JSON output', as
   }
 });
 
+test('project help examples use the clients.zenifra.com domain', async (t) => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    for (const command of [['create', 'project'], ['project', 'info'], ['project', 'url']]) {
+      for (const args of [['help', ...command], [...command, '--help']]) {
+        await t.test(args.join(' '), async () => {
+          const result = await runCli(args, { configDir, envApiKey: null });
+          assert.equal(result.code, 0, result.stderr);
+          assert.doesNotMatch(result.stdout, /\.client\.zenifra\.com\b/);
+          assert.match(result.stdout, /https:\/\/api-web\.clients\.zenifra\.com/);
+        });
+      }
+    }
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
 test('unknown help command fails with a clear message', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {
@@ -2055,6 +2073,42 @@ test('project image, autoscaling and instances commands call their project opera
       { method: 'PATCH', url: '/v1/project/proj_1/instances', body: { instances: 3 } },
     ]);
   });
+});
+
+test('project info and url preserve legacy and custom domains returned by the API', async () => {
+  for (const domain of ['api-web.client.zenifra.com', 'app.example.com']) {
+    const project = {
+      id: 'proj_1',
+      name: 'api-web',
+      type_project: 'http',
+      status: 'running',
+      domain,
+      custom_domains: ['www.example.com'],
+    };
+    await withCliServer(async (req, res) => {
+      assertApiKeyAuth(req);
+      assert.equal(req.method, 'GET');
+      assert.equal(req.url, '/v1/project/proj_1');
+      jsonResponse(res, 200, { status: 'success', data: project });
+    }, async ({ apiBase, configDir }) => {
+      for (const command of ['info', 'url']) {
+        const args = ['project', command, '--project', 'proj_1'];
+        const text = await runCli(args, { apiBase, configDir });
+        assert.equal(text.code, 0, text.stderr);
+        assert.ok(text.stdout.includes(`https://${domain}`), text.stdout);
+        assert.doesNotMatch(text.stdout, /\.clients\.zenifra\.com\b/);
+
+        const json = await runCli([...args, '--json'], { apiBase, configDir });
+        assert.equal(json.code, 0, json.stderr);
+        assert.deepEqual(JSON.parse(json.stdout), command === 'info' ? project : {
+          project_id: 'proj_1',
+          url: `https://${domain}`,
+          domain,
+          custom_domains: project.custom_domains,
+        });
+      }
+    });
+  }
 });
 
 test('project exposure set updates project exposure', async () => {
