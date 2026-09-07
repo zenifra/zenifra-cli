@@ -803,9 +803,19 @@ test('plans fails instead of printing partial data when one requested catalog fa
 });
 
 test('staging autoscaling regression refuses production and requires explicit mutation opt-in', async () => {
+  const missingTarget = await runNodeScript(stagingAutoscalingScriptPath, {
+    ZENIFRA_API_KEY_STG: 'znf_test_only',
+    ZENIFRA_API_URL_STG: '',
+    ZENIFRA_API_URL: '',
+    ZENIFRA_STAGING_ALLOW_MUTATIONS: '0',
+  });
+  assert.notEqual(missingTarget.code, 0);
+  assert.match(missingTarget.stderr, /Missing explicit test API URL/);
+  assert.equal(missingTarget.stdout, '');
+
   const missingOptIn = await runNodeScript(stagingAutoscalingScriptPath, {
     ZENIFRA_API_KEY_STG: 'znf_test_only',
-    ZENIFRA_API_URL_STG: 'https://api-stg.zenifra.com/v1',
+    ZENIFRA_API_URL_STG: 'http://127.0.0.1:1/v1',
     ZENIFRA_STAGING_ALLOW_MUTATIONS: '0',
   });
   assert.notEqual(missingOptIn.code, 0);
@@ -1098,7 +1108,7 @@ test('profile list and show expose the active profile with masked credentials', 
           name: 'staging',
           description: 'Homologacao',
           authMode: 'access_token',
-          apiBaseUrl: 'https://api-stg.zenifra.com/v1',
+          apiBaseUrl: 'https://api.example.test/v1',
           accessToken: 'token_staging',
           selectedOrganizationId: 'org_stg',
         },
@@ -1110,7 +1120,7 @@ test('profile list and show expose the active profile with masked credentials', 
 
     assert.equal(list.code, 0, list.stderr);
     assert.match(list.stdout, /prod\s+api_key\s+https:\/\/api\.zenifra\.com\/v1\s+yes/);
-    assert.match(list.stdout, /staging\s+access_token\s+https:\/\/api-stg\.zenifra\.com\/v1\s+no/);
+    assert.match(list.stdout, /staging\s+access_token\s+https:\/\/api\.example\.test\/v1\s+no/);
     assert.equal(show.code, 0, show.stderr);
     assert.match(show.stdout, /Nome: prod/);
     assert.match(show.stdout, /API key: znf_0123\.\.\.FGHI/);
@@ -1123,7 +1133,7 @@ test('profile list and show expose the active profile with masked credentials', 
 test('auth api-key with --profile creates and activates the target profile', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {
-    const result = await runCli(['auth', 'api-key', '--profile', 'staging', '--api-base', 'https://api-stg.zenifra.com/v1', '--key', apiKey], {
+    const result = await runCli(['auth', 'api-key', '--profile', 'staging', '--api-base', 'https://api.example.test/v1', '--key', apiKey], {
       configDir,
       envApiKey: null,
     });
@@ -1131,7 +1141,7 @@ test('auth api-key with --profile creates and activates the target profile', asy
     assert.equal(result.code, 0, result.stderr);
     const profiles = JSON.parse(await readFile(join(configDir, 'profiles.json'), 'utf8'));
     assert.equal(profiles.activeProfile, 'staging');
-    assert.equal(profiles.profiles.staging.apiBaseUrl, 'https://api-stg.zenifra.com/v1');
+    assert.equal(profiles.profiles.staging.apiBaseUrl, 'https://api.example.test/v1');
     assert.equal(profiles.profiles.staging.apiKey, apiKey);
     assert.equal(profiles.profiles.staging.selectedOrganizationId, undefined);
   } finally {
@@ -1201,7 +1211,7 @@ test('auth logout clears only the target profile authentication', async () => {
       activeProfile: 'prod',
       profiles: {
         prod: { name: 'prod', description: 'Producao', apiBaseUrl: 'https://api.zenifra.com/v1', authMode: 'api_key', apiKey },
-        staging: { name: 'staging', description: 'Homologacao', apiBaseUrl: 'https://api-stg.zenifra.com/v1', authMode: 'access_token', accessToken: 'token_1', selectedOrganizationId: 'org_1' },
+        staging: { name: 'staging', description: 'Homologacao', apiBaseUrl: 'https://api.example.test/v1', authMode: 'access_token', accessToken: 'token_1', selectedOrganizationId: 'org_1' },
       },
     });
 
@@ -1867,6 +1877,32 @@ test('build polling options reject invalid numeric values before requesting logs
       await rm(configDir, { recursive: true, force: true });
     }
   }
+});
+
+test('project creation waits beyond thirty seconds without retrying the mutation', { timeout: 45000 }, async () => {
+  let creations = 0;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/managed-services/catalog') {
+      jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
+      return;
+    }
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project');
+    assert.equal(req.headers['idempotency-key'], 'slow-create-test-001');
+    await readJson(req);
+    creations++;
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 31000));
+    jsonResponse(res, 201, { status: 'success', data: { project_id: 'slow-project' } });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['create', 'project', '--name', 'slow-cache', '--plan', 'cache-free',
+      '--payment-mode', 'hourly', '--idempotency-key', 'slow-create-test-001',
+      '--config', JSON.stringify({ type_project: 'valkey', profile: 'cache', version: '9.1.1' }), '--json'],
+    { apiBase, configDir, extraEnv: { ZENIFRA_HTTP_TIMEOUT_MS: undefined } });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).data.project_id, 'slow-project');
+    assert.equal(creations, 1);
+  });
 });
 
 test('HTTP requests use a configurable timeout and report it clearly', async () => {
