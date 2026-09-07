@@ -43,7 +43,7 @@ zenifra auth logout
 zenifra auth logout --revoke
 zenifra profile list
 zenifra profile show
-zenifra profile add --name staging --description Homologacao --api-base https://api-stg.zenifra.com/v1 --mode api-key --key znf_sua_chave
+zenifra profile add --name staging --description Homologacao --api-base https://api.example.test/v1 --mode api-key --key znf_sua_chave
 zenifra profile use staging
 zenifra profile edit staging --description "Homologacao interna"
 zenifra profile remove staging
@@ -152,11 +152,13 @@ Se voce rodar apenas `zenifra deploy`, a CLI mostra a ajuda especifica do comand
 
 ## Login pelo navegador (OAuth)
 
+Enderecos em `example.test` sao ficticios; substitua pela API autorizada do seu ambiente.
+
 Use uma API com o login OAuth da CLI habilitado. O comando abre o Console para voce
 entrar, concluir a verificacao de seguranca e aprovar o acesso da CLI a sua conta:
 
 ```bash
-zenifra auth login --oauth --profile staging --api-base https://api-stg.zenifra.com/v1
+zenifra auth login --oauth --profile staging --api-base https://api.example.test/v1
 zenifra orgs
 zenifra org set --org <id>
 zenifra projects
@@ -188,7 +190,7 @@ depois de confirmar que o comando terminou.
 ## Configuracao
 
 - API padrao: `https://api.zenifra.com/v1`
-- Override de API: `ZENIFRA_API_URL=https://api-stg.zenifra.com/v1`
+- Override de API: `ZENIFRA_API_URL=https://api.example.test/v1`
 - API key global: `ZENIFRA_API_KEY=znf_sua_chave`
 - Timeout padrao de cada request HTTP: 5 minutos (`ZENIFRA_HTTP_TIMEOUT_MS=300000`). A variavel permite ajustar esse limite.
 - Store local de perfis: `~/.config/zenifra-cli/profiles.json`
@@ -226,7 +228,7 @@ Exemplos:
 
 ```bash
 zenifra profile add --name prod --description Producao --api-base https://api.zenifra.com/v1 --mode api-key --key znf_sua_chave
-zenifra profile add --name staging --description Homologacao --api-base https://api-stg.zenifra.com/v1 --mode login
+zenifra profile add --name staging --description Homologacao --api-base https://api.example.test/v1 --mode login
 zenifra profile list
 zenifra profile show staging
 zenifra profile use prod
@@ -320,10 +322,10 @@ Observacoes do wizard:
 
 ## Regressao manual de auto-scaling em staging
 
-O teste de staging cria projetos, gera trafego, consulta consumo e remove somente os projetos criados pela propria execucao. Ele rejeita a API de producao e exige habilitacao explicita das mutacoes.
+O teste de staging cria projetos, gera trafego, consulta consumo e remove somente os projetos criados pela propria execucao. Ele exige uma API de teste explicita, rejeita a API de producao e exige habilitacao explicita das mutacoes. O exemplo abaixo usa uma API local de teste.
 
 ```bash
-export ZENIFRA_API_URL_STG=https://api-stg.zenifra.com/v1
+export ZENIFRA_API_URL_STG=http://127.0.0.1:3000/v1
 export ZENIFRA_API_KEY_STG=znf_sua_chave_de_staging
 export ZENIFRA_STAGING_ALLOW_MUTATIONS=1
 npm run test:staging:autoscaling
