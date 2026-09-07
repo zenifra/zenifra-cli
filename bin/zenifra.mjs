@@ -9,6 +9,7 @@ import process from 'node:process';
 import readline from 'node:readline/promises';
 import { oauthLogin, openBrowser, validateOAuthProfile, refreshOAuth, revokeOAuth } from './lib/oauth.mjs';
 import { withProfileLock, atomicPrivateWrite } from './lib/profile-store.mjs';
+import { normalizeCustomDomains, writeValkeyConnectionFile } from './lib/public-ux.mjs';
 
 const DEFAULT_API_BASE_URL = 'https://api.zenifra.com/v1';
 const DOCS_BASE_URL = 'https://docs.zenifra.com/pt';
@@ -35,6 +36,7 @@ const KNOWN_FLAG_NAMES = new Set([
   'build',
   'challengeToken',
   'code',
+  'connectionFile',
   'commitSha',
   'config',
   'count',
@@ -394,18 +396,18 @@ const HELP_SPECS = [
   },
   {
     command: 'valkey credentials rotate',
-    usage: 'zenifra valkey credentials rotate --project <id> [--idempotency-key <key>] [--wait] [--interval <seconds>] [--timeout <seconds>] [--json]',
+    usage: 'zenifra valkey credentials rotate --project <id> [--idempotency-key <key>] [--wait] [--interval <seconds>] [--timeout <seconds>] [--connection-file <path>] [--json]',
     description: 'Solicita a renovacao da credencial e retorna uma operacao acompanhavel.',
-    flags: ['--project <id>          ID do projeto.', '--idempotency-key <key> Chave para repetir a mesma solicitacao.', '--wait                  Aguarda a conclusao.', '--interval <seconds>    Intervalo do polling. Padrao: 2.', '--timeout <seconds>     Timeout total. Padrao: 900.', '--json                  Imprime a resposta em JSON.'],
+    flags: ['--project <id>          ID do projeto.', '--idempotency-key <key> Chave para repetir a mesma solicitacao.', '--wait                  Aguarda a conclusao.', '--interval <seconds>    Intervalo do polling. Padrao: 2.', '--timeout <seconds>     Timeout total. Padrao: 900.', '--connection-file <path> Salva a conexao concluida em arquivo privado.', '--json                  Imprime a resposta em JSON.'],
     examples: ['zenifra valkey credentials rotate --project proj_1', 'zenifra valkey credentials rotate --project proj_1 --wait --timeout 120'],
     output: 'Operacao aceita: rotation_123\nEstado: accepted',
     notes: ['Salve a nova string de conexao quando a operacao atingir completed.'],
   },
   {
     command: 'valkey credentials status',
-    usage: 'zenifra valkey credentials status --project <id> --operation <id> [--json]',
+    usage: 'zenifra valkey credentials status --project <id> --operation <id> [--connection-file <path>] [--json]',
     description: 'Consulta o estado de uma renovacao de credencial Valkey.',
-    flags: ['--project <id>     ID do projeto.', '--operation <id>   ID da operacao.', '--json             Imprime a resposta em JSON.'],
+    flags: ['--project <id>     ID do projeto.', '--operation <id>   ID da operacao.', '--connection-file <path> Salva a conexao concluida em arquivo privado.', '--json             Imprime a resposta em JSON.'],
     examples: ['zenifra valkey credentials status --project proj_1 --operation rotation_123'],
     output: 'Operacao: rotation_123\nEstado: completed',
   },
@@ -3491,6 +3493,9 @@ async function handleProjectCreate(session, flags) {
   const plan = wizardPayload?.plan || flags.plan || await prompt('Plano');
   const paymentMode = wizardPayload?.payment_mode || flags.paymentMode || await prompt('Modo de pagamento');
   const config = wizardPayload?.config || await parseConfig(flags.config || await prompt('Config JSON ou @arquivo'));
+  if (Array.isArray(config?.custom_domains)) {
+    config.custom_domains = normalizeCustomDomains(config.custom_domains, { primaryDomain: config.domain });
+  }
   const typeProject = normalizeTypeProject(config?.type_project);
   const valkeyCatalog = typeProject === 'valkey'
     ? requireValkeyCatalog(unwrapData(await request(session, flags, 'GET', '/managed-services/catalog')))
@@ -4227,6 +4232,17 @@ async function handleValkeyCredentialStatus(session, flags) {
     `/managed-services/${projectId}/credential-rotations/${flags.operation}`,
     { orgId },
   ));
+  if (flags.connectionFile) {
+    await writeValkeyConnectionFile(String(flags.connectionFile), data.connection_string);
+    if (flags.json) return printJson({
+      operation_id: data.operation_id,
+      state: data.state,
+      connection_saved: true,
+      connection_file: String(flags.connectionFile),
+    });
+    process.stdout.write(`Credencial concluida e salva em ${flags.connectionFile}.\n`);
+    return;
+  }
   if (flags.json) return printJson(data);
   printValkeyRotation(data);
 }
@@ -4249,6 +4265,17 @@ async function handleValkeyCredentialRotate(session, flags) {
 
   if (flags.wait) {
     const completed = await waitForValkeyRotation(session, flags, projectId, accepted.operation_id, orgId);
+    if (flags.connectionFile) {
+      await writeValkeyConnectionFile(String(flags.connectionFile), completed.connection_string);
+      if (flags.json) return printJson({
+        operation_id: completed.operation_id,
+        state: completed.state,
+        connection_saved: true,
+        connection_file: String(flags.connectionFile),
+      });
+      process.stdout.write(`Credencial concluida e salva em ${flags.connectionFile}.\n`);
+      return;
+    }
     if (flags.json) return printJson(completed);
     printValkeyRotation(completed);
     return;
