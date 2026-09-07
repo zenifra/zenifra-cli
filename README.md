@@ -190,7 +190,7 @@ depois de confirmar que o comando terminou.
 - API padrao: `https://api.zenifra.com/v1`
 - Override de API: `ZENIFRA_API_URL=https://api-stg.zenifra.com/v1`
 - API key global: `ZENIFRA_API_KEY=znf_sua_chave`
-- Timeout de cada request HTTP: `ZENIFRA_HTTP_TIMEOUT_MS=30000`
+- Timeout padrao de cada request HTTP: 5 minutos (`ZENIFRA_HTTP_TIMEOUT_MS=300000`). A variavel permite ajustar esse limite.
 - Store local de perfis: `~/.config/zenifra-cli/profiles.json`
 - Override do diretorio local: `ZENIFRA_CONFIG_DIR=/path/custom`
 

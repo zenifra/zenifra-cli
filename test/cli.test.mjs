@@ -1869,6 +1869,32 @@ test('build polling options reject invalid numeric values before requesting logs
   }
 });
 
+test('project creation waits beyond thirty seconds without retrying the mutation', { timeout: 45000 }, async () => {
+  let creations = 0;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/managed-services/catalog') {
+      jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
+      return;
+    }
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project');
+    assert.equal(req.headers['idempotency-key'], 'slow-create-test-001');
+    await readJson(req);
+    creations++;
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 31000));
+    jsonResponse(res, 201, { status: 'success', data: { project_id: 'slow-project' } });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['create', 'project', '--name', 'slow-cache', '--plan', 'cache-free',
+      '--payment-mode', 'hourly', '--idempotency-key', 'slow-create-test-001',
+      '--config', JSON.stringify({ type_project: 'valkey', profile: 'cache', version: '9.1.1' }), '--json'],
+    { apiBase, configDir, extraEnv: { ZENIFRA_HTTP_TIMEOUT_MS: undefined } });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).data.project_id, 'slow-project');
+    assert.equal(creations, 1);
+  });
+});
+
 test('HTTP requests use a configurable timeout and report it clearly', async () => {
   await withCliServer(async (_req, res) => {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));

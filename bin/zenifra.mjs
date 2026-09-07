@@ -25,7 +25,7 @@ const SESSION_FILE = join(SESSION_DIR, 'session.json');
 const PROFILES_FILE = join(SESSION_DIR, 'profiles.json');
 const PROFILE_STORE_VERSION = 1;
 const DEFAULT_PROFILE_NAME = 'default';
-const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
+const DEFAULT_HTTP_TIMEOUT_MS = 300_000;
 const KNOWN_FLAG_NAMES = new Set([
   'apiBase',
   'oauth',
