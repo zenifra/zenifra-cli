@@ -1061,6 +1061,29 @@ test('project info shows Valkey product fields without HTTP-only labels', async 
   });
 });
 
+test('project info json preserves the backend project payload', async () => {
+  const backendProject = {
+    id: 'proj_passthrough',
+    name: 'api-web',
+    status: 'running',
+    envs: [{ name: 'EXAMPLE', value: 'example-value' }],
+    additional_info: { envs: [{ name: 'SECOND_EXAMPLE', value: 'second-example-value' }] },
+    api_key: 'example-key',
+  };
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/proj_passthrough');
+    jsonResponse(res, 200, { status: 'success', data: backendProject });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['project', 'info', '--project', 'proj_passthrough', '--json'], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), backendProject);
+  });
+});
+
 test('projects command requests paginated project lists and prints pagination summary', async () => {
   await withCliServer(async (req, res) => {
     assert.equal(req.headers.authorization, `Bearer ${apiKey}`);
@@ -2181,6 +2204,40 @@ test('create project fails early when plan is invalid', async () => {
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }
+});
+
+test('create project json preserves the backend response', async () => {
+  const backendResponse = {
+    status: 'success',
+    data: {
+      id: 'proj_passthrough',
+      name: 'api-web',
+      status: 'creating',
+      domain: 'api-web.example.test',
+      result_details: { operation_id: 'operation-example' },
+    },
+    request_id: 'request-example',
+  };
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project');
+    await readJson(req);
+    jsonResponse(res, 201, backendResponse);
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'create', 'project',
+      '--name', 'api-web',
+      '--plan', 'free',
+      '--payment-mode', 'hourly',
+      '--config', '{"type_project":"http","exposure":"public","github":{"runtime":"nodejs"}}',
+      '--json',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), backendResponse);
+  });
 });
 
 test('create project fails early when payment mode is invalid', async () => {

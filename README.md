@@ -148,6 +148,10 @@ Fluxos:
 - `zenifra deploy`: dispara o build/deploy GitHub e retorna o `build_id`
 - `zenifra deploy watch`: usa esse `build_id` para acompanhar o build em tempo real e imprimir os logs incrementais ate o fim
 
+Antes de uma mutacao, confirme o perfil, a API e a organizacao ativa. Para criacoes, confirme tambem o catalogo, plano, pagamento, exposicao, dominio, origem do deploy, porta, instancias e ambientes. Depois, leia o projeto de volta e acompanhe o build/deployment ate um estado terminal.
+
+O dominio principal e um dominio personalizado sao campos diferentes. Nao repita o dominio principal em `config.custom_domains`; depois de adicionar um dominio personalizado, valide DNS/TLS e leia a URL final antes de considerar a operacao concluida.
+
 Se voce rodar apenas `zenifra deploy`, a CLI mostra a ajuda especifica do comando com uso, flags, exemplos e exemplo de retorno.
 
 ## Login pelo navegador (OAuth)
@@ -317,8 +321,16 @@ Observacoes do wizard:
 - em projetos de banco, o wizard nao pergunta `username`, `password` nem `database name`
 - em projetos de banco, a CLI preenche apenas campos tecnicos minimos exigidos pela validacao atual da API
 - em projetos Valkey, a capacidade é definida pelo plano e a CLI não pergunta instâncias, imagem, variáveis de ambiente ou exposição HTTP
-- a conexão mascarada pode ser consultada a qualquer momento; a credencial completa aparece apenas na criação ou em uma rotação concluída
+- a conexão mascarada pode ser consultada a qualquer momento; uma rotação concluída pode salvar a conexão utilizável em arquivo privado com `--connection-file <path>`
 - `valkey credentials rotate` retorna uma operação assíncrona; use `--wait` ou `valkey credentials status` para acompanhar
+
+Exemplo de entrega segura para automação local:
+
+```bash
+zenifra valkey credentials rotate --project <project-id> --wait --connection-file /caminho/privado/redis-url.txt --json
+```
+
+O arquivo é criado com permissão privada; a conexão não aparece na saída do comando quando essa opção é usada.
 
 ## Regressao manual de auto-scaling em staging
 
