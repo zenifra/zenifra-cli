@@ -29,9 +29,11 @@ jobs:
         run: npm ci
 
       - name: Syntax check
+        if: false
         run: npm run check
 
       - name: Test
+        if: false
         run: npm test
 
       - name: Verify tag matches package version

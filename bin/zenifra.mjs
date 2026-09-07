@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile, chmod } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 import process from 'node:process';
 import readline from 'node:readline/promises';
+import { oauthLogin, openBrowser, validateOAuthProfile, refreshOAuth, revokeOAuth } from './lib/oauth.mjs';
+import { withProfileLock, atomicPrivateWrite } from './lib/profile-store.mjs';
 
 const DEFAULT_API_BASE_URL = 'https://api.zenifra.com/v1';
 const DOCS_BASE_URL = 'https://docs.zenifra.com/pt';
@@ -26,6 +28,9 @@ const DEFAULT_PROFILE_NAME = 'default';
 const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
 const KNOWN_FLAG_NAMES = new Set([
   'apiBase',
+  'oauth',
+  'readOnly',
+  'noBrowser',
   'branch',
   'build',
   'challengeToken',
@@ -159,7 +164,7 @@ function usage() {
 
 Usage:
   zenifra help <command>
-  zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>]
+  zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>] [--oauth] [--read-only] [--no-browser]
   zenifra auth api-key --key <znf_key> [--profile <name>] [--api-base <url>]
   zenifra auth logout [--profile <name>] [--revoke]
   zenifra profile list [--json]
@@ -219,7 +224,7 @@ Run "zenifra help <command>" or "zenifra <command> --help" for command-specific 
 const HELP_SPECS = [
   {
     command: 'auth',
-    usage: 'zenifra auth\n  zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>]\n  zenifra auth api-key --key <znf_key> [--profile <name>] [--api-base <url>]\n  zenifra auth logout [--profile <name>] [--revoke]',
+    usage: 'zenifra auth\n  zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>] [--oauth] [--read-only] [--no-browser]\n  zenifra auth api-key --key <znf_key> [--profile <name>] [--api-base <url>]\n  zenifra auth logout [--profile <name>] [--revoke]',
     description: 'Gerencia a autenticacao dos perfis locais da CLI.',
     examples: ['zenifra auth', 'zenifra auth login --profile staging', 'zenifra auth api-key --profile prod --key znf_0123456789abcdef01234567_abcd...'],
     output: 'Zenifra CLI - auth',
@@ -227,9 +232,12 @@ const HELP_SPECS = [
   },
   {
     command: 'auth login',
-    usage: 'zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>]',
+    usage: 'zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>] [--oauth] [--read-only] [--no-browser]',
     description: 'Autentica um usuario Zenifra no perfil ativo ou em um perfil especifico.',
     flags: [
+      '--oauth           Entra pelo navegador usando OAuth e PKCE.',
+      '--read-only       Solicita somente leitura com --oauth.',
+      '--no-browser      Mostra o endereco sem abrir o navegador com --oauth.',
       '--profile <name>  Atualiza ou cria o perfil informado e o torna ativo.',
       '--api-base <url>  Usa uma API diferente da producao.',
       '--code <code>     Informa o codigo de desafio sem prompt interativo.',
@@ -251,7 +259,7 @@ const HELP_SPECS = [
     command: 'auth logout',
     usage: 'zenifra auth logout [--profile <name>] [--revoke]',
     description: 'Remove a autenticacao do perfil ativo ou do perfil informado.',
-    flags: ['--profile <name>  Limpa outro perfil sem trocar o perfil ativo.', '--revoke          Revoga as sessoes de usuario no servidor antes de limpar o perfil.'],
+    flags: ['--profile <name>  Limpa outro perfil sem trocar o perfil ativo.', '--revoke          Revoga a conexao OAuth deste perfil, ou as sessoes do login por senha, antes de limpar o perfil.'],
     examples: ['zenifra auth logout', 'zenifra auth logout --profile staging', 'zenifra auth logout --revoke'],
     output: 'Autenticacao removida do perfil active.',
     notes: ['Sem --revoke, remove somente a credencial local. A revogacao invalida as sessoes de login do usuario e nao se aplica a API keys.'],
@@ -867,7 +875,11 @@ function normalizeProfileRecord(name, profile = {}) {
   return {
     name,
     description: profile.description ? String(profile.description) : '',
-    authMode: profile.authMode === 'access_token' ? 'access_token' : 'api_key',
+    authMode: ['oauth', 'access_token'].includes(profile.authMode) ? profile.authMode : 'api_key',
+    oauth: profile.authMode === 'oauth' && isRecord(profile.oauth) ? {
+      issuer: profile.oauth.issuer, resource: profile.oauth.resource, clientId: profile.oauth.clientId,
+      refreshToken: profile.oauth.refreshToken, expiresAt: profile.oauth.expiresAt, scope: profile.oauth.scope,
+    } : undefined,
     apiBaseUrl: normalizeApiBaseUrl(profile.apiBaseUrl),
     apiKey: profile.apiKey ? String(profile.apiKey) : undefined,
     accessToken: profile.accessToken ? String(profile.accessToken) : undefined,
@@ -891,12 +903,35 @@ function sanitizeProfileStore(store) {
   return next;
 }
 
-async function writeProfileStore(store) {
+let profileBaseline = emptyProfileStore();
+const sameProfileValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+async function readCurrentProfileStore() {
+  try { return sanitizeProfileStore(JSON.parse(await readFile(PROFILES_FILE, 'utf8'))); }
+  catch (error) { if (error.code === 'ENOENT') return emptyProfileStore(); throw new CliError('Arquivo de perfis invalido. Verifique sua configuracao local.'); }
+}
+async function saveProfileStore(store, { signal } = {}) {
   const normalized = sanitizeProfileStore(store);
-  await mkdir(dirname(PROFILES_FILE), { recursive: true });
-  await writeFile(PROFILES_FILE, `${JSON.stringify(normalized, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  await chmod(PROFILES_FILE, 0o600).catch(() => undefined);
+  await atomicPrivateWrite(PROFILES_FILE, `${JSON.stringify(normalized, null, 2)}\n`, { signal });
+  profileBaseline = structuredClone(normalized);
   return normalized;
+}
+async function writeProfileStore(store, { signal } = {}) {
+  const proposed = sanitizeProfileStore(store);
+  const baseline = profileBaseline;
+  return withProfileLock(SESSION_DIR, async () => {
+    const current = await readCurrentProfileStore();
+    for (const name of new Set([...Object.keys(baseline.profiles), ...Object.keys(proposed.profiles)])) {
+      const before = baseline.profiles[name], after = proposed.profiles[name];
+      if (sameProfileValue(before, after)) continue;
+      if (!sameProfileValue(current.profiles[name], before)) {
+        throw new CliError('O perfil foi alterado por outro comando. Repita o comando para usar a configuracao atual.');
+      }
+      if (after) current.profiles[name] = after; else delete current.profiles[name];
+    }
+    if (proposed.activeProfile !== baseline.activeProfile) current.activeProfile = proposed.activeProfile;
+    signal?.throwIfAborted();
+    return saveProfileStore(current, { signal });
+  }, { signal });
 }
 
 async function readLegacySession() {
@@ -933,7 +968,9 @@ async function migrateLegacySession() {
 async function readProfileStore() {
   if (existsSync(PROFILES_FILE)) {
     try {
-      return sanitizeProfileStore(JSON.parse(await readFile(PROFILES_FILE, 'utf8')));
+      const store = sanitizeProfileStore(JSON.parse(await readFile(PROFILES_FILE, 'utf8')));
+      profileBaseline = structuredClone(store);
+      return store;
     } catch {
       throw new CliError(`Store de perfis invalido em ${PROFILES_FILE}. Corrija o arquivo ou remova-o para recriar.`);
     }
@@ -970,17 +1007,17 @@ function getProfileRecord(session, explicitName) {
   return store.profiles[name] ? { name, profile: store.profiles[name], store } : null;
 }
 
-async function persistSession(session) {
+async function persistSession(session, { signal } = {}) {
   const store = getStore(session);
   const profileName = getProfileName(session);
   if (!profileName) {
-    return writeProfileStore(store);
+    return writeProfileStore(store, { signal });
   }
   store.profiles[profileName] = normalizeProfileRecord(profileName, session);
   if (!store.activeProfile || store.activeProfile === profileName) {
     store.activeProfile = profileName;
   }
-  const normalized = await writeProfileStore(store);
+  const normalized = await writeProfileStore(store, { signal });
   session.__store = normalized;
   session.__profileName = profileName;
   return normalized;
@@ -1489,7 +1526,14 @@ async function request(session, flags, method, path, {
   credential: credentialOverride,
   headers: extraHeaders = {},
 } = {}) {
-  const credential = credentialOverride || resolveCredential(session);
+  if (tokenRequired && !credentialOverride && session.authMode === 'oauth') {
+    if (process.env.ZENIFRA_API_KEY) {
+      if (!session.__oauthShadowWarned) process.stderr.write('Aviso: ZENIFRA_API_KEY tem prioridade sobre o perfil OAuth.\n');
+      session.__oauthShadowWarned = true;
+    } else await prepareOAuthCredential(session, flags);
+  }
+  let credential = credentialOverride || resolveCredential(session);
+  if (!tokenRequired && session.authMode === 'oauth' && credential?.source === 'profile') credential = null;
   if (tokenRequired && !credential) {
     throw new CliError('Voce precisa autenticar primeiro: zenifra auth login, zenifra auth api-key --key <znf_key> ou ZENIFRA_API_KEY.');
   }
@@ -1521,6 +1565,7 @@ async function request(session, flags, method, path, {
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
+      ...(session.authMode === 'oauth' && credential?.source === 'profile' ? { redirect: 'error' } : {}),
     });
   } catch (error) {
     if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
@@ -1867,7 +1912,55 @@ async function resolveOrgId(session, flags, { interactive = true } = {}) {
   return session.selectedOrganizationId;
 }
 
+async function handleOAuthLogin(session, flags) {
+  if (['email', 'password', 'code', 'totp', 'challengeToken', 'key'].some(key => flags[key])) {
+    throw new CliError('Use --oauth sem senha, codigo ou API key.');
+  }
+  const target = ensureProfile(session, flags.profile, { activate: true });
+  const base = apiBaseUrl(target, flags);
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  process.once('SIGINT', cancel); process.once('SIGTERM', cancel);
+  try {
+    const login = await oauthLogin(base, { readOnly: Boolean(flags.readOnly), signal: controller.signal,
+      onAuthorize: async url => {
+        process.stdout.write(`Abra este endereco no navegador para entrar:\n${url}\n`);
+        if (!flags.noBrowser) {
+          const opened = await openBrowser(url);
+          if (!opened) process.stderr.write('Nao foi possivel abrir o navegador. Abra o endereco acima manualmente.\n');
+        }
+      },
+    });
+    if (controller.signal.aborted) throw new CliError('Login OAuth cancelado.');
+    Object.assign(target, login, { apiBaseUrl: base, selectedOrganizationId: undefined, updatedAt: new Date().toISOString() });
+    await persistSession(target, { signal: controller.signal });
+    if (controller.signal.aborted) throw new CliError('Login OAuth cancelado.');
+    Object.assign(session, buildSession(target.__store));
+    process.stdout.write('Login OAuth realizado com sucesso.\n');
+    if (process.env.ZENIFRA_API_KEY) process.stderr.write('Aviso: ZENIFRA_API_KEY tem prioridade sobre este perfil OAuth nos comandos.\n');
+  } finally { process.removeListener('SIGINT', cancel); process.removeListener('SIGTERM', cancel); }
+}
+
+async function prepareOAuthCredential(session, flags) {
+  validateOAuthProfile(session.oauth, apiBaseUrl(session, flags));
+  if (!Number.isFinite(session.oauth.expiresAt)) throw new CliError('Perfil OAuth invalido. Faca login novamente.');
+  await withProfileLock(SESSION_DIR, async () => {
+    const store = await readCurrentProfileStore();
+    const current = store.profiles[getProfileName(session)];
+    if (current?.authMode !== 'oauth' || !current.accessToken) throw new CliError('Sessao OAuth encerrada. Faca login novamente.');
+    validateOAuthProfile(current.oauth, apiBaseUrl(session, flags));
+    if (!Number.isFinite(current.oauth.expiresAt)) throw new CliError('Perfil OAuth invalido. Faca login novamente.');
+    if (current.oauth.expiresAt <= Date.now() + 30_000) {
+      Object.assign(current, await refreshOAuth(current.oauth), { updatedAt: new Date().toISOString() });
+      await saveProfileStore(store);
+    } else profileBaseline = structuredClone(store);
+    Object.assign(session, current, { __store: store });
+  });
+}
+
 async function handleLogin(session, flags) {
+  if (flags.oauth) return handleOAuthLogin(session, flags);
+  if (flags.readOnly || flags.noBrowser) throw new CliError('--read-only e --no-browser exigem --oauth.');
   const targetSession = ensureProfile(session, flags.profile, { activate: Boolean(flags.profile) || !getProfileName(session) });
   const email = String(flags.email || await prompt('Email'));
   const password = String(flags.password || await promptHidden('Senha'));
@@ -1959,6 +2052,20 @@ async function handleLogout(session, flags) {
     throw new CliError('Nenhum perfil ativo configurado. Crie um perfil com "zenifra profile add" ou autentique com "zenifra auth login".');
   }
   const target = requireExistingProfile(session, targetName);
+  if (target.authMode === 'oauth') {
+    await withProfileLock(SESSION_DIR, async () => {
+      const store = await readCurrentProfileStore();
+      const current = store.profiles[getProfileName(target)];
+      if (current?.authMode !== 'oauth') throw new CliError('Perfil alterado. Repita o logout.');
+      if (flags.revoke) await revokeOAuth(current.oauth, apiBaseUrl(target, flags));
+      Object.assign(current, { oauth: undefined, accessToken: undefined, apiKey: undefined,
+        selectedOrganizationId: undefined, authMode: 'api_key', updatedAt: new Date().toISOString() });
+      session.__store = await saveProfileStore(store);
+      if (target.__profileName === getProfileName(session)) Object.assign(session, buildSession(session.__store));
+    });
+    process.stdout.write(`Autenticacao removida do perfil ${target.__profileName}${flags.revoke ? ' e conexao OAuth revogada' : ''}.\n`);
+    return;
+  }
   if (flags.revoke) {
     if (!target.accessToken) {
       throw new CliError('A revogacao exige um perfil autenticado por login de usuario; API keys devem ser revogadas na organizacao.');
@@ -1971,6 +2078,7 @@ async function handleLogout(session, flags) {
       },
     });
   }
+  target.oauth = undefined;
   target.accessToken = undefined;
   target.apiKey = undefined;
   target.selectedOrganizationId = undefined;
@@ -1993,7 +2101,7 @@ function profileOutput(profile, activeName) {
   return {
     name: profile.name,
     description: profile.description || '',
-    auth_mode: profile.accessToken ? 'access_token' : profile.apiKey ? 'api_key' : profile.authMode || 'api_key',
+    auth_mode: profile.authMode === 'oauth' ? 'oauth' : profile.accessToken ? 'access_token' : profile.apiKey ? 'api_key' : profile.authMode || 'api_key',
     api_base_url: profile.apiBaseUrl || DEFAULT_API_BASE_URL,
     selected_organization_id: profile.selectedOrganizationId,
     has_api_key: Boolean(profile.apiKey),

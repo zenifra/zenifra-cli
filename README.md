@@ -150,6 +150,41 @@ Fluxos:
 
 Se voce rodar apenas `zenifra deploy`, a CLI mostra a ajuda especifica do comando com uso, flags, exemplos e exemplo de retorno.
 
+## Login pelo navegador (OAuth)
+
+Use uma API com o login OAuth da CLI habilitado. O comando abre o Console para voce
+entrar, concluir a verificacao de seguranca e aprovar o acesso da CLI a sua conta:
+
+```bash
+zenifra auth login --oauth --profile staging --api-base https://api-stg.zenifra.com/v1
+zenifra orgs
+zenifra org set --org <id>
+zenifra projects
+```
+
+Para executar a copia local deste repositorio, substitua `zenifra` por
+`node bin/zenifra.mjs`. Para uma API local, use seu endereco loopback, por exemplo
+`--api-base http://127.0.0.1:3000/v1`. Enderecos externos exigem HTTPS.
+
+- `--read-only` solicita somente leitura; as permissoes da sua organizacao continuam valendo.
+- `--no-browser` mostra o endereco para abrir manualmente no navegador da mesma maquina.
+- O retorno usa uma porta local temporaria em `127.0.0.1`; nao precisa cadastrar uma porta fixa.
+- O login aguarda ate tres minutos. Use `Ctrl+C` para cancelar.
+- Os tokens ficam no perfil local privado e sao renovados automaticamente antes de expirar.
+- Nao altere `--api-base` ou `ZENIFRA_API_URL` para reutilizar o token em outra API: crie outro perfil.
+- `ZENIFRA_API_KEY` continua tendo prioridade e gera um aviso quando substitui um perfil OAuth.
+
+```bash
+zenifra auth logout                    # remove apenas a autenticacao local
+zenifra auth logout --revoke           # revoga somente a conexao OAuth deste perfil
+```
+
+Sem `--oauth`, `auth login` mantem o login por email, senha e verificacao.
+Uma falha ao renovar a sessao exige novo login; a CLI nao repete automaticamente
+operacoes de alteracao. Se um comando for encerrado abruptamente e deixar
+`profiles.lock`, verifique o PID indicado nesse arquivo e remova o lock somente
+depois de confirmar que o comando terminou.
+
 ## Configuracao
 
 - API padrao: `https://api.zenifra.com/v1`
@@ -185,6 +220,7 @@ A CLI agora trabalha com um perfil ativo. Cada perfil pode ter:
 - credencial:
   - `api_key` para automacao organizacional
   - `access_token` para login pessoal, com `selectedOrganizationId`
+  - `oauth` para login pelo navegador, com renovacao automatica e organizacao selecionada
 
 Exemplos:
 
@@ -202,7 +238,7 @@ Regras de precedencia:
 - `ZENIFRA_API_URL` sobrescreve a API base do perfil ativo apenas para a execucao atual
 - `auth login` e `auth api-key` operam no perfil ativo por padrao
 - `auth login --profile <name>` e `auth api-key --profile <name>` atualizam ou criam outro perfil e o tornam ativo
-- `auth logout` remove somente a autenticacao local; `auth logout --revoke` tambem invalida as sessoes de login do usuario no servidor
+- `auth logout` remove somente a autenticacao local; `auth logout --revoke` revoga somente a conexao do perfil OAuth, ou as sessoes do usuario para login por senha
 - `auth logout --revoke` exige um perfil autenticado por login e nao revoga API keys
 
 Migracao:
