@@ -1813,6 +1813,18 @@ function envsForOutput(envs, { showValues = false } = {}) {
   }));
 }
 
+const PROJECT_INFO_SECRET_FIELD = /(?:^|_)(?:api_?key|access_?token|refresh_?token|secret|password|credential|connection_string|private_?jwk)(?:$|_)/i;
+
+function projectInfoForOutput(value, key = '') {
+  if (key === 'envs' && Array.isArray(value)) return envsForOutput(value);
+  if (Array.isArray(value)) return value.map((item) => projectInfoForOutput(item, key));
+  if (!value || typeof value !== 'object') return PROJECT_INFO_SECRET_FIELD.test(key) ? maskEnvValue(value) : value;
+  return Object.fromEntries(Object.entries(value).map(([entryKey, entryValue]) => [
+    entryKey,
+    PROJECT_INFO_SECRET_FIELD.test(entryKey) ? maskEnvValue(entryValue) : projectInfoForOutput(entryValue, entryKey),
+  ]));
+}
+
 function formatPublicUrl(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
@@ -3559,7 +3571,7 @@ async function handleProjectInfo(session, flags) {
   const orgId = await resolveOrgId(session, flags);
   const project = await getProject(session, flags, projectId, orgId);
 
-  if (flags.json) return printJson(project);
+  if (flags.json) return printJson(projectInfoForOutput(project));
   printProject({ ...project, id: projectId });
 }
 

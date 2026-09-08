@@ -1061,7 +1061,7 @@ test('project info shows Valkey product fields without HTTP-only labels', async 
   });
 });
 
-test('project info json preserves the backend project payload', async () => {
+test('project info json masks environment and credential values', async () => {
   const backendProject = {
     id: 'proj_passthrough',
     name: 'api-web',
@@ -1069,6 +1069,7 @@ test('project info json preserves the backend project payload', async () => {
     envs: [{ name: 'EXAMPLE', value: 'example-value' }],
     additional_info: { envs: [{ name: 'SECOND_EXAMPLE', value: 'second-example-value' }] },
     api_key: 'example-key',
+    connection_string: 'example-connection',
   };
 
   await withCliServer(async (req, res) => {
@@ -1080,7 +1081,13 @@ test('project info json preserves the backend project payload', async () => {
     const result = await runCli(['project', 'info', '--project', 'proj_passthrough', '--json'], { apiBase, configDir });
 
     assert.equal(result.code, 0, result.stderr);
-    assert.deepEqual(JSON.parse(result.stdout), backendProject);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ...backendProject,
+      envs: [{ name: 'EXAMPLE', value: '********' }],
+      additional_info: { envs: [{ name: 'SECOND_EXAMPLE', value: '********' }] },
+      api_key: '********',
+      connection_string: '********',
+    });
   });
 });
 
