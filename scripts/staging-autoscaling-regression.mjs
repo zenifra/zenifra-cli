@@ -11,7 +11,9 @@ const cliPath = resolve(repoRoot, 'bin/zenifra.mjs');
 const artifactDir = resolve(repoRoot, 'artifacts');
 const summaryPath = resolve(artifactDir, 'staging-autoscaling-regression-summary.json');
 
-const apiBase = (process.env.ZENIFRA_API_URL_STG || process.env.ZENIFRA_API_URL || 'https://api-stg.zenifra.com/v1').replace(/\/$/, '');
+const configuredApiBase = process.env.ZENIFRA_API_URL_STG || process.env.ZENIFRA_API_URL;
+if (!configuredApiBase) throw new Error('Missing explicit test API URL: set ZENIFRA_API_URL_STG or ZENIFRA_API_URL');
+const apiBase = configuredApiBase.replace(/\/$/, '');
 const apiKey = process.env.ZENIFRA_API_KEY_STG || process.env.ZENIFRA_API_KEY;
 const organizationId = process.env.ZENIFRA_ORGANIZATION_ID_STG || process.env.ZENIFRA_ORGANIZATION_ID;
 const skipHourlyWait = process.env.ZENIFRA_STAGING_SKIP_HOURLY_WAIT === '1';

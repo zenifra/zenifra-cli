@@ -43,7 +43,7 @@ zenifra auth logout
 zenifra auth logout --revoke
 zenifra profile list
 zenifra profile show
-zenifra profile add --name staging --description Homologacao --api-base https://api-stg.zenifra.com/v1 --mode api-key --key znf_sua_chave
+zenifra profile add --name staging --description Homologacao --api-base https://api.example.test/v1 --mode api-key --key znf_sua_chave
 zenifra profile use staging
 zenifra profile edit staging --description "Homologacao interna"
 zenifra profile remove staging
@@ -153,14 +153,55 @@ Fluxos:
 - `zenifra deploy`: dispara o build/deploy GitHub e retorna o `build_id`
 - `zenifra deploy watch`: usa esse `build_id` para acompanhar o build em tempo real e imprimir os logs incrementais ate o fim
 
+Antes de uma mutacao, confirme o perfil, a API e a organizacao ativa. Para criacoes, confirme tambem o catalogo, plano, pagamento, exposicao, dominio, origem do deploy, porta, instancias e ambientes. Depois, leia o projeto de volta e acompanhe o build/deployment ate um estado terminal.
+
+O dominio principal e um dominio personalizado sao campos diferentes. Nao repita o dominio principal em `config.custom_domains`; depois de adicionar um dominio personalizado, valide DNS/TLS e leia a URL final antes de considerar a operacao concluida.
+
 Se voce rodar apenas `zenifra deploy`, a CLI mostra a ajuda especifica do comando com uso, flags, exemplos e exemplo de retorno.
+
+## Login pelo navegador (OAuth)
+
+Enderecos em `example.test` sao ficticios; substitua pela API autorizada do seu ambiente.
+
+Use uma API com o login OAuth da CLI habilitado. O comando abre o Console para voce
+entrar, concluir a verificacao de seguranca e aprovar o acesso da CLI a sua conta:
+
+```bash
+zenifra auth login --oauth --profile staging --api-base https://api.example.test/v1
+zenifra orgs
+zenifra org set --org <id>
+zenifra projects
+```
+
+Para executar a copia local deste repositorio, substitua `zenifra` por
+`node bin/zenifra.mjs`. Para uma API local, use seu endereco loopback, por exemplo
+`--api-base http://127.0.0.1:3000/v1`. Enderecos externos exigem HTTPS.
+
+- `--read-only` solicita somente leitura; as permissoes da sua organizacao continuam valendo.
+- `--no-browser` mostra o endereco para abrir manualmente no navegador da mesma maquina.
+- O retorno usa uma porta local temporaria em `127.0.0.1`; nao precisa cadastrar uma porta fixa.
+- O login aguarda ate tres minutos. Use `Ctrl+C` para cancelar.
+- Os tokens ficam no perfil local privado e sao renovados automaticamente antes de expirar.
+- Nao altere `--api-base` ou `ZENIFRA_API_URL` para reutilizar o token em outra API: crie outro perfil.
+- `ZENIFRA_API_KEY` continua tendo prioridade e gera um aviso quando substitui um perfil OAuth.
+
+```bash
+zenifra auth logout                    # remove apenas a autenticacao local
+zenifra auth logout --revoke           # revoga somente a conexao OAuth deste perfil
+```
+
+Sem `--oauth`, `auth login` mantem o login por email, senha e verificacao.
+Uma falha ao renovar a sessao exige novo login; a CLI nao repete automaticamente
+operacoes de alteracao. Se um comando for encerrado abruptamente e deixar
+`profiles.lock`, verifique o PID indicado nesse arquivo e remova o lock somente
+depois de confirmar que o comando terminou.
 
 ## Configuracao
 
 - API padrao: `https://api.zenifra.com/v1`
-- Override de API: `ZENIFRA_API_URL=https://api-stg.zenifra.com/v1`
+- Override de API: `ZENIFRA_API_URL=https://api.example.test/v1`
 - API key global: `ZENIFRA_API_KEY=znf_sua_chave`
-- Timeout de cada request HTTP: `ZENIFRA_HTTP_TIMEOUT_MS=30000`
+- Timeout padrao de cada request HTTP: 5 minutos (`ZENIFRA_HTTP_TIMEOUT_MS=300000`). A variavel permite ajustar esse limite.
 - Store local de perfis: `~/.config/zenifra-cli/profiles.json`
 - Override do diretorio local: `ZENIFRA_CONFIG_DIR=/path/custom`
 
@@ -190,12 +231,13 @@ A CLI agora trabalha com um perfil ativo. Cada perfil pode ter:
 - credencial:
   - `api_key` para automacao organizacional
   - `access_token` para login pessoal, com `selectedOrganizationId`
+  - `oauth` para login pelo navegador, com renovacao automatica e organizacao selecionada
 
 Exemplos:
 
 ```bash
 zenifra profile add --name prod --description Producao --api-base https://api.zenifra.com/v1 --mode api-key --key znf_sua_chave
-zenifra profile add --name staging --description Homologacao --api-base https://api-stg.zenifra.com/v1 --mode login
+zenifra profile add --name staging --description Homologacao --api-base https://api.example.test/v1 --mode login
 zenifra profile list
 zenifra profile show staging
 zenifra profile use prod
@@ -207,7 +249,7 @@ Regras de precedencia:
 - `ZENIFRA_API_URL` sobrescreve a API base do perfil ativo apenas para a execucao atual
 - `auth login` e `auth api-key` operam no perfil ativo por padrao
 - `auth login --profile <name>` e `auth api-key --profile <name>` atualizam ou criam outro perfil e o tornam ativo
-- `auth logout` remove somente a autenticacao local; `auth logout --revoke` tambem invalida as sessoes de login do usuario no servidor
+- `auth logout` remove somente a autenticacao local; `auth logout --revoke` revoga somente a conexao do perfil OAuth, ou as sessoes do usuario para login por senha
 - `auth logout --revoke` exige um perfil autenticado por login e nao revoga API keys
 
 Migracao:
@@ -288,15 +330,23 @@ Observacoes do wizard:
 - em projetos de banco, a CLI preenche apenas campos tecnicos minimos exigidos pela validacao atual da API
 - em projetos Valkey, a capacidade é definida pelo plano e a CLI não pergunta instâncias, imagem, variáveis de ambiente ou exposição HTTP
 - em Jobs, a imagem OCI pronta é obrigatória, o cron usa cinco campos em UTC, a cobrança é por minuto inteiro e a CLI não pergunta origem GitHub, tipo de pagamento, comando, argumentos, exposição HTTP, porta ou instâncias
-- a conexão mascarada pode ser consultada a qualquer momento; a credencial completa aparece apenas na criação ou em uma rotação concluída
+- a conexão mascarada pode ser consultada a qualquer momento; uma rotação concluída pode salvar a conexão utilizável em arquivo privado com `--connection-file <path>`
 - `valkey credentials rotate` retorna uma operação assíncrona; use `--wait` ou `valkey credentials status` para acompanhar
+
+Exemplo de entrega segura para automação local:
+
+```bash
+zenifra valkey credentials rotate --project <project-id> --wait --connection-file /caminho/privado/redis-url.txt --json
+```
+
+O arquivo é criado com permissão privada; a conexão não aparece na saída do comando quando essa opção é usada.
 
 ## Regressao manual de auto-scaling em staging
 
-O teste de staging cria projetos, gera trafego, consulta consumo e remove somente os projetos criados pela propria execucao. Ele rejeita a API de producao e exige habilitacao explicita das mutacoes.
+O teste de staging cria projetos, gera trafego, consulta consumo e remove somente os projetos criados pela propria execucao. Ele exige uma API de teste explicita, rejeita a API de producao e exige habilitacao explicita das mutacoes. O exemplo abaixo usa uma API local de teste.
 
 ```bash
-export ZENIFRA_API_URL_STG=https://api-stg.zenifra.com/v1
+export ZENIFRA_API_URL_STG=http://127.0.0.1:3000/v1
 export ZENIFRA_API_KEY_STG=znf_sua_chave_de_staging
 export ZENIFRA_STAGING_ALLOW_MUTATIONS=1
 npm run test:staging:autoscaling

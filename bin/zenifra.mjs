@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile, chmod } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 import process from 'node:process';
 import readline from 'node:readline/promises';
+import { oauthLogin, openBrowser, validateOAuthProfile, refreshOAuth, revokeOAuth } from './lib/oauth.mjs';
+import { withProfileLock, atomicPrivateWrite } from './lib/profile-store.mjs';
+import { normalizeCustomDomains, writeValkeyConnectionFile } from './lib/public-ux.mjs';
 
 const DEFAULT_API_BASE_URL = 'https://api.zenifra.com/v1';
 const DOCS_BASE_URL = 'https://docs.zenifra.com/pt';
@@ -23,16 +26,20 @@ const SESSION_FILE = join(SESSION_DIR, 'session.json');
 const PROFILES_FILE = join(SESSION_DIR, 'profiles.json');
 const PROFILE_STORE_VERSION = 1;
 const DEFAULT_PROFILE_NAME = 'default';
-const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
+const DEFAULT_HTTP_TIMEOUT_MS = 300_000;
 const OCI_IMAGE_REFERENCE_PATTERN = /^[a-z0-9._-]+\/(?:[a-z0-9._-]+\/)*[a-z0-9._-]+(?::[a-z0-9._-]+|@sha256:[a-f0-9]{64})$/;
 const OCI_IMAGE_REFERENCE_MIN_LENGTH = 8;
 const OCI_IMAGE_REFERENCE_MAX_LENGTH = 256;
 const KNOWN_FLAG_NAMES = new Set([
   'apiBase',
+  'oauth',
+  'readOnly',
+  'noBrowser',
   'branch',
   'build',
   'challengeToken',
   'code',
+  'connectionFile',
   'commitSha',
   'config',
   'count',
@@ -154,9 +161,11 @@ const ANSI = {
 };
 
 class CliError extends Error {
-  constructor(message, exitCode = 1) {
+  constructor(message, exitCode = 1, { status, apiCode } = {}) {
     super(message);
     this.exitCode = exitCode;
+    this.status = status;
+    this.apiCode = apiCode;
   }
 }
 
@@ -165,7 +174,7 @@ function usage() {
 
 Usage:
   zenifra help <command>
-  zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>]
+  zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>] [--oauth] [--read-only] [--no-browser]
   zenifra auth api-key --key <znf_key> [--profile <name>] [--api-base <url>]
   zenifra auth logout [--profile <name>] [--revoke]
   zenifra profile list [--json]
@@ -228,7 +237,7 @@ Run "zenifra help <command>" or "zenifra <command> --help" for command-specific 
 const HELP_SPECS = [
   {
     command: 'auth',
-    usage: 'zenifra auth\n  zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>]\n  zenifra auth api-key --key <znf_key> [--profile <name>] [--api-base <url>]\n  zenifra auth logout [--profile <name>] [--revoke]',
+    usage: 'zenifra auth\n  zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>] [--oauth] [--read-only] [--no-browser]\n  zenifra auth api-key --key <znf_key> [--profile <name>] [--api-base <url>]\n  zenifra auth logout [--profile <name>] [--revoke]',
     description: 'Gerencia a autenticacao dos perfis locais da CLI.',
     examples: ['zenifra auth', 'zenifra auth login --profile staging', 'zenifra auth api-key --profile prod --key znf_0123456789abcdef01234567_abcd...'],
     output: 'Zenifra CLI - auth',
@@ -236,9 +245,12 @@ const HELP_SPECS = [
   },
   {
     command: 'auth login',
-    usage: 'zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>]',
+    usage: 'zenifra auth login [--profile <name>] [--api-base <url>] [--code <code>] [--oauth] [--read-only] [--no-browser]',
     description: 'Autentica um usuario Zenifra no perfil ativo ou em um perfil especifico.',
     flags: [
+      '--oauth           Entra pelo navegador usando OAuth e PKCE.',
+      '--read-only       Solicita somente leitura com --oauth.',
+      '--no-browser      Mostra o endereco sem abrir o navegador com --oauth.',
       '--profile <name>  Atualiza ou cria o perfil informado e o torna ativo.',
       '--api-base <url>  Usa uma API diferente da producao.',
       '--code <code>     Informa o codigo de desafio sem prompt interativo.',
@@ -260,7 +272,7 @@ const HELP_SPECS = [
     command: 'auth logout',
     usage: 'zenifra auth logout [--profile <name>] [--revoke]',
     description: 'Remove a autenticacao do perfil ativo ou do perfil informado.',
-    flags: ['--profile <name>  Limpa outro perfil sem trocar o perfil ativo.', '--revoke          Revoga as sessoes de usuario no servidor antes de limpar o perfil.'],
+    flags: ['--profile <name>  Limpa outro perfil sem trocar o perfil ativo.', '--revoke          Revoga a conexao OAuth deste perfil, ou as sessoes do login por senha, antes de limpar o perfil.'],
     examples: ['zenifra auth logout', 'zenifra auth logout --profile staging', 'zenifra auth logout --revoke'],
     output: 'Autenticacao removida do perfil active.',
     notes: ['Sem --revoke, remove somente a credencial local. A revogacao invalida as sessoes de login do usuario e nao se aplica a API keys.'],
@@ -269,7 +281,7 @@ const HELP_SPECS = [
     command: 'profile',
     usage: 'zenifra profile\n  zenifra profile list [--json]\n  zenifra profile show [<name>] [--json]\n  zenifra profile add [--name <name>] [--description <text>] [--api-base <url>] [--mode <api-key|login>] [--key <znf_key>] [--json]\n  zenifra profile edit <name> [--description <text>] [--api-base <url>] [--json]\n  zenifra profile use <name> [--json]\n  zenifra profile remove <name> [--json]',
     description: 'Gerencia perfis de ambiente locais, incluindo API base, descricao e credenciais.',
-    examples: ['zenifra profile', 'zenifra profile list', 'zenifra profile add --name staging --description Homologacao --api-base https://api-stg.zenifra.com/v1 --mode api-key --key znf_0123...'],
+    examples: ['zenifra profile', 'zenifra profile list', 'zenifra profile add --name staging --description Homologacao --api-base https://api.example.test/v1 --mode api-key --key znf_0123...'],
     output: 'Zenifra CLI - profile',
     notes: ['Use "zenifra help profile <subcomando>" para detalhes de list, show, add, edit, use e remove.'],
   },
@@ -279,7 +291,7 @@ const HELP_SPECS = [
     description: 'Lista os perfis locais configurados e indica o perfil ativo.',
     flags: ['--json  Imprime a resposta em JSON.'],
     examples: ['zenifra profile list', 'zenifra profile list --json'],
-    output: 'Nome      Tipo         API base                      Ativo  Descricao\nprod      api_key      https://api.zenifra.com/v1    yes    Producao\nstaging   access_token https://api-stg.zenifra.com/v1 no     Homologacao',
+    output: 'Nome      Tipo         API base                      Ativo  Descricao\nprod      api_key      https://api.zenifra.com/v1    yes    Producao\nstaging   access_token https://api.example.test/v1 no     Homologacao',
     jsonOutput: '[{"name":"prod","auth_mode":"api_key","api_base_url":"https://api.zenifra.com/v1","active":true}]',
   },
   {
@@ -296,7 +308,7 @@ const HELP_SPECS = [
     usage: 'zenifra profile add [--name <name>] [--description <text>] [--api-base <url>] [--mode <api-key|login>] [--key <znf_key>] [--json]',
     description: 'Cria um novo perfil e opcionalmente autentica via API key ou login de usuario.',
     flags: ['--name <name>          Nome do perfil.', '--description <text>   Descricao opcional.', '--api-base <url>       API base do perfil.', '--mode <mode>          api-key ou login.', '--key <znf_key>        API key para modo api-key.', '--json                 Imprime a resposta em JSON.'],
-    examples: ['zenifra profile add --name staging --description Homologacao --api-base https://api-stg.zenifra.com/v1 --mode api-key --key znf_0123...', 'zenifra profile add'],
+    examples: ['zenifra profile add --name staging --description Homologacao --api-base https://api.example.test/v1 --mode api-key --key znf_0123...', 'zenifra profile add'],
     output: 'Perfil staging salvo e definido como ativo.',
     jsonOutput: '{"name":"staging","auth_mode":"api_key","active":true}',
   },
@@ -395,18 +407,18 @@ const HELP_SPECS = [
   },
   {
     command: 'valkey credentials rotate',
-    usage: 'zenifra valkey credentials rotate --project <id> [--idempotency-key <key>] [--wait] [--interval <seconds>] [--timeout <seconds>] [--json]',
+    usage: 'zenifra valkey credentials rotate --project <id> [--idempotency-key <key>] [--wait] [--interval <seconds>] [--timeout <seconds>] [--connection-file <path>] [--json]',
     description: 'Solicita a renovacao da credencial e retorna uma operacao acompanhavel.',
-    flags: ['--project <id>          ID do projeto.', '--idempotency-key <key> Chave para repetir a mesma solicitacao.', '--wait                  Aguarda a conclusao.', '--interval <seconds>    Intervalo do polling. Padrao: 2.', '--timeout <seconds>     Timeout total. Padrao: 900.', '--json                  Imprime a resposta em JSON.'],
+    flags: ['--project <id>          ID do projeto.', '--idempotency-key <key> Chave para repetir a mesma solicitacao.', '--wait                  Aguarda a conclusao.', '--interval <seconds>    Intervalo do polling. Padrao: 2.', '--timeout <seconds>     Timeout total. Padrao: 900.', '--connection-file <path> Salva a conexao concluida em arquivo privado.', '--json                  Imprime a resposta em JSON.'],
     examples: ['zenifra valkey credentials rotate --project proj_1', 'zenifra valkey credentials rotate --project proj_1 --wait --timeout 120'],
     output: 'Operacao aceita: rotation_123\nEstado: accepted',
     notes: ['Salve a nova string de conexao quando a operacao atingir completed.'],
   },
   {
     command: 'valkey credentials status',
-    usage: 'zenifra valkey credentials status --project <id> --operation <id> [--json]',
+    usage: 'zenifra valkey credentials status --project <id> --operation <id> [--connection-file <path>] [--json]',
     description: 'Consulta o estado de uma renovacao de credencial Valkey.',
-    flags: ['--project <id>     ID do projeto.', '--operation <id>   ID da operacao.', '--json             Imprime a resposta em JSON.'],
+    flags: ['--project <id>     ID do projeto.', '--operation <id>   ID da operacao.', '--connection-file <path> Salva a conexao concluida em arquivo privado.', '--json             Imprime a resposta em JSON.'],
     examples: ['zenifra valkey credentials status --project proj_1 --operation rotation_123'],
     output: 'Operacao: rotation_123\nEstado: completed',
   },
@@ -905,7 +917,11 @@ function normalizeProfileRecord(name, profile = {}) {
   return {
     name,
     description: profile.description ? String(profile.description) : '',
-    authMode: profile.authMode === 'access_token' ? 'access_token' : 'api_key',
+    authMode: ['oauth', 'access_token'].includes(profile.authMode) ? profile.authMode : 'api_key',
+    oauth: profile.authMode === 'oauth' && isRecord(profile.oauth) ? {
+      issuer: profile.oauth.issuer, resource: profile.oauth.resource, clientId: profile.oauth.clientId,
+      refreshToken: profile.oauth.refreshToken, expiresAt: profile.oauth.expiresAt, scope: profile.oauth.scope,
+    } : undefined,
     apiBaseUrl: normalizeApiBaseUrl(profile.apiBaseUrl),
     apiKey: profile.apiKey ? String(profile.apiKey) : undefined,
     accessToken: profile.accessToken ? String(profile.accessToken) : undefined,
@@ -929,12 +945,35 @@ function sanitizeProfileStore(store) {
   return next;
 }
 
-async function writeProfileStore(store) {
+let profileBaseline = emptyProfileStore();
+const sameProfileValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+async function readCurrentProfileStore() {
+  try { return sanitizeProfileStore(JSON.parse(await readFile(PROFILES_FILE, 'utf8'))); }
+  catch (error) { if (error.code === 'ENOENT') return emptyProfileStore(); throw new CliError('Arquivo de perfis invalido. Verifique sua configuracao local.'); }
+}
+async function saveProfileStore(store, { signal } = {}) {
   const normalized = sanitizeProfileStore(store);
-  await mkdir(dirname(PROFILES_FILE), { recursive: true });
-  await writeFile(PROFILES_FILE, `${JSON.stringify(normalized, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  await chmod(PROFILES_FILE, 0o600).catch(() => undefined);
+  await atomicPrivateWrite(PROFILES_FILE, `${JSON.stringify(normalized, null, 2)}\n`, { signal });
+  profileBaseline = structuredClone(normalized);
   return normalized;
+}
+async function writeProfileStore(store, { signal } = {}) {
+  const proposed = sanitizeProfileStore(store);
+  const baseline = profileBaseline;
+  return withProfileLock(SESSION_DIR, async () => {
+    const current = await readCurrentProfileStore();
+    for (const name of new Set([...Object.keys(baseline.profiles), ...Object.keys(proposed.profiles)])) {
+      const before = baseline.profiles[name], after = proposed.profiles[name];
+      if (sameProfileValue(before, after)) continue;
+      if (!sameProfileValue(current.profiles[name], before)) {
+        throw new CliError('O perfil foi alterado por outro comando. Repita o comando para usar a configuracao atual.');
+      }
+      if (after) current.profiles[name] = after; else delete current.profiles[name];
+    }
+    if (proposed.activeProfile !== baseline.activeProfile) current.activeProfile = proposed.activeProfile;
+    signal?.throwIfAborted();
+    return saveProfileStore(current, { signal });
+  }, { signal });
 }
 
 async function readLegacySession() {
@@ -971,7 +1010,9 @@ async function migrateLegacySession() {
 async function readProfileStore() {
   if (existsSync(PROFILES_FILE)) {
     try {
-      return sanitizeProfileStore(JSON.parse(await readFile(PROFILES_FILE, 'utf8')));
+      const store = sanitizeProfileStore(JSON.parse(await readFile(PROFILES_FILE, 'utf8')));
+      profileBaseline = structuredClone(store);
+      return store;
     } catch {
       throw new CliError(`Store de perfis invalido em ${PROFILES_FILE}. Corrija o arquivo ou remova-o para recriar.`);
     }
@@ -1008,17 +1049,17 @@ function getProfileRecord(session, explicitName) {
   return store.profiles[name] ? { name, profile: store.profiles[name], store } : null;
 }
 
-async function persistSession(session) {
+async function persistSession(session, { signal } = {}) {
   const store = getStore(session);
   const profileName = getProfileName(session);
   if (!profileName) {
-    return writeProfileStore(store);
+    return writeProfileStore(store, { signal });
   }
   store.profiles[profileName] = normalizeProfileRecord(profileName, session);
   if (!store.activeProfile || store.activeProfile === profileName) {
     store.activeProfile = profileName;
   }
-  const normalized = await writeProfileStore(store);
+  const normalized = await writeProfileStore(store, { signal });
   session.__store = normalized;
   session.__profileName = profileName;
   return normalized;
@@ -1537,7 +1578,14 @@ async function request(session, flags, method, path, {
   credential: credentialOverride,
   headers: extraHeaders = {},
 } = {}) {
-  const credential = credentialOverride || resolveCredential(session);
+  if (tokenRequired && !credentialOverride && session.authMode === 'oauth') {
+    if (process.env.ZENIFRA_API_KEY) {
+      if (!session.__oauthShadowWarned) process.stderr.write('Aviso: ZENIFRA_API_KEY tem prioridade sobre o perfil OAuth.\n');
+      session.__oauthShadowWarned = true;
+    } else await prepareOAuthCredential(session, flags);
+  }
+  let credential = credentialOverride || resolveCredential(session);
+  if (!tokenRequired && session.authMode === 'oauth' && credential?.source === 'profile') credential = null;
   if (tokenRequired && !credential) {
     throw new CliError('Voce precisa autenticar primeiro: zenifra auth login, zenifra auth api-key --key <znf_key> ou ZENIFRA_API_KEY.');
   }
@@ -1569,6 +1617,7 @@ async function request(session, flags, method, path, {
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
+      ...(session.authMode === 'oauth' && credential?.source === 'profile' ? { redirect: 'error' } : {}),
     });
   } catch (error) {
     if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
@@ -1607,7 +1656,7 @@ async function request(session, flags, method, path, {
     if (String(message).includes('missing x-organization-id')) {
       throw new CliError('Organizacao nao selecionada. Rode "zenifra org set" ou use --org <id>.');
     }
-    throw new CliError(message);
+    throw new CliError(message, 1, { status: response.status, apiCode: payload?.code });
   }
 
   return payload;
@@ -1814,6 +1863,18 @@ function envsForOutput(envs, { showValues = false } = {}) {
   }));
 }
 
+const PROJECT_INFO_SECRET_FIELD = /(?:^|_)(?:api_?key|access_?token|refresh_?token|secret|password|credential|connection_string|private_?jwk)(?:$|_)/i;
+
+function projectInfoForOutput(value, key = '') {
+  if (key === 'envs' && Array.isArray(value)) return envsForOutput(value);
+  if (Array.isArray(value)) return value.map((item) => projectInfoForOutput(item, key));
+  if (!value || typeof value !== 'object') return PROJECT_INFO_SECRET_FIELD.test(key) ? maskEnvValue(value) : value;
+  return Object.fromEntries(Object.entries(value).map(([entryKey, entryValue]) => [
+    entryKey,
+    PROJECT_INFO_SECRET_FIELD.test(entryKey) ? maskEnvValue(entryValue) : projectInfoForOutput(entryValue, entryKey),
+  ]));
+}
+
 function formatPublicUrl(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
@@ -1978,7 +2039,55 @@ async function resolveOrgId(session, flags, { interactive = true } = {}) {
   return session.selectedOrganizationId;
 }
 
+async function handleOAuthLogin(session, flags) {
+  if (['email', 'password', 'code', 'totp', 'challengeToken', 'key'].some(key => flags[key])) {
+    throw new CliError('Use --oauth sem senha, codigo ou API key.');
+  }
+  const target = ensureProfile(session, flags.profile, { activate: true });
+  const base = apiBaseUrl(target, flags);
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  process.once('SIGINT', cancel); process.once('SIGTERM', cancel);
+  try {
+    const login = await oauthLogin(base, { readOnly: Boolean(flags.readOnly), signal: controller.signal,
+      onAuthorize: async url => {
+        process.stdout.write(`Abra este endereco no navegador para entrar:\n${url}\n`);
+        if (!flags.noBrowser) {
+          const opened = await openBrowser(url);
+          if (!opened) process.stderr.write('Nao foi possivel abrir o navegador. Abra o endereco acima manualmente.\n');
+        }
+      },
+    });
+    if (controller.signal.aborted) throw new CliError('Login OAuth cancelado.');
+    Object.assign(target, login, { apiBaseUrl: base, selectedOrganizationId: undefined, updatedAt: new Date().toISOString() });
+    await persistSession(target, { signal: controller.signal });
+    if (controller.signal.aborted) throw new CliError('Login OAuth cancelado.');
+    Object.assign(session, buildSession(target.__store));
+    process.stdout.write('Login OAuth realizado com sucesso.\n');
+    if (process.env.ZENIFRA_API_KEY) process.stderr.write('Aviso: ZENIFRA_API_KEY tem prioridade sobre este perfil OAuth nos comandos.\n');
+  } finally { process.removeListener('SIGINT', cancel); process.removeListener('SIGTERM', cancel); }
+}
+
+async function prepareOAuthCredential(session, flags) {
+  validateOAuthProfile(session.oauth, apiBaseUrl(session, flags));
+  if (!Number.isFinite(session.oauth.expiresAt)) throw new CliError('Perfil OAuth invalido. Faca login novamente.');
+  await withProfileLock(SESSION_DIR, async () => {
+    const store = await readCurrentProfileStore();
+    const current = store.profiles[getProfileName(session)];
+    if (current?.authMode !== 'oauth' || !current.accessToken) throw new CliError('Sessao OAuth encerrada. Faca login novamente.');
+    validateOAuthProfile(current.oauth, apiBaseUrl(session, flags));
+    if (!Number.isFinite(current.oauth.expiresAt)) throw new CliError('Perfil OAuth invalido. Faca login novamente.');
+    if (current.oauth.expiresAt <= Date.now() + 30_000) {
+      Object.assign(current, await refreshOAuth(current.oauth), { updatedAt: new Date().toISOString() });
+      await saveProfileStore(store);
+    } else profileBaseline = structuredClone(store);
+    Object.assign(session, current, { __store: store });
+  });
+}
+
 async function handleLogin(session, flags) {
+  if (flags.oauth) return handleOAuthLogin(session, flags);
+  if (flags.readOnly || flags.noBrowser) throw new CliError('--read-only e --no-browser exigem --oauth.');
   const targetSession = ensureProfile(session, flags.profile, { activate: Boolean(flags.profile) || !getProfileName(session) });
   const email = String(flags.email || await prompt('Email'));
   const password = String(flags.password || await promptHidden('Senha'));
@@ -2070,6 +2179,20 @@ async function handleLogout(session, flags) {
     throw new CliError('Nenhum perfil ativo configurado. Crie um perfil com "zenifra profile add" ou autentique com "zenifra auth login".');
   }
   const target = requireExistingProfile(session, targetName);
+  if (target.authMode === 'oauth') {
+    await withProfileLock(SESSION_DIR, async () => {
+      const store = await readCurrentProfileStore();
+      const current = store.profiles[getProfileName(target)];
+      if (current?.authMode !== 'oauth') throw new CliError('Perfil alterado. Repita o logout.');
+      if (flags.revoke) await revokeOAuth(current.oauth, apiBaseUrl(target, flags));
+      Object.assign(current, { oauth: undefined, accessToken: undefined, apiKey: undefined,
+        selectedOrganizationId: undefined, authMode: 'api_key', updatedAt: new Date().toISOString() });
+      session.__store = await saveProfileStore(store);
+      if (target.__profileName === getProfileName(session)) Object.assign(session, buildSession(session.__store));
+    });
+    process.stdout.write(`Autenticacao removida do perfil ${target.__profileName}${flags.revoke ? ' e conexao OAuth revogada' : ''}.\n`);
+    return;
+  }
   if (flags.revoke) {
     if (!target.accessToken) {
       throw new CliError('A revogacao exige um perfil autenticado por login de usuario; API keys devem ser revogadas na organizacao.');
@@ -2082,6 +2205,7 @@ async function handleLogout(session, flags) {
       },
     });
   }
+  target.oauth = undefined;
   target.accessToken = undefined;
   target.apiKey = undefined;
   target.selectedOrganizationId = undefined;
@@ -2104,7 +2228,7 @@ function profileOutput(profile, activeName) {
   return {
     name: profile.name,
     description: profile.description || '',
-    auth_mode: profile.accessToken ? 'access_token' : profile.apiKey ? 'api_key' : profile.authMode || 'api_key',
+    auth_mode: profile.authMode === 'oauth' ? 'oauth' : profile.accessToken ? 'access_token' : profile.apiKey ? 'api_key' : profile.authMode || 'api_key',
     api_base_url: profile.apiBaseUrl || DEFAULT_API_BASE_URL,
     selected_organization_id: profile.selectedOrganizationId,
     has_api_key: Boolean(profile.apiKey),
@@ -2554,6 +2678,13 @@ function formatBrlFromCents(value) {
   return formatBrl(Number.isFinite(number) ? number / 100 : 0);
 }
 
+function formatJobMoney(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '-';
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency', currency: 'BRL', minimumFractionDigits: 2, maximumFractionDigits: 10,
+  }).format(value / 100);
+}
+
 function humanizeStorageName(value) {
   const raw = String(value || '').trim();
   if (!raw) return { storage: '-', type: '-' };
@@ -2674,11 +2805,18 @@ async function fetchPlansCatalogs(session, flags, type) {
     };
   }
 
+  const optionalJobPayload = request(session, flags, 'GET', '/project/job/plans', { tokenRequired: false })
+    .catch((error) => {
+      if (error instanceof CliError && error.status === 503 && error.apiCode === 'SCHEDULED_JOBS_UNAVAILABLE') {
+        return null;
+      }
+      throw error;
+    });
   const [httpPayload, databasePayload, storagePayload, jobPayload, valkeyPayload] = await Promise.all([
     request(session, flags, 'GET', '/project/plans', { tokenRequired: false }),
     request(session, flags, 'GET', '/project/database/plans', { tokenRequired: false }),
     request(session, flags, 'GET', '/project/storage/plans', { tokenRequired: false }),
-    request(session, flags, 'GET', '/project/job/plans', { tokenRequired: false }),
+    optionalJobPayload,
     request(session, flags, 'GET', '/managed-services/catalog', { tokenRequired: false }),
   ]);
 
@@ -2686,7 +2824,7 @@ async function fetchPlansCatalogs(session, flags, type) {
     http: requireWizardCatalogArray(unwrapData(httpPayload), 'os planos HTTP'),
     database: requireWizardCatalogArray(unwrapData(databasePayload), 'os planos de banco'),
     storage: requireWizardCatalogArray(unwrapData(storagePayload), 'os planos de storage'),
-    job: requireJobPlans(unwrapData(jobPayload)),
+    job: jobPayload === null ? [] : requireJobPlans(unwrapData(jobPayload)),
     valkey: requireValkeyCatalog(unwrapData(valkeyPayload)),
   };
 }
@@ -2713,7 +2851,7 @@ function printJobCatalog(plans) {
   process.stdout.write('Jobs agendados' + String.fromCharCode(10));
   printTable(asArray(plans), [
     { label: 'Plano', value: (plan) => plan.plan || plan.id || '-' },
-    { label: 'Por minuto', value: (plan) => formatBrlFromCents(plan.price_per_minute) },
+    { label: 'Por minuto', value: (plan) => formatJobMoney(plan.price_per_minute) },
     { label: 'Features', value: (plan) => asArray(plan.features).join(', ') || '-' },
   ]);
 }
@@ -3698,6 +3836,9 @@ async function handleProjectCreate(session, flags) {
   const description = wizardPayload?.description || flags.description;
   const plan = wizardPayload?.plan || flags.plan || await prompt('Plano');
   const config = wizardPayload?.config || await parseConfig(flags.config || await prompt('Config JSON ou @arquivo'));
+  if (Array.isArray(config?.custom_domains)) {
+    config.custom_domains = normalizeCustomDomains(config.custom_domains, { primaryDomain: config.domain });
+  }
   const typeProject = normalizeTypeProject(config?.type_project);
   const paymentMode = typeProject === 'job'
     ? flags.paymentMode || 'per_minute'
@@ -3766,7 +3907,10 @@ async function handleProjectInfo(session, flags) {
   const orgId = await resolveOrgId(session, flags);
   const project = await getProject(session, flags, projectId, orgId);
 
-  if (flags.json) return printJson(isJobProject(project) ? sanitizePublicProject(project) : project);
+  if (flags.json) {
+    const publicProject = projectInfoForOutput(project);
+    return printJson(isJobProject(publicProject) ? sanitizePublicProject(publicProject) : publicProject);
+  }
   printProject({ ...project, id: projectId });
 }
 
@@ -3845,7 +3989,7 @@ function formatJobRunDuration(durationSeconds) {
 function formatJobRunAmount(run) {
   const amount = run.amount;
   if (amount === undefined || amount === null) return '-';
-  return formatBrlFromCents(amount);
+  return formatJobMoney(amount);
 }
 
 function printJobRuns(data) {
@@ -3879,6 +4023,7 @@ function sanitizeJobRunLogs(data) {
   if (Array.isArray(data)) return sanitizeJobRunLogEntries(data);
   if (!data || typeof data !== 'object') return data;
   const output = {};
+  if (data.run !== undefined) output.run = sanitizeJobRun(data.run);
   for (const key of ['logs', 'next_cursor', 'truncated', 'finished', 'status']) {
     if (data[key] !== undefined) output[key] = key === 'logs' ? sanitizeJobRunLogEntries(data[key]) : data[key];
   }
@@ -4586,6 +4731,17 @@ async function handleValkeyCredentialStatus(session, flags) {
     `/managed-services/${projectId}/credential-rotations/${flags.operation}`,
     { orgId },
   ));
+  if (flags.connectionFile) {
+    await writeValkeyConnectionFile(String(flags.connectionFile), data.connection_string);
+    if (flags.json) return printJson({
+      operation_id: data.operation_id,
+      state: data.state,
+      connection_saved: true,
+      connection_file: String(flags.connectionFile),
+    });
+    process.stdout.write(`Credencial concluida e salva em ${flags.connectionFile}.\n`);
+    return;
+  }
   if (flags.json) return printJson(data);
   printValkeyRotation(data);
 }
@@ -4608,6 +4764,17 @@ async function handleValkeyCredentialRotate(session, flags) {
 
   if (flags.wait) {
     const completed = await waitForValkeyRotation(session, flags, projectId, accepted.operation_id, orgId);
+    if (flags.connectionFile) {
+      await writeValkeyConnectionFile(String(flags.connectionFile), completed.connection_string);
+      if (flags.json) return printJson({
+        operation_id: completed.operation_id,
+        state: completed.state,
+        connection_saved: true,
+        connection_file: String(flags.connectionFile),
+      });
+      process.stdout.write(`Credencial concluida e salva em ${flags.connectionFile}.\n`);
+      return;
+    }
     if (flags.json) return printJson(completed);
     printValkeyRotation(completed);
     return;
