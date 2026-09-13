@@ -80,6 +80,7 @@ const KNOWN_FLAG_NAMES = new Set([
   'value',
   'view',
   'wait',
+  'yes',
 ]);
 const ALLOWED_PLAN_VALUES = new Set([
   'free',
@@ -175,6 +176,7 @@ Usage:
   zenifra profile edit <name> [--description <text>] [--api-base <url>] [--json]
   zenifra profile use <name> [--json]
   zenifra profile remove <name> [--json]
+  zenifra whoami [--json]
   zenifra orgs [--json]
   zenifra org set [--org <id>]
   zenifra plans [--type <all|http|database|storage|valkey>] [--json]
@@ -186,6 +188,9 @@ Usage:
   zenifra valkey credentials rotate --project <id> [--idempotency-key <key>] [--wait] [--interval <seconds>] [--timeout <seconds>] [--json]
   zenifra valkey credentials status --project <id> --operation <id> [--json]
   zenifra project info --project <id> [--json]
+  zenifra project stop --project <id> [--json]
+  zenifra project resume --project <id> [--json]
+  zenifra project delete --project <id> --yes [--json]
   zenifra project url --project <id> [--json]
   zenifra project logs --project <id> [--instance <id>] [--json]
   zenifra project metrics --project <id> [--instance <id>] [--json]
@@ -246,7 +251,7 @@ const HELP_SPECS = [
     ],
     examples: ['zenifra auth login', 'zenifra auth login --profile staging --code 123456'],
     output: 'Login realizado com sucesso.',
-    notes: ['Exige email, senha e, quando habilitado, codigo de desafio.'],
+    notes: ['Exige email, senha e, quando habilitado, codigo de desafio.', 'Em um terminal sem navegador, use --oauth --no-browser e abra o endereco em uma sessao grafica da mesma maquina.'],
   },
   {
     command: 'auth api-key',
@@ -346,6 +351,16 @@ const HELP_SPECS = [
     jsonOutput: '[{"_id":"507f1f77bcf86cd799439011","name":"Minha org","role":"owner","status":"active"}]',
   },
   {
+    command: 'whoami',
+    usage: 'zenifra whoami [--json]',
+    description: 'Mostra o perfil ativo e a organizacao selecionada para os proximos comandos.',
+    flags: ['--json  Imprime a identificacao em JSON.'],
+    examples: ['zenifra whoami', 'zenifra whoami --json'],
+    output: 'Perfil: staging\nAPI base: https://api.zenifra.com/v1\nAutenticacao: access_token\nOrganizacao: Minha organizacao (507f1f77bcf86cd799439011)',
+    jsonOutput: '{"profile":"staging","api_base_url":"https://api.zenifra.com/v1","authentication_mode":"access_token","selected_organization_id":"507f1f77bcf86cd799439011","organization_name":"Minha organizacao"}',
+    notes: ['Nenhuma credencial e exibida. Quando nao houver organizacao selecionada, use "zenifra org set" ou informe --org no comando.'],
+  },
+  {
     command: 'org set',
     usage: 'zenifra org set [--org <id>]',
     description: 'Seleciona a organizacao ativa para comandos com sessao de usuario.',
@@ -426,17 +441,17 @@ const HELP_SPECS = [
     description: 'Cria um projeto via wizard interativo ou via payload de configuracao JSON.',
     flags: ['--name <name>             Nome do projeto.', '--plan <plan>             Plano do projeto.', '--payment-mode <mode>     Modo de pagamento.', '--config <json|@file>     JSON inline ou arquivo.', '--description <text>      Descricao opcional.', '--idempotency-key <key>   Chave para repetir a mesma criacao com seguranca.', '--json                    Imprime a resposta em JSON.'],
     examples: ['zenifra create project', 'zenifra create project --name api-web --plan free --payment-mode hourly --config @examples/http-project.json'],
-    output: 'Campo    Valor\n-------  --------------------------------------\nProjeto  507f1f77bcf86cd799439012\nDominio  https://api-web.client.zenifra.com',
+    output: 'Campo    Valor\n-------  --------------------------------------\nProjeto  507f1f77bcf86cd799439012\nDominio  https://api-web.clients.zenifra.com',
     jsonOutput: '{"status":"success","data":{"id":"507f1f77bcf86cd799439012","name":"api-web"}}',
     notes: ['Sem flags de criacao, a CLI abre um wizard guiado com docs, exemplos e indicacao de campos obrigatorios.'],
   },
   {
     command: 'project',
-    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project metrics capabilities --project <id> [--json]\n  zenifra project healthcheck get --project <id> [--json]\n  zenifra project healthcheck set --project <id> --path /health [--json]\n  zenifra project healthcheck disable --project <id> [--json]\n  zenifra project healthcheck failures --project <id> [--page <n>] [--limit <n>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project autoscaling --project <id> [--json]\n  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]\n  zenifra project autoscaling disable --project <id> [--json]\n  zenifra project autoscaling events --project <id> [--direction <scale_up|scale_down>] [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project billing usage --project <id> [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
+    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project stop --project <id> [--json]\n  zenifra project resume --project <id> [--json]\n  zenifra project delete --project <id> --yes [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project metrics capabilities --project <id> [--json]\n  zenifra project healthcheck get --project <id> [--json]\n  zenifra project healthcheck set --project <id> --path /health [--json]\n  zenifra project healthcheck disable --project <id> [--json]\n  zenifra project healthcheck failures --project <id> [--page <n>] [--limit <n>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project autoscaling --project <id> [--json]\n  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]\n  zenifra project autoscaling disable --project <id> [--json]\n  zenifra project autoscaling events --project <id> [--direction <scale_up|scale_down>] [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project billing usage --project <id> [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
     description: 'Agrupa comandos operacionais e de introspecao sobre um projeto especifico.',
     examples: ['zenifra project', 'zenifra project info --project proj_1', 'zenifra project env add --project proj_1 --name NODE_ENV --value production'],
     output: 'Zenifra CLI - project',
-    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, url, logs, metrics, capabilities, network, image, exposure, autoscaling, billing, envs e instances.'],
+    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, stop, resume, delete, url, logs, metrics, capabilities, network, image, exposure, autoscaling, billing, envs e instances.'],
   },
   {
     command: 'project info',
@@ -444,8 +459,36 @@ const HELP_SPECS = [
     description: 'Mostra dados principais de um projeto.',
     flags: ['--project <id>  ID do projeto.', '--json          Imprime a resposta em JSON.'],
     examples: ['zenifra project info --project 507f1f77bcf86cd799439012'],
-    output: 'Nome: api-web\nStatus: running\nURL: https://api-web.client.zenifra.com\nInstancias: 2',
-    jsonOutput: '{"name":"api-web","status":"running","domain":"api-web.client.zenifra.com","instances":2}',
+    output: 'Nome: api-web\nStatus: running\nURL: https://api-web.clients.zenifra.com\nInstancias: 2',
+    jsonOutput: '{"name":"api-web","status":"running","domain":"api-web.clients.zenifra.com","instances":2}',
+  },
+  {
+    command: 'project stop',
+    usage: 'zenifra project stop --project <id> [--json]',
+    description: 'Para um projeto e mostra o estado confirmado em seguida.',
+    flags: ['--project <id>  ID do projeto.', '--json          Imprime o estado confirmado em JSON.'],
+    examples: ['zenifra project stop --project 507f1f77bcf86cd799439012'],
+    output: 'Nome: api-web\nStatus: stopped',
+    jsonOutput: '{"id":"507f1f77bcf86cd799439012","status":"stopped"}',
+  },
+  {
+    command: 'project resume',
+    usage: 'zenifra project resume --project <id> [--json]',
+    description: 'Retoma um projeto e mostra o estado confirmado em seguida.',
+    flags: ['--project <id>  ID do projeto.', '--json          Imprime o estado confirmado em JSON.'],
+    examples: ['zenifra project resume --project 507f1f77bcf86cd799439012'],
+    output: 'Nome: api-web\nStatus: running',
+    jsonOutput: '{"id":"507f1f77bcf86cd799439012","status":"running"}',
+  },
+  {
+    command: 'project delete',
+    usage: 'zenifra project delete --project <id> --yes [--json]',
+    description: 'Remove um projeto quando a confirmacao explicita e informada.',
+    flags: ['--project <id>  ID do projeto.', '--yes           Confirma a remocao.', '--json          Imprime a resposta da API em JSON.'],
+    examples: ['zenifra project delete --project 507f1f77bcf86cd799439012 --yes'],
+    output: 'Projeto removido.',
+    jsonOutput: '{"status":"success","message":"project removed"}',
+    notes: ['Sem --yes, a CLI nao envia nenhuma solicitacao de remocao.'],
   },
   {
     command: 'project url',
@@ -453,8 +496,8 @@ const HELP_SPECS = [
     description: 'Imprime a URL publica principal do projeto.',
     flags: ['--project <id>  ID do projeto.', '--json          Inclui dominio e custom domains em JSON.'],
     examples: ['zenifra project url --project 507f1f77bcf86cd799439012'],
-    output: 'https://api-web.client.zenifra.com',
-    jsonOutput: '{"project_id":"507f1f77bcf86cd799439012","url":"https://api-web.client.zenifra.com","domain":"api-web.client.zenifra.com","custom_domains":[]}',
+    output: 'https://api-web.clients.zenifra.com',
+    jsonOutput: '{"project_id":"507f1f77bcf86cd799439012","url":"https://api-web.clients.zenifra.com","domain":"api-web.clients.zenifra.com","custom_domains":[]}',
   },
   {
     command: 'project logs',
@@ -2264,6 +2307,38 @@ async function handleOrgs(session, flags) {
   ]);
 }
 
+async function handleWhoami(session, flags) {
+  if (!getProfileName(session)) {
+    throw new CliError('Nenhum perfil ativo configurado. Crie um perfil com "zenifra profile add" ou autentique com "zenifra auth login".');
+  }
+  const profile = profileOutput(session, getStore(session).activeProfile);
+  const effectiveCredential = resolveCredential(session);
+  const usingApiKey = effectiveCredential?.type === 'api_key';
+  const selectedOrganizationId = usingApiKey ? null : profile.selected_organization_id || null;
+  let organizationName = null;
+
+  if (selectedOrganizationId && !hasApiKeyCredential(session) && session.accessToken) {
+    const organizations = await getOrganizations(session, flags);
+    organizationName = organizations.find((organization) => idOf(organization) === selectedOrganizationId)?.name
+      || organizations.find((organization) => idOf(organization) === selectedOrganizationId)?.organization?.name
+      || null;
+  }
+
+  const output = {
+    profile: profile.name,
+    api_base_url: apiBaseUrl(session, flags),
+    authentication_mode: usingApiKey ? 'api_key' : profile.auth_mode,
+    selected_organization_id: selectedOrganizationId,
+    organization_name: organizationName,
+  };
+
+  if (flags.json) return printJson(output);
+  process.stdout.write(`Perfil: ${output.profile}\n`);
+  process.stdout.write(`API base: ${output.api_base_url}\n`);
+  process.stdout.write(`Autenticacao: ${output.authentication_mode}\n`);
+  process.stdout.write(`Organizacao: ${output.organization_name ? `${output.organization_name} (${selectedOrganizationId})` : selectedOrganizationId || 'nao selecionada'}\n`);
+}
+
 async function handleOrgSet(session, flags) {
   requireUserSession(session, 'Selecionar organizacao');
 
@@ -2691,6 +2766,22 @@ function printValkeyCatalog(catalog, profileFilter) {
   });
 }
 
+const HTTP_CAPABILITY_LABELS = {
+  logs: 'logs',
+  metrics: 'metricas',
+  healthcheck: 'verificacao de saude',
+  autoscaling: 'auto-scaling',
+  custom_subdomain: 'subdominio personalizado',
+  network_access: 'acesso de rede',
+};
+
+function formatPlanCapabilities(capabilities) {
+  const available = Object.entries(HTTP_CAPABILITY_LABELS)
+    .filter(([key]) => capabilities?.[key] === true)
+    .map(([, label]) => label);
+  return available.join(', ') || '-';
+}
+
 function printPlansCatalogs(payload, type) {
   if (type === 'all' || type === 'http') {
     process.stdout.write('HTTP\n');
@@ -2700,6 +2791,7 @@ function printPlansCatalogs(payload, type) {
       { label: 'Mes', value: (plan) => formatBrlFromCents(plan.prices?.monthly) },
       { label: 'Ano', value: (plan) => formatBrlFromCents(plan.prices?.yearly) },
       { label: 'Recursos', value: (plan) => asArray(plan.features).join(', ') || '-' },
+      { label: 'Capacidades', value: (plan) => formatPlanCapabilities(plan.capabilities) },
     ]);
   }
 
@@ -3505,6 +3597,7 @@ async function handleProjectCreate(session, flags) {
   const plan = wizardPayload?.plan || flags.plan || await prompt('Plano');
   const paymentMode = wizardPayload?.payment_mode || flags.paymentMode || await prompt('Modo de pagamento');
   const config = wizardPayload?.config || await parseConfig(flags.config || await prompt('Config JSON ou @arquivo'));
+  const idempotencyKey = flags.idempotencyKey === undefined ? undefined : validateIdempotencyKey(flags.idempotencyKey);
   if (Array.isArray(config?.custom_domains)) {
     config.custom_domains = normalizeCustomDomains(config.custom_domains, { primaryDomain: config.domain });
   }
@@ -3512,14 +3605,11 @@ async function handleProjectCreate(session, flags) {
   const valkeyCatalog = typeProject === 'valkey'
     ? requireValkeyCatalog(unwrapData(await request(session, flags, 'GET', '/managed-services/catalog')))
     : undefined;
-  if (flags.idempotencyKey !== undefined && !/^[A-Za-z0-9._-]{16,200}$/.test(String(flags.idempotencyKey))) {
-    throw new CliError('--idempotency-key deve ter entre 16 e 200 caracteres: letras, numeros, ponto, underscore ou hifen.');
-  }
   const validated = validateCreateInput({ plan, paymentMode, config, valkeyCatalog });
 
   const payload = await request(session, flags, 'POST', '/project', {
     orgId,
-    headers: flags.idempotencyKey === undefined ? {} : { 'Idempotency-Key': String(flags.idempotencyKey) },
+    headers: idempotencyKey === undefined ? {} : { 'Idempotency-Key': idempotencyKey },
     body: {
       name,
       ...(description ? { description: String(description) } : {}),
@@ -3573,6 +3663,33 @@ async function handleProjectInfo(session, flags) {
 
   if (flags.json) return printJson(projectInfoForOutput(project));
   printProject({ ...project, id: projectId });
+}
+
+async function handleProjectLifecycleMutation(session, flags, action) {
+  const commandKey = `project ${action}`;
+  const projectId = requireProjectId(flags, commandKey);
+  if (!projectId) return;
+
+  const orgId = await resolveOrgId(session, flags);
+  await request(session, flags, 'PATCH', `/project/${projectId}/${action}`, { orgId });
+  const project = await getProject(session, flags, projectId, orgId);
+
+  if (flags.json) return printJson(projectInfoForOutput(project));
+  printProject({ ...project, id: projectId });
+}
+
+async function handleProjectDelete(session, flags) {
+  const projectId = requireProjectId(flags, 'project delete');
+  if (!projectId) return;
+  if (flags.yes !== true) {
+    throw new CliError('A remocao exige --yes. Nenhuma solicitacao foi enviada.');
+  }
+
+  const orgId = await resolveOrgId(session, flags);
+  const payload = await request(session, flags, 'DELETE', `/project/${projectId}`, { orgId });
+
+  if (flags.json) return printJson(payload);
+  process.stdout.write('Projeto removido.\n');
 }
 
 async function handleProjectUrl(session, flags) {
@@ -4262,10 +4379,7 @@ async function handleValkeyCredentialStatus(session, flags) {
 async function handleValkeyCredentialRotate(session, flags) {
   const projectId = requireProjectId(flags, 'valkey credentials rotate');
   if (!projectId) return;
-  const idempotencyKey = String(flags.idempotencyKey || randomUUID());
-  if (!/^[A-Za-z0-9._-]{16,200}$/.test(idempotencyKey)) {
-    throw new CliError('--idempotency-key deve ter entre 16 e 200 caracteres: letras, numeros, ponto, underscore ou hifen.');
-  }
+  const idempotencyKey = validateIdempotencyKey(flags.idempotencyKey === undefined ? randomUUID() : flags.idempotencyKey);
   const orgId = await resolveOrgId(session, flags);
   const acceptedPayload = await request(session, flags, 'PATCH', `/managed-services/${projectId}/credentials`, {
     orgId,
@@ -4376,8 +4490,25 @@ function parseSecondsOption(value, flagName, { defaultValue, min }) {
   return parsed;
 }
 
+function validateIdempotencyKey(value) {
+  const key = String(value);
+  if (key.length < 16 || key.length > 200) {
+    throw new CliError('--idempotency-key deve ter entre 16 e 200 caracteres.');
+  }
+
+  const invalidIndex = Array.from(key).findIndex((character) => !/[A-Za-z0-9._-]/.test(character));
+  if (invalidIndex !== -1) {
+    throw new CliError(`--idempotency-key contem caractere invalido na posicao ${invalidIndex + 1}. Use apenas letras, numeros, ponto, underscore ou hifen.`);
+  }
+
+  return key;
+}
+
 function printBuildLogs(logs) {
   for (const log of asArray(logs)) {
+    if (log?.source === 'summary') {
+      process.stdout.write('Este build possui apenas um resumo; eventos detalhados nao estavam disponiveis.\n');
+    }
     process.stdout.write(`${buildLogLineOf(log)}\n`)
   }
 }
@@ -4521,6 +4652,7 @@ async function main() {
     if (command === 'plans') return handlePlans(session, flags);
     if (command === 'create' && subcommand === 'project') return handleProjectCreate(session, flags);
     if (command === 'orgs') return handleOrgs(session, flags);
+    if (command === 'whoami') return handleWhoami(session, flags);
     if (command === 'org' && subcommand === 'set') return handleOrgSet(session, flags);
     if (command === 'projects') return handleProjects(session, flags);
     if (command === 'valkey' && subcommand === 'credentials' && positional.length === 2) {
@@ -4540,6 +4672,9 @@ async function main() {
     if (command === 'project' && subcommand === 'healthcheck' && positional[2] === 'disable') return handleProjectHealthcheckDisable(session, flags);
     if (command === 'project' && subcommand === 'healthcheck' && positional[2] === 'failures') return handleProjectHealthcheckFailures(session, flags);
     if (command === 'project' && subcommand === 'info') return handleProjectInfo(session, flags);
+    if (command === 'project' && subcommand === 'stop') return handleProjectLifecycleMutation(session, flags, 'stop');
+    if (command === 'project' && subcommand === 'resume') return handleProjectLifecycleMutation(session, flags, 'resume');
+    if (command === 'project' && subcommand === 'delete') return handleProjectDelete(session, flags);
     if (command === 'project' && subcommand === 'url') return handleProjectUrl(session, flags);
     if (command === 'project' && subcommand === 'logs') return handleProjectLogs(session, flags);
     if (command === 'project' && subcommand === 'metrics' && positional[2] === 'capabilities') return handleProjectMetricsCapabilities(session, flags);

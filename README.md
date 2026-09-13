@@ -47,6 +47,7 @@ zenifra profile add --name staging --description Homologacao --api-base https://
 zenifra profile use staging
 zenifra profile edit staging --description "Homologacao interna"
 zenifra profile remove staging
+zenifra whoami
 zenifra orgs
 zenifra org set
 zenifra plans
@@ -65,6 +66,9 @@ zenifra create project --name <name> --plan queue-free --payment-mode hourly --c
 zenifra projects --type http --page 1 --limit 15
 zenifra projects --type valkey --page 1 --limit 15
 zenifra project info --project <project-id>
+zenifra project stop --project <project-id>
+zenifra project resume --project <project-id>
+zenifra project delete --project <project-id> --yes
 zenifra valkey status --project <project-id>
 zenifra valkey connection --project <project-id>
 zenifra valkey credentials rotate --project <project-id> --wait
@@ -148,6 +152,8 @@ Fluxos:
 - `zenifra deploy`: dispara o build/deploy GitHub e retorna o `build_id`
 - `zenifra deploy watch`: usa esse `build_id` para acompanhar o build em tempo real e imprimir os logs incrementais ate o fim
 
+Alguns builds antigos podem disponibilizar somente um resumo terminal. Nesse caso, a saida legivel avisa que eventos detalhados nao estavam disponiveis; `--json` preserva a resposta recebida da API.
+
 Antes de uma mutacao, confirme o perfil, a API e a organizacao ativa. Para criacoes, confirme tambem o catalogo, plano, pagamento, exposicao, dominio, origem do deploy, porta, instancias e ambientes. Depois, leia o projeto de volta e acompanhe o build/deployment ate um estado terminal.
 
 O dominio principal e um dominio personalizado sao campos diferentes. Nao repita o dominio principal em `config.custom_domains`; depois de adicionar um dominio personalizado, valide DNS/TLS e leia a URL final antes de considerar a operacao concluida.
@@ -174,6 +180,7 @@ Para executar a copia local deste repositorio, substitua `zenifra` por
 
 - `--read-only` solicita somente leitura; as permissoes da sua organizacao continuam valendo.
 - `--no-browser` mostra o endereco para abrir manualmente no navegador da mesma maquina.
+- Em um terminal sem navegador, use `--no-browser` e abra o endereco em uma sessao grafica da mesma maquina. O retorno de autenticacao precisa ser concluido nessa maquina.
 - O retorno usa uma porta local temporaria em `127.0.0.1`; nao precisa cadastrar uma porta fixa.
 - O login aguarda ate tres minutos. Use `Ctrl+C` para cancelar.
 - Os tokens ficam no perfil local privado e sao renovados automaticamente antes de expirar.
@@ -212,6 +219,8 @@ zenifra plans --type storage --json
 ```
 
 `zenifra plans` funciona sem autenticacao e mostra os catalogos publicos de HTTP, banco, armazenamento e Valkey. Use `--type valkey` para consultar Key Value, Cache e Queue.
+
+Para planos HTTP, a saida legivel tambem mostra as capacidades disponiveis, como logs, metricas, verificacao de saude, auto-scaling, subdominio personalizado e acesso de rede. Use `--json` quando precisar consumir o catalogo sem formatacao.
 
 Valores de variaveis de ambiente sao mascarados por padrao, inclusive em `--json`.
 Use `--show-values` apenas quando precisar inspecionar os valores completos.
