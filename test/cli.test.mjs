@@ -353,6 +353,9 @@ test('commands with missing required arguments print command-specific help inste
     { args: ['deployments'], title: 'Zenifra CLI - deployments' },
     { args: ['builds', 'logs'], title: 'Zenifra CLI - builds logs' },
     { args: ['project', 'info'], title: 'Zenifra CLI - project info' },
+    { args: ['project', 'stop'], title: 'Zenifra CLI - project stop' },
+    { args: ['project', 'resume'], title: 'Zenifra CLI - project resume' },
+    { args: ['project', 'delete'], title: 'Zenifra CLI - project delete' },
     { args: ['project', 'url'], title: 'Zenifra CLI - project url' },
     { args: ['project', 'logs'], title: 'Zenifra CLI - project logs' },
     { args: ['project', 'metrics'], title: 'Zenifra CLI - project metrics' },
@@ -450,12 +453,16 @@ test('every routed command has command-specific help', async () => {
     ['profile', 'remove'],
     ['org'],
     ['orgs'],
+    ['whoami'],
     ['plans'],
     ['org', 'set'],
     ['project'],
     ['projects'],
     ['create', 'project'],
     ['project', 'info'],
+    ['project', 'stop'],
+    ['project', 'resume'],
+    ['project', 'delete'],
     ['project', 'url'],
     ['project', 'logs'],
     ['project', 'metrics'],
@@ -3523,4 +3530,285 @@ test('project healthcheck validates path and pagination before requesting the AP
       await rm(configDir, { recursive: true, force: true });
     }
   }
+});
+
+test('whoami identifies the active profile and selected organization without exposing credentials', async () => {
+  await withCliServer(async (req, res) => {
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/organizations');
+    assert.equal(req.headers.authorization, 'Bearer user-access-token');
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: [{ _id: 'org_123', name: 'Minha organizacao' }],
+    });
+  }, async ({ apiBase, configDir }) => {
+    await writeProfiles(configDir, {
+      version: 1,
+      activeProfile: 'staging',
+      profiles: {
+        staging: {
+          name: 'staging',
+          authMode: 'access_token',
+          apiBaseUrl: apiBase,
+          accessToken: 'user-access-token',
+          selectedOrganizationId: 'org_123',
+        },
+      },
+    });
+
+    const text = await runCli(['whoami'], { apiBase, configDir, envApiKey: null });
+    const json = await runCli(['whoami', '--json'], { apiBase, configDir, envApiKey: null });
+
+    assert.equal(text.code, 0, text.stderr);
+    assert.match(text.stdout, /Perfil: staging/);
+    assert.match(text.stdout, /Organizacao: Minha organizacao \(org_123\)/);
+    assert.doesNotMatch(text.stdout, /user-access-token|api_key|credential/i);
+    assert.equal(json.code, 0, json.stderr);
+    assert.deepEqual(JSON.parse(json.stdout), {
+      profile: 'staging',
+      api_base_url: apiBase,
+      authentication_mode: 'access_token',
+      selected_organization_id: 'org_123',
+      organization_name: 'Minha organizacao',
+    });
+    assert.doesNotMatch(json.stdout, /user-access-token/);
+  });
+});
+
+test('whoami clearly reports an unset organization without making an organization request', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    await writeProfiles(configDir, {
+      version: 1,
+      activeProfile: 'staging',
+      profiles: {
+        staging: {
+          name: 'staging',
+          authMode: 'api_key',
+          apiBaseUrl: 'https://api.example.test/v1',
+          apiKey,
+        },
+      },
+    });
+
+    const result = await runCli(['whoami'], { configDir, envApiKey: null });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Perfil: staging/);
+    assert.match(result.stdout, /Organizacao: nao selecionada/);
+    assert.doesNotMatch(result.stdout, new RegExp(apiKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('project stop and resume read the project state after one direct mutation', async () => {
+  const calls = [];
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    calls.push({ method: req.method, url: req.url });
+    if (req.method === 'PATCH' && req.url === '/v1/project/proj_123/stop') {
+      jsonResponse(res, 200, { status: 'success', data: { status: 'stopped' } });
+      return;
+    }
+    if (req.method === 'PATCH' && req.url === '/v1/project/proj_123/resume') {
+      jsonResponse(res, 200, { status: 'success', data: { status: 'running' } });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/project/proj_123') {
+      const status = calls.at(-2)?.url.endsWith('/stop') ? 'stopped' : 'running';
+      jsonResponse(res, 200, { status: 'success', data: { id: 'proj_123', name: 'api-web', status } });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+  }, async ({ apiBase, configDir }) => {
+    const stopped = await runCli(['project', 'stop', '--project', 'proj_123'], { apiBase, configDir });
+    const resumed = await runCli(['project', 'resume', '--project', 'proj_123', '--json'], { apiBase, configDir });
+
+    assert.equal(stopped.code, 0, stopped.stderr);
+    assert.match(stopped.stdout, /Status: stopped/);
+    assert.equal(resumed.code, 0, resumed.stderr);
+    assert.deepEqual(JSON.parse(resumed.stdout), { id: 'proj_123', name: 'api-web', status: 'running' });
+  });
+
+  assert.deepEqual(calls, [
+    { method: 'PATCH', url: '/v1/project/proj_123/stop' },
+    { method: 'GET', url: '/v1/project/proj_123' },
+    { method: 'PATCH', url: '/v1/project/proj_123/resume' },
+    { method: 'GET', url: '/v1/project/proj_123' },
+  ]);
+});
+
+test('project delete requires --yes before making the single delete request', async () => {
+  let deleteCalls = 0;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'DELETE');
+    assert.equal(req.url, '/v1/project/proj_123');
+    deleteCalls += 1;
+    jsonResponse(res, 200, { status: 'success', message: 'project removed' });
+  }, async ({ apiBase, configDir }) => {
+    const missingConfirmation = await runCli(['project', 'delete', '--project', 'proj_123'], { apiBase, configDir });
+    assert.equal(missingConfirmation.code, 1);
+    assert.match(missingConfirmation.stderr, /--yes/);
+    assert.equal(deleteCalls, 0);
+
+    const confirmed = await runCli(['project', 'delete', '--project', 'proj_123', '--yes', '--json'], { apiBase, configDir });
+    assert.equal(confirmed.code, 0, confirmed.stderr);
+    assert.deepEqual(JSON.parse(confirmed.stdout), { status: 'success', message: 'project removed' });
+    assert.equal(deleteCalls, 1);
+  });
+});
+
+test('plans render HTTP capabilities for people while JSON preserves the API payload', async () => {
+  const plans = [{
+    plan: 'basic',
+    prices: { hourly: 0, monthly: 0, yearly: 0 },
+    features: ['2 instancias'],
+    capabilities: { logs: true, metrics: true, healthcheck: false, autoscaling: false, custom_subdomain: true, network_access: false },
+  }];
+  await withCliServer(async (req, res) => {
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/plans');
+    jsonResponse(res, 200, { status: 'success', data: plans });
+  }, async ({ apiBase, configDir }) => {
+    const text = await runCli(['plans', '--type', 'http'], { apiBase, configDir, envApiKey: null });
+    const json = await runCli(['plans', '--type', 'http', '--json'], { apiBase, configDir, envApiKey: null });
+
+    assert.equal(text.code, 0, text.stderr);
+    assert.match(text.stdout, /Capacidades/);
+    assert.match(text.stdout, /logs, metricas, subdominio personalizado/);
+    assert.equal(json.code, 0, json.stderr);
+    assert.deepEqual(JSON.parse(json.stdout).http, plans);
+  });
+});
+
+test('build logs explain when only a summary was available while JSON remains unchanged', async () => {
+  const payload = {
+    logs: [{ sequence: 1, timestamp: '2026-09-12T12:00:00.000Z', step: 'build', message: 'Publication finished.', source: 'summary' }],
+    next_cursor: 1,
+    status: 'success',
+    finished: true,
+  };
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/proj_123/github/builds/build_123/logs?cursor=0&limit=200');
+    jsonResponse(res, 200, { status: 'success', data: payload });
+  }, async ({ apiBase, configDir }) => {
+    const text = await runCli(['builds', 'logs', '--project', 'proj_123', '--build', 'build_123'], { apiBase, configDir });
+    const json = await runCli(['builds', 'logs', '--project', 'proj_123', '--build', 'build_123', '--json'], { apiBase, configDir });
+
+    assert.equal(text.code, 0, text.stderr);
+    assert.match(text.stdout, /resumo/);
+    assert.match(text.stdout, /eventos detalhados.*nao estavam disponiveis/i);
+    assert.equal(json.code, 0, json.stderr);
+    assert.deepEqual(JSON.parse(json.stdout), payload);
+  });
+});
+
+test('idempotency key length and character errors are classified locally without sending mutations', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const length = await runCli([
+      'create', 'project', '--name', 'api-web', '--plan', 'free', '--payment-mode', 'hourly',
+      '--config', '{"type_project":"http","exposure":"public"}', '--idempotency-key', 'short',
+    ], { configDir });
+    const character = await runCli([
+      'valkey', 'credentials', 'rotate', '--project', 'proj_123', '--idempotency-key', 'valid-key-value!001',
+    ], { configDir });
+
+    assert.equal(length.code, 1);
+    assert.match(length.stderr, /entre 16 e 200 caracteres/);
+    assert.equal(character.code, 1);
+    assert.match(character.stderr, /caractere invalido na posicao 16/i);
+    assert.doesNotMatch(character.stderr, /valid-key-value!001/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('whoami reports API-key environment override as the effective authentication context', async () => {
+  await withCliServer(async (_req, _res) => {
+    throw new Error('whoami must not request organizations when an API key overrides the profile');
+  }, async ({ apiBase, configDir, requests }) => {
+    await writeProfiles(configDir, {
+      version: 1,
+      activeProfile: 'staging',
+      profiles: {
+        staging: {
+          name: 'staging',
+          authMode: 'access_token',
+          apiBaseUrl: apiBase,
+          accessToken: 'saved-user-token',
+          selectedOrganizationId: 'org_saved_profile',
+        },
+      },
+    });
+
+    const result = await runCli(['whoami', '--json'], { apiBase, configDir, envApiKey: apiKey });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      profile: 'staging',
+      api_base_url: apiBase,
+      authentication_mode: 'api_key',
+      selected_organization_id: null,
+      organization_name: null,
+    });
+    assert.doesNotMatch(result.stdout, /saved-user-token|org_saved_profile/);
+    assert.equal(requests.length, 0);
+  });
+});
+
+test('project lifecycle JSON readback masks project secrets like project info', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'PATCH' && req.url === '/v1/project/proj_secret/stop') {
+      jsonResponse(res, 200, { status: 'success' });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/project/proj_secret') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: {
+          id: 'proj_secret',
+          status: 'stopped',
+          api_key: 'project-api-key-secret',
+          connection_string: 'connection-secret',
+          envs: [{ name: 'ACCESS_TOKEN', value: 'environment-secret' }],
+        },
+      });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['project', 'stop', '--project', 'proj_secret', '--json'], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      id: 'proj_secret',
+      status: 'stopped',
+      api_key: '********',
+      connection_string: '********',
+      envs: [{ name: 'ACCESS_TOKEN', value: '********' }],
+    });
+    assert.doesNotMatch(result.stdout, /project-api-key-secret|connection-secret|environment-secret/);
+  });
+});
+
+test('Valkey rotation rejects an explicitly empty idempotency key without generating a replacement', async () => {
+  let requests = 0;
+  await withCliServer(async (_req, res) => {
+    requests += 1;
+    jsonResponse(res, 202, { status: 'accepted', data: { operation_id: 'rotation_should_not_exist' } });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'valkey', 'credentials', 'rotate', '--project', 'proj_123', '--idempotency-key=',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /entre 16 e 200 caracteres/);
+    assert.equal(requests, 0);
+  });
 });
