@@ -3317,6 +3317,18 @@ function formatBrlFromCents(value) {
   return formatBrl(Number.isFinite(number) ? number / 100 : 0);
 }
 
+function formatJobBrlFromCents(value) {
+  if (value === undefined || value === null || value === '') return '-';
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '-';
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 3,
+  }).format(number / 100);
+}
+
 function humanizeStorageName(value) {
   const raw = String(value || '').trim();
   if (!raw) return { storage: '-', type: '-' };
@@ -3492,7 +3504,7 @@ function printJobCatalog(plans) {
   process.stdout.write('Jobs agendados' + String.fromCharCode(10));
   printTable(asArray(plans), [
     { label: 'Plano', value: (plan) => plan.plan || plan.id || '-' },
-    { label: 'Por minuto', value: (plan) => formatBrlFromCents(plan.price_per_minute) },
+    { label: 'Por minuto', value: (plan) => formatJobBrlFromCents(plan.price_per_minute) },
     { label: 'Features', value: (plan) => asArray(plan.features).join(', ') || '-' },
   ]);
 }
@@ -4913,7 +4925,7 @@ function formatJobRunDuration(durationSeconds) {
 function formatJobRunAmount(run) {
   const amount = run.amount;
   if (amount === undefined || amount === null) return '-';
-  return formatBrlFromCents(amount);
+  return formatJobBrlFromCents(amount);
 }
 
 function printJobRuns(data) {
