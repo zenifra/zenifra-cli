@@ -4141,6 +4141,88 @@ function sanitizeJobRunLogs(data) {
   return output;
 }
 
+function skipTerminalString(text, index) {
+  while (index < text.length) {
+    const code = text.charCodeAt(index);
+    if (code === 0x07 || code === 0x9c) return index + 1;
+    if (code === 0x1b && text.charCodeAt(index + 1) === 0x5c) return index + 2;
+    index += 1;
+  }
+  return index;
+}
+
+function skipTerminalCsi(text, index) {
+  while (index < text.length) {
+    const code = text.charCodeAt(index);
+    index += 1;
+    if (code >= 0x40 && code <= 0x7e) break;
+  }
+  return index;
+}
+
+function skipTerminalEscape(text, index) {
+  const next = text.charCodeAt(index);
+  if (next >= 0x30 && next <= 0x7e) return index + 1;
+  while (index < text.length && text.charCodeAt(index) >= 0x20 && text.charCodeAt(index) <= 0x2f) {
+    index += 1;
+  }
+  if (index < text.length && text.charCodeAt(index) >= 0x30 && text.charCodeAt(index) <= 0x7e) {
+    return index + 1;
+  }
+  return index;
+}
+
+function stripTerminalControls(value) {
+  const text = String(value ?? '');
+  let output = '';
+  let index = 0;
+
+  while (index < text.length) {
+    const code = text.charCodeAt(index);
+    if (code === 0x1b) {
+      const next = text.charCodeAt(index + 1);
+      if (next === 0x5d) {
+        index = skipTerminalString(text, index + 2);
+      } else if (next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f) {
+        index = skipTerminalString(text, index + 2);
+      } else if (next === 0x5b) {
+        index = skipTerminalCsi(text, index + 2);
+      } else {
+        index = skipTerminalEscape(text, index + 1);
+      }
+      continue;
+    }
+    if (code === 0x9b) {
+      index = skipTerminalCsi(text, index + 1);
+      continue;
+    }
+    if (code === 0x9d || code === 0x90 || code === 0x98 || code === 0x9e || code === 0x9f) {
+      index = skipTerminalString(text, index + 1);
+      continue;
+    }
+    if ((code <= 0x1f && code !== 0x09 && code !== 0x0a) || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
+      index += 1;
+      continue;
+    }
+    output += text[index];
+    index += 1;
+  }
+
+  return output;
+}
+
+function printHumanJobRunLogs(logs) {
+  if (Array.isArray(logs)) {
+    for (const log of logs) {
+      const line = typeof log === 'string' ? log : buildLogLineOf(log);
+      process.stdout.write(`${stripTerminalControls(line)}\n`);
+    }
+    return;
+  }
+  const value = logs || '';
+  process.stdout.write(`${stripTerminalControls(value)}${String(value).endsWith('\n') ? '' : '\n'}`);
+}
+
 async function handleProjectRuns(session, flags) {
   const projectId = requireProjectId(flags, 'project runs');
   if (!projectId) return;
@@ -4194,11 +4276,7 @@ async function handleProjectRunLogs(session, flags) {
 
   if (flags.json) return printJson(data);
   const logs = typeof data === 'object' && data !== null && !Array.isArray(data) ? data.logs : data;
-  if (Array.isArray(logs)) {
-    for (const log of logs) process.stdout.write(`${typeof log === 'string' ? log : buildLogLineOf(log)}\n`);
-    return;
-  }
-  printLogs(logs, { json: false });
+  printHumanJobRunLogs(logs);
 }
 
 async function handleProjectMetricsCapabilities(session, flags) {

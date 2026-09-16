@@ -4292,3 +4292,83 @@ test('project runs preserves unknown Job amounts as null JSON and a human placeh
     assert.match(row, /-\s*$/);
   });
 });
+
+test('project run logs strip terminal controls only for human output and preserve JSON values', async () => {
+  const rawLogs = {
+    logs: [
+      'plain\tline\nnext\u001b[31mred\u001b[0m\u001b]0;evil title\u0007visible\u009b2Jclear',
+      {
+        sequence: 2,
+        timestamp: '2026-09-16T12:00:00.000Z',
+        level: 'info',
+        message: 'object\u0007message\u001b]52;c;clipboard\u001b\\\u001b[2Kdone\b',
+        extra: 'preserved in JSON',
+      },
+    ],
+    next_cursor: 2,
+    truncated: false,
+    finished: true,
+    status: 'succeeded',
+    extra: { source: 'raw-response' },
+  };
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/job_project_1/job-runs/run_controls/logs');
+    jsonResponse(res, 200, { status: 'success', data: rawLogs });
+  }, async ({ apiBase, configDir }) => {
+    const json = await runCli([
+      'project', 'runs', 'logs', '--project', 'job_project_1', '--run', 'run_controls', '--json',
+    ], { apiBase, configDir });
+    assert.equal(json.code, 0, json.stderr);
+    assert.deepEqual(JSON.parse(json.stdout), {
+      logs: [rawLogs.logs[0], {
+        sequence: 2,
+        timestamp: rawLogs.logs[1].timestamp,
+        level: 'info',
+        message: rawLogs.logs[1].message,
+      }],
+      next_cursor: 2,
+      truncated: false,
+      finished: true,
+      status: 'succeeded',
+    });
+
+    const human = await runCli([
+      'project', 'runs', 'logs', '--project', 'job_project_1', '--run', 'run_controls',
+    ], { apiBase, configDir });
+    assert.equal(human.code, 0, human.stderr);
+    assert.equal(human.stdout, 'plain\tline\nnextredvisibleclear\n[2026-09-16T12:00:00.000Z] build: objectmessagedone\n');
+    assert.equal(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/u.test(human.stdout.replaceAll('\n', '').replaceAll('\t', '')), false);
+    assert.match(human.stdout, /plain\tline\nnextredvisibleclear/);
+    assert.doesNotMatch(human.stdout, /\u001b|\u0007|\u009b/);
+  });
+});
+
+test('project run scalar logs use the same human terminal sanitization as log entries', async () => {
+  const rawLogs = {
+    logs: 'scalar\tline\rhidden\b\u0000\u000b\u001b[2Jclear\u001b]title\u0007\n',
+    custom: 'preserved in JSON',
+  };
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/job_project_1/job-runs/run_scalar_controls/logs');
+    jsonResponse(res, 200, { status: 'success', data: rawLogs });
+  }, async ({ apiBase, configDir }) => {
+    const json = await runCli([
+      'project', 'runs', 'logs', '--project', 'job_project_1', '--run', 'run_scalar_controls', '--json',
+    ], { apiBase, configDir });
+    assert.equal(json.code, 0, json.stderr);
+    assert.deepEqual(JSON.parse(json.stdout), { logs: rawLogs.logs });
+
+    const human = await runCli([
+      'project', 'runs', 'logs', '--project', 'job_project_1', '--run', 'run_scalar_controls',
+    ], { apiBase, configDir });
+    assert.equal(human.code, 0, human.stderr);
+    assert.equal(human.stdout, 'scalar\tlinehiddenclear\n');
+    assert.equal(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/u.test(human.stdout.replaceAll('\n', '').replaceAll('\t', '')), false);
+  });
+});
