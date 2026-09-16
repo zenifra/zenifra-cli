@@ -3716,10 +3716,24 @@ test('plans recognizes the public Scheduled Jobs catalog and keeps the grouped J
   const jobPlans = [
     {
       plan: 'job-basic',
-      price_per_minute: 2,
+      price_per_minute: 2.5,
       currency: 'brl',
       payment_mode: 'per_minute',
       features: ['500m CPU', '512Mi memory'],
+    },
+    {
+      plan: 'job-precise',
+      price_per_minute: 123.4567,
+      currency: 'brl',
+      payment_mode: 'per_minute',
+      features: ['1 CPU', '1Gi memory'],
+    },
+    {
+      plan: 'job-unknown',
+      price_per_minute: null,
+      currency: 'brl',
+      payment_mode: 'per_minute',
+      features: [],
     },
   ];
 
@@ -3733,7 +3747,13 @@ test('plans recognizes the public Scheduled Jobs catalog and keeps the grouped J
     assert.equal(text.code, 0, text.stderr);
     assert.match(text.stdout, /Jobs agendados/);
     assert.match(text.stdout, /job-basic/);
-    assert.match(text.stdout, /R\$[\s\u00a0]*0,02/);
+    assert.match(text.stdout, /R\$[\s\u00a0]*0,025/);
+    const preciseRow = text.stdout.split('\n').find((line) => line.includes('job-precise'));
+    assert.ok(preciseRow);
+    assert.match(preciseRow, /R\$[\s\u00a0]*1,235/);
+    const unknownRow = text.stdout.split('\n').find((line) => line.includes('job-unknown'));
+    assert.ok(unknownRow);
+    assert.match(unknownRow, /\s-\s*$/);
     assert.match(text.stdout, /por minuto/i);
     assert.match(text.stdout, /Features/);
     assert.doesNotMatch(text.stdout, /Recursos/);
@@ -4173,7 +4193,7 @@ test('project runs returns sanitized runs with pagination and run logs use the p
     billed_minutes: 2,
     plan: 'job-basic',
     currency: 'brl',
-    amount: 4,
+    amount: 2.5,
     value: 400,
     total_amount: 400,
     k8s_job_name: 'internal-job-123',
@@ -4218,7 +4238,7 @@ test('project runs returns sanitized runs with pagination and run logs use the p
         billed_minutes: 2,
         plan: 'job-basic',
         currency: 'brl',
-        amount: 4,
+        amount: 2.5,
       }],
       pagination,
     });
@@ -4231,7 +4251,7 @@ test('project runs returns sanitized runs with pagination and run logs use the p
     ], { apiBase, configDir });
     assert.equal(humanRuns.code, 0, humanRuns.stderr);
     assert.match(humanRuns.stdout, /70 s/);
-    assert.match(humanRuns.stdout, /R\$[\s\u00a0]*0,04/);
+    assert.match(humanRuns.stdout, /R\$[\s\u00a0]*0,025/);
 
     const logs = await runCli([
       'project', 'runs', 'logs', '--project', 'job_project_1', '--run', 'run_1', '--json',
@@ -4239,5 +4259,36 @@ test('project runs returns sanitized runs with pagination and run logs use the p
     assert.equal(logs.code, 0, logs.stderr);
     assert.deepEqual(JSON.parse(logs.stdout), { logs: 'started\ncompleted', next_cursor: 2, truncated: false });
     assert.doesNotMatch(logs.stdout, /k8s|namespace|internal-job/i);
+  });
+});
+
+test('project runs preserves unknown Job amounts as null JSON and a human placeholder', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/job_project_1/job-runs');
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        runs: [{
+          id: 'run_unknown',
+          status: 'running',
+          billed_minutes: null,
+          amount: null,
+          currency: 'brl',
+        }],
+        pagination: { page: 1, limit: 20, total: 1, total_pages: 1 },
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const json = await runCli(['project', 'runs', '--project', 'job_project_1', '--json'], { apiBase, configDir });
+    assert.equal(json.code, 0, json.stderr);
+    assert.equal(JSON.parse(json.stdout).runs[0].amount, null);
+
+    const human = await runCli(['project', 'runs', '--project', 'job_project_1'], { apiBase, configDir });
+    assert.equal(human.code, 0, human.stderr);
+    const row = human.stdout.split('\n').find((line) => line.includes('run_unknown'));
+    assert.ok(row);
+    assert.match(row, /-\s*$/);
   });
 });
