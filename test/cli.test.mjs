@@ -301,6 +301,23 @@ test('project namespace help includes scheduled Job run cancellation', async () 
   }
 });
 
+test('project run cancellation help explains selected-run scope and safe cancellation limits', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli(['help', 'project', 'runs', 'cancel'], { configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /somente a execucao selecionada/i);
+    assert.match(result.stdout, /cron.*continua|futuras? execucoes/i);
+    assert.match(result.stdout, /paus(?:e|ar) o projeto/i);
+    assert.match(result.stdout, /30 segundos/i);
+    assert.match(result.stdout, /concluir|limite de tempo/i);
+    assert.doesNotMatch(result.stdout, /k8s|kubernetes|namespace|runtime/i);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
 test('subcommand help is specific and does not require authentication', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {
@@ -3809,6 +3826,41 @@ test('project runs cancel sends the public cancellation request and hides runtim
       run: { id: 'run_1', status: 'cancelled', billed_minutes: 2 },
     });
     assert.doesNotMatch(json.stdout, /internal-job-123|private-namespace|namespace|runtime_name|value|total_amount/i);
+  });
+});
+
+test('project runs cancel reports an unavailable cancellation without retrying or printing success', async () => {
+  const unavailableMessage = 'This execution cannot be cancelled safely. Wait for it to finish or reach its time limit.';
+  let cancellationRequests = 0;
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project/job_project_1/job-runs/run_old/cancel');
+    cancellationRequests += 1;
+    jsonResponse(res, 409, {
+      status: 'failed',
+      code: 'JOB_RUN_CANCELLATION_UNAVAILABLE',
+      message: unavailableMessage,
+    });
+  }, async ({ apiBase, configDir }) => {
+    const text = await runCli([
+      'project', 'runs', 'cancel', '--project', 'job_project_1', '--run', 'run_old',
+    ], { apiBase, configDir });
+    assert.equal(text.code, 1);
+    assert.equal(text.stdout, '');
+    assert.equal(text.stderr, `${unavailableMessage}\n`);
+    assert.equal(cancellationRequests, 1);
+    assert.doesNotMatch(text.stderr, /Execucao:|"status"/i);
+
+    const json = await runCli([
+      'project', 'runs', 'cancel', '--project', 'job_project_1', '--run', 'run_old', '--json',
+    ], { apiBase, configDir });
+    assert.equal(json.code, 1);
+    assert.equal(json.stdout, '');
+    assert.equal(json.stderr, `${unavailableMessage}\n`);
+    assert.equal(cancellationRequests, 2);
+    assert.doesNotMatch(json.stderr, /Execucao:|"status"/i);
   });
 });
 

@@ -350,6 +350,20 @@ zenifra valkey credentials rotate --project <project-id> --wait --connection-fil
 
 O arquivo é criado com permissão privada; a conexão não aparece na saída do comando quando essa opção é usada.
 
+## Execuções de Jobs agendados
+
+Consulte o histórico de execuções e os logs de uma execução específica:
+
+```bash
+zenifra project runs --project <project-id>
+zenifra project runs cancel --project <project-id> --run <run-id>
+zenifra project runs logs --project <project-id> --run <run-id>
+```
+
+`project runs cancel` cancela somente a execução selecionada. O cron do projeto continua agendando novas execuções; use `zenifra project stop --project <project-id>` para pausar o projeto e interromper execuções futuras.
+
+O cancelamento aguarda até 30 segundos pela finalização segura e pode forçar o encerramento depois desse período. Se uma execução antiga não puder ser cancelada com segurança, o comando informa o problema e você deve aguardar que ela termine ou alcance o limite de tempo.
+
 ## Regressao manual de auto-scaling em staging
 
 O teste de staging cria projetos, gera trafego, consulta consumo e remove somente os projetos criados pela propria execucao. Ele exige uma API de teste explicita, rejeita a API de producao e exige habilitacao explicita das mutacoes. O exemplo abaixo usa uma API local de teste.

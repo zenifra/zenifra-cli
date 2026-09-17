@@ -530,11 +530,15 @@ const HELP_SPECS = [
   {
     command: 'project runs cancel',
     usage: 'zenifra project runs cancel --project <id> --run <id> [--json]',
-    description: 'Cancela uma execucao ativa de um Job e cobra somente o tempo consumido.',
+    description: 'Cancela somente a execucao selecionada de um Job e cobra somente o tempo consumido.',
     flags: ['--project <id>  ID do projeto.', '--run <id>      ID publico da execucao.', '--json          Imprime a resposta em JSON.'],
     examples: ['zenifra project runs cancel --project 507f1f77bcf86cd799439012 --run run_1'],
     output: 'Execucao: cancelled',
     jsonOutput: '{"run":{"id":"run_1","status":"cancelled","billed_minutes":2}}',
+    notes: [
+      'Cancela somente a execucao informada; o cron do projeto continua agendando novas execucoes. Use "zenifra project stop --project <id>" para pausar o projeto e interromper execucoes futuras.',
+      'O cancelamento aguarda ate 30 segundos pela finalizacao segura e pode forcar o encerramento depois desse periodo. Se a execucao nao puder ser cancelada com seguranca, aguarde que ela termine ou alcance o limite de tempo.',
+    ],
   },
   {
     command: 'project runs logs',
