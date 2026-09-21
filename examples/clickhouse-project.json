@@ -1,0 +1,19 @@
+{
+  "type_project": "clickhouse",
+  "version": "26.8.6.5",
+  "instances": 1,
+  "storage": {
+    "capacity": 20,
+    "persistent": true
+  },
+  "envs": [],
+  "network_access": {
+    "ingress_white_list": [
+      {
+        "cidr": "203.0.113.10/32",
+        "description": "Application egress IP"
+      }
+    ],
+    "ingress_black_list": []
+  }
+}
