@@ -1,6 +1,6 @@
 {
   "name": "@zenifra/cli",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Official Zenifra command line interface.",
   "type": "module",
   "license": "MIT",
