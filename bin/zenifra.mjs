@@ -96,6 +96,10 @@ const ALLOWED_PLAN_VALUES = new Set([
   'db-basic',
   'db-premium',
   'db-enterprise',
+  'analytics-sandbox',
+  'analytics-starter',
+  'analytics-production',
+  'analytics-enterprise',
   'cache-free',
   'cache-starter',
   'cache-basic',
@@ -108,7 +112,7 @@ const ALLOWED_PLAN_VALUES = new Set([
   'queue-enterprise',
 ]);
 const ALLOWED_PAYMENT_MODE_VALUES = new Set(['hourly', 'monthly', 'yearly']);
-const ALLOWED_TYPE_PROJECT_VALUES = new Set(['http', 'postgresql', 'mariadb', 'valkey']);
+const ALLOWED_TYPE_PROJECT_VALUES = new Set(['http', 'postgresql', 'mariadb', 'valkey', 'clickhouse']);
 const ALLOWED_RUNTIME_VALUES = new Set(['nodejs', 'python']);
 const ALLOWED_EXPOSURE_VALUES = new Set(['public', 'private']);
 const GITHUB_RUNTIME_VERSIONS = {
@@ -2422,6 +2426,14 @@ function normalizePlan(value) {
     ['dbpremium', 'db-premium'],
     ['db_enterprise', 'db-enterprise'],
     ['dbenterprise', 'db-enterprise'],
+    ['analytics_sandbox', 'analytics-sandbox'],
+    ['analyticssandbox', 'analytics-sandbox'],
+    ['analytics_starter', 'analytics-starter'],
+    ['analyticsstarter', 'analytics-starter'],
+    ['analytics_production', 'analytics-production'],
+    ['analyticsproduction', 'analytics-production'],
+    ['analytics_enterprise', 'analytics-enterprise'],
+    ['analyticsenterprise', 'analytics-enterprise'],
     ['cache_free', 'cache-free'],
     ['cachefree', 'cache-free'],
     ['cache_starter', 'cache-starter'],
@@ -2481,6 +2493,8 @@ function normalizeTypeProject(value) {
     ['valkey', 'valkey'],
     ['key value', 'valkey'],
     ['key-value', 'valkey'],
+    ['clickhouse', 'clickhouse'],
+    ['click house', 'clickhouse'],
   ]);
   return aliases.get(raw) || raw;
 }

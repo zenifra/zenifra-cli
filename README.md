@@ -60,6 +60,7 @@ zenifra create project --name <name> --plan basic --payment-mode hourly --config
 zenifra create project --name <name> --plan premium --payment-mode hourly --config @examples/http-autoscaling-project.json
 zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/postgresql-project.json
 zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/mariadb-project.json
+zenifra create project --name <name> --plan analytics-starter --payment-mode hourly --config @examples/clickhouse-project.json
 zenifra create project --name <name> --plan db-free --payment-mode hourly --config @examples/valkey-key-value-project.json
 zenifra create project --name <name> --plan cache-free --payment-mode hourly --config @examples/valkey-cache-project.json
 zenifra create project --name <name> --plan queue-free --payment-mode hourly --config @examples/valkey-queue-project.json
@@ -289,6 +290,7 @@ Use os arquivos em `examples/` como base para `zenifra create project`:
 - `examples/http-autoscaling-project.json`: projeto HTTP pago criado com auto-scaling
 - `examples/postgresql-project.json`: projeto PostgreSQL
 - `examples/mariadb-project.json`: projeto MariaDB
+- `examples/clickhouse-project.json`: projeto ClickHouse com Native TLS e armazenamento persistente
 - `examples/valkey-key-value-project.json`: projeto Valkey Key Value com armazenamento persistente
 - `examples/valkey-cache-project.json`: projeto Valkey Cache sem armazenamento persistente
 - `examples/valkey-queue-project.json`: projeto Valkey Queue com armazenamento persistente
@@ -306,6 +308,8 @@ O wizard atual cobre:
 - projetos `mariadb`
 - projetos `valkey` nos perfis `key_value`, `cache` e `queue`
 
+Projetos `clickhouse` usam atualmente o fluxo nao interativo com `--config`, como em `examples/clickhouse-project.json`.
+
 `zenifra create project` nao assume valores default para `--plan` e `--payment-mode`.
 Configs HTTP nao interativas tambem devem informar `config.exposure`; use `public` para criar rota/dominio publico ou `private` para manter a aplicacao sem exposicao na internet.
 Antes de escolher um plano com o usuario, compare os catalogos com `zenifra plans` para evitar suposicoes sobre custo.
@@ -313,9 +317,9 @@ Antes de escolher um plano com o usuario, compare os catalogos com `zenifra plan
 Valores aceitos:
 
 - `payment_mode`: `hourly`, `monthly`, `yearly`
-- `type_project` no `config`: `http`, `postgresql`, `mariadb`, `valkey`
+- `type_project` no `config`: `http`, `postgresql`, `mariadb`, `valkey`, `clickhouse`
 - `exposure` no `config` HTTP: `public`, `private`
-- `plan`: consulte `zenifra plans` para os planos atuais; Valkey usa `db-*` para Key Value, `cache-*` para Cache e `queue-*` para Queue
+- `plan`: consulte `zenifra plans` para os planos atuais; ClickHouse usa `analytics-*`; Valkey usa `db-*` para Key Value, `cache-*` para Cache e `queue-*` para Queue
 - `config.profile` em projetos Valkey: `key_value`, `cache` ou `queue`
 - `config.version` em projetos Valkey: a versão retornada por `zenifra plans --type valkey`
 - `config.storage` em projetos Valkey: obrigatório e persistente para Key Value/Queue; omitido para Cache

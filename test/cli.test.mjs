@@ -2254,6 +2254,63 @@ test('create project json preserves the backend response', async () => {
   });
 });
 
+test('create project accepts ClickHouse analytics plans and forwards the exact database config', async () => {
+  let request;
+  const config = {
+    type_project: 'clickhouse',
+    version: '26.8.6.5',
+    instances: 1,
+    storage: { capacity: 20, persistent: true },
+    envs: [],
+    network_access: {
+      ingress_white_list: [{ cidr: '203.0.113.10/32', description: 'CLI validation' }],
+      ingress_black_list: [],
+    },
+  };
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project');
+    request = {
+      idempotencyKey: req.headers['idempotency-key'],
+      body: await readJson(req),
+    };
+    jsonResponse(res, 201, {
+      status: 'success',
+      data: {
+        project_id: 'proj_clickhouse',
+        name: 'analytics-cli',
+        status: 'creating',
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'create', 'project',
+      '--name', 'analytics-cli',
+      '--description', 'ClickHouse Starter created by CLI',
+      '--plan', 'analytics-starter',
+      '--payment-mode', 'hourly',
+      '--idempotency-key', 'clickhouse-create-001',
+      '--config', JSON.stringify(config),
+      '--json',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).data.project_id, 'proj_clickhouse');
+    assert.deepEqual(request, {
+      idempotencyKey: 'clickhouse-create-001',
+      body: {
+        name: 'analytics-cli',
+        description: 'ClickHouse Starter created by CLI',
+        plan: 'analytics-starter',
+        payment_mode: 'hourly',
+        config,
+      },
+    });
+  });
+});
+
 test('create project fails early when payment mode is invalid', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {
