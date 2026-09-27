@@ -1,0 +1,38 @@
+{
+  "type_project": "http",
+  "exposure": "public",
+  "source": {
+    "connection_id": "connection-id-from-console",
+    "repository_id": "repository-id-from-connection",
+    "branch": "main",
+    "auto_deploy": true
+  },
+  "build": {
+    "runtime": "nodejs",
+    "version": "24",
+    "start_command": "npm start",
+    "pre_build_command": null,
+    "build_command": "npm run build"
+  },
+  "port": 3000,
+  "instances": 1,
+  "storage": {
+    "persistent": false,
+    "capacity": 1
+  },
+  "envs": [
+    {
+      "name": "NODE_ENV",
+      "value": "production"
+    }
+  ],
+  "network_access": {
+    "ingress_white_list": [
+      {
+        "cidr": "0.0.0.0/0",
+        "description": "Allow all"
+      }
+    ],
+    "ingress_black_list": []
+  }
+}

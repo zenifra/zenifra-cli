@@ -116,6 +116,20 @@ function jsonResponse(res, statusCode, payload) {
   res.end(JSON.stringify(payload));
 }
 
+function gitProvidersApiV1Response(res, providers) {
+  const capabilities = { repositoryDiscovery: true, pushDeploy: true, nativePreviews: false };
+  jsonResponse(res, 200, {
+    status: 'success',
+    data: {
+      api_version: 1,
+      providers: providers || [
+        { id: 'github', capabilities, available: true },
+        { id: 'forgejo', capabilities, available: true },
+      ],
+    },
+  });
+}
+
 async function readJson(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -917,8 +931,12 @@ test('legacy session is auto-migrated into the default profile', async () => {
 test('builds logs reads a build log snapshot', async () => {
   await withCliServer(async (req, res) => {
     assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/git/providers') {
+      gitProvidersApiV1Response(res);
+      return;
+    }
     assert.equal(req.method, 'GET');
-    assert.equal(req.url, '/v1/project/proj_123/github/builds/build_123/logs?cursor=0&limit=200');
+    assert.equal(req.url, '/v1/project/proj_123/builds/build_123/logs?cursor=7&limit=25');
     jsonResponse(res, 200, {
       status: 'success',
       message: 'build logs retrieved successfully',
@@ -948,7 +966,7 @@ test('builds logs reads a build log snapshot', async () => {
       },
     });
   }, async ({ apiBase, configDir }) => {
-    const result = await runCli(['builds', 'logs', '--project', 'proj_123', '--build', 'build_123'], { apiBase, configDir });
+    const result = await runCli(['builds', 'logs', '--project', 'proj_123', '--build', 'build_123', '--cursor', '7', '--limit', '25'], { apiBase, configDir });
 
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /\[2026-06-03T12:00:00.000Z] install: added 512 packages/);
@@ -961,9 +979,13 @@ test('deploy watch streams build logs until the build succeeds', async () => {
 
   await withCliServer(async (req, res) => {
     assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/git/providers') {
+      gitProvidersApiV1Response(res);
+      return;
+    }
     assert.equal(req.method, 'GET');
 
-    if (req.url === '/v1/project/proj_123/github/builds/build_123/logs?cursor=0&limit=200') {
+    if (req.url === '/v1/project/proj_123/builds/build_123/logs?cursor=0&limit=200') {
       logPollCount += 1;
       jsonResponse(res, 200, {
         status: 'success',
@@ -988,7 +1010,7 @@ test('deploy watch streams build logs until the build succeeds', async () => {
       return;
     }
 
-    if (req.url === '/v1/project/proj_123/github/builds/build_123/logs?cursor=1&limit=200') {
+    if (req.url === '/v1/project/proj_123/builds/build_123/logs?cursor=1&limit=200') {
       logPollCount += 1;
       jsonResponse(res, 200, {
         status: 'success',
@@ -2401,6 +2423,385 @@ test('create project fails when github runtime is missing for http github projec
   }
 });
 
+test('create project forwards generic Git source and build settings after API v1 discovery', async () => {
+  const source = {
+    connection_id: 'connection_from_console',
+    repository_id: 'repository_from_connection',
+    branch: 'main',
+    auto_deploy: true,
+  };
+  const build = {
+    runtime: 'nodejs',
+    version: '24',
+    start_command: 'npm start',
+    pre_build_command: null,
+    build_command: 'npm run build',
+  };
+  let postedBody;
+  let discovered = false;
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/git/providers') {
+      discovered = true;
+      gitProvidersApiV1Response(res);
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/v1/project') {
+      assert.equal(discovered, true);
+      postedBody = await readJson(req);
+      jsonResponse(res, 201, { status: 'success', data: { project_id: 'proj_git_source' } });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+  }, async ({ apiBase, configDir }) => {
+    const config = {
+      type_project: 'http',
+      exposure: 'public',
+      source,
+      build,
+    };
+    const result = await runCli([
+      'create', 'project',
+      '--name', 'api-web',
+      '--plan', 'free',
+      '--payment-mode', 'hourly',
+      '--config', JSON.stringify(config),
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(postedBody.config.source, source);
+    assert.deepEqual(postedBody.config.build, build);
+    assert.equal(postedBody.config.github, undefined);
+  });
+});
+
+test('generic Git project creation fails closed when API v1 discovery is unsupported or invalid', async () => {
+  const config = {
+    type_project: 'http',
+    exposure: 'public',
+    source: { connection_id: 'connection_from_console', repository_id: 'repository_from_connection', branch: 'main', auto_deploy: true },
+    build: { runtime: 'nodejs', version: '24', start_command: 'npm start' },
+  };
+  const scenarios = [
+    { name: 'unsupported route', status: 404, payload: { status: 'failed', message: 'not found' } },
+    { name: 'method unsupported route', status: 405, payload: { status: 'failed', message: 'method not allowed' } },
+    { name: 'unimplemented route', status: 501, payload: { status: 'failed', message: 'not implemented' } },
+    { name: 'unauthorized route', status: 401, payload: { status: 'failed', message: 'invalid API key' } },
+    { name: 'forbidden route', status: 403, payload: { status: 'failed', message: 'not authorized' } },
+    { name: 'malformed v1 response', status: 200, payload: { status: 'success', data: { api_version: 2, providers: [] } } },
+    { name: 'incomplete provider capabilities', status: 200, payload: { status: 'success', data: { api_version: 1, providers: [{ id: 'forgejo', available: true, capabilities: { repositoryDiscovery: true } }] } } },
+    { name: 'invalid provider slug', status: 200, payload: { status: 'success', data: { api_version: 1, providers: [{ id: 'git.lab', available: true, capabilities: { repositoryDiscovery: true, pushDeploy: true, nativePreviews: false } }] } } },
+  ];
+
+  for (const scenario of scenarios) {
+    let createRequests = 0;
+    await withCliServer(async (req, res) => {
+      assertApiKeyAuth(req);
+      if (req.method === 'GET' && req.url === '/v1/git/providers') {
+        jsonResponse(res, scenario.status, scenario.payload);
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/v1/project') createRequests += 1;
+      jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+    }, async ({ apiBase, configDir }) => {
+      const result = await runCli([
+        'create', 'project',
+        '--name', 'api-web',
+        '--plan', 'free',
+        '--payment-mode', 'hourly',
+        '--config', JSON.stringify(config),
+      ], { apiBase, configDir });
+
+      assert.equal(result.code, 1, scenario.name);
+      assert.equal(createRequests, 0, scenario.name);
+      assert.notEqual(result.stderr, '', scenario.name);
+    });
+  }
+});
+
+test('generic Git project creation requires both source and build settings', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const result = await runCli([
+      'create', 'project',
+      '--name', 'api-web',
+      '--plan', 'free',
+      '--payment-mode', 'hourly',
+      '--config', JSON.stringify({ type_project: 'http', exposure: 'public', source: { connection_id: 'connection_123' } }),
+    ], { configDir });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /config.source e config.build devem ser informados juntos/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('deploy and build history use neutral routes when API v1 is advertised', async () => {
+  const build = { id: 'build_123', status: 'success', branch: 'release', commit_sha: 'abc123' };
+  let deployBody;
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/git/providers') {
+      gitProvidersApiV1Response(res);
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/project/proj_123/builds?page=2&limit=15&branch=release&status=success') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: [build],
+        pagination: { total: 1, page: 2, limit: 15 },
+      });
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/v1/project/proj_123/deploy') {
+      deployBody = await readJson(req);
+      jsonResponse(res, 202, { status: 'success', message: 'Build accepted.', data: { build_id: 'build_456' } });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+  }, async ({ apiBase, configDir }) => {
+    const builds = await runCli([
+      'builds', '--project', 'proj_123', '--page', '2', '--limit', '15', '--branch', 'release', '--status', 'success', '--json',
+    ], { apiBase, configDir });
+    const deploy = await runCli([
+      'deploy', '--project', 'proj_123', '--branch', 'release', '--commit-sha', 'abc123', '--json',
+    ], { apiBase, configDir });
+
+    assert.equal(builds.code, 0, builds.stderr);
+    assert.deepEqual(JSON.parse(builds.stdout), [build]);
+    assert.equal(deploy.code, 0, deploy.stderr);
+    assert.deepEqual(deployBody, { branch: 'release', commit_sha: 'abc123' });
+    assert.deepEqual(JSON.parse(deploy.stdout), {
+      status: 'success',
+      message: 'Build accepted.',
+      data: { build_id: 'build_456' },
+    });
+  });
+});
+
+test('neutral API v1 accepts a future provider descriptor without routing by its id', async () => {
+  const requests = [];
+  const capabilities = { repositoryDiscovery: true, pushDeploy: false, nativePreviews: false };
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    requests.push(`${req.method} ${req.url}`);
+    if (req.method === 'GET' && req.url === '/v1/git/providers') {
+      gitProvidersApiV1Response(res, [{ id: 'gitlab', capabilities, available: false }]);
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/v1/project/proj_123/deploy') {
+      jsonResponse(res, 202, { status: 'success', message: 'Build accepted.', data: { build_id: 'build_456' } });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['deploy', '--project', 'proj_123', '--branch', 'main', '--json'], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(requests, [
+      'GET /v1/git/providers',
+      'POST /v1/project/proj_123/deploy',
+    ]);
+    assert.deepEqual(JSON.parse(result.stdout).data, { build_id: 'build_456' });
+  });
+});
+
+test('deploy uses the legacy GitHub route only after unsupported discovery and a GitHub project readback', async () => {
+  const requests = [];
+  let deployBody;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    requests.push(`${req.method} ${req.url}`);
+    if (req.method === 'GET' && req.url === '/v1/git/providers') {
+      jsonResponse(res, 404, { status: 'failed', message: 'route not found' });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/project/proj_123') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: {
+          github: { repository_owner: 'zenifra', repository_name: 'zenifra-cli', branch: 'main' },
+          preview: { source: { provider: 'github', branch: 'feature/preview' } },
+        },
+      });
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/v1/project/proj_123/github/deploy') {
+      deployBody = await readJson(req);
+      jsonResponse(res, 202, { status: 'success', data: { build_id: 'build_legacy' } });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'deploy', '--project', 'proj_123', '--branch', 'release', '--commit-sha', 'abc123', '--json',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(requests, [
+      'GET /v1/git/providers',
+      'GET /v1/project/proj_123',
+      'POST /v1/project/proj_123/github/deploy',
+    ]);
+    assert.deepEqual(deployBody, { branch: 'release', commit_sha: 'abc123' });
+    assert.deepEqual(JSON.parse(result.stdout), { status: 'success', data: { build_id: 'build_legacy' } });
+  });
+});
+
+test('deploy rejects public generic Git source projections before old-API GitHub fallback', async () => {
+  const cases = [
+    {
+      label: 'top-level projection',
+      project: {
+        github: { repository_owner: 'zenifra', repository_name: 'legacy-project' },
+        git_source: { provider_id: 'forgejo', connection_id: 'connection_1', repository_id: 'repository_1' },
+        git_build: { runtime: 'nodejs', version: '24' },
+        preview: { source: { provider: 'github', branch: 'feature/preview' } },
+      },
+    },
+    {
+      label: 'config projection',
+      project: {
+        config: {
+          github: { repository_owner: 'zenifra', repository_name: 'legacy-project' },
+          git_source: { provider_id: 'forgejo', connection_id: 'connection_1', repository_id: 'repository_1' },
+          git_build: { runtime: 'nodejs', version: '24' },
+        },
+      },
+    },
+  ];
+
+  for (const { label, project } of cases) {
+    const requests = [];
+    let legacyCalls = 0;
+    await withCliServer(async (req, res) => {
+      assertApiKeyAuth(req);
+      requests.push(`${req.method} ${req.url}`);
+      if (req.method === 'GET' && req.url === '/v1/git/providers') {
+        jsonResponse(res, 404, { status: 'failed', message: 'route not found' });
+        return;
+      }
+      if (req.method === 'GET' && req.url === '/v1/project/proj_123') {
+        jsonResponse(res, 200, { status: 'success', data: project });
+        return;
+      }
+      if (req.url.includes('/github/')) legacyCalls += 1;
+      jsonResponse(res, 200, { status: 'success', data: { build_id: 'wrong_fallback' } });
+    }, async ({ apiBase, configDir }) => {
+      const result = await runCli(['deploy', '--project', 'proj_123', '--branch', 'main'], { apiBase, configDir });
+
+      assert.equal(result.code, 1, label);
+      assert.match(result.stderr, /GitHub legada compativel/, label);
+      assert.deepEqual(requests, [
+        'GET /v1/git/providers',
+        'GET /v1/project/proj_123',
+      ], label);
+      assert.equal(legacyCalls, 0, label);
+    });
+  }
+});
+
+test('deploy rejects a generic Git project on an old API instead of trying GitHub', async () => {
+  let legacyCalls = 0;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/git/providers') {
+      jsonResponse(res, 404, { status: 'failed', message: 'route not found' });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/project/proj_123') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: { source: { connection_id: 'connection_from_console', repository_id: 'repository_from_connection' } },
+      });
+      return;
+    }
+    if (req.url.includes('/github/')) legacyCalls += 1;
+    jsonResponse(res, 200, { status: 'success', data: { build_id: 'wrong_fallback' } });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['deploy', '--project', 'proj_123', '--branch', 'main'], { apiBase, configDir });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /GitHub legada compativel/);
+    assert.equal(legacyCalls, 0);
+  });
+});
+
+test('deploy does not use GitHub fallback when API capability discovery is unauthorized', async () => {
+  for (const status of [401, 403]) {
+    let projectReads = 0;
+    let legacyCalls = 0;
+    await withCliServer(async (req, res) => {
+      assertApiKeyAuth(req);
+      if (req.method === 'GET' && req.url === '/v1/git/providers') {
+        jsonResponse(res, status, { status: 'failed', message: 'capability access denied' });
+        return;
+      }
+      if (req.method === 'GET' && req.url === '/v1/project/proj_123') projectReads += 1;
+      if (req.url.includes('/github/')) legacyCalls += 1;
+      jsonResponse(res, 200, { status: 'success', data: { build_id: 'wrong_fallback' } });
+    }, async ({ apiBase, configDir }) => {
+      const result = await runCli(['deploy', '--project', 'proj_123', '--branch', 'main'], { apiBase, configDir });
+
+      assert.equal(result.code, 1, `HTTP ${status}`);
+      assert.equal(projectReads, 0, `HTTP ${status}`);
+      assert.equal(legacyCalls, 0, `HTTP ${status}`);
+    });
+  }
+});
+
+test('deploy does not use GitHub fallback when old API project readback is forbidden', async () => {
+  let legacyCalls = 0;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/git/providers') {
+      jsonResponse(res, 404, { status: 'failed', message: 'route not found' });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/project/proj_123') {
+      jsonResponse(res, 403, { status: 'failed', message: 'project read denied' });
+      return;
+    }
+    if (req.url.includes('/github/')) legacyCalls += 1;
+    jsonResponse(res, 200, { status: 'success', data: { build_id: 'wrong_fallback' } });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['deploy', '--project', 'proj_123', '--branch', 'main'], { apiBase, configDir });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /project read denied/);
+    assert.equal(legacyCalls, 0);
+  });
+});
+
+test('a neutral deploy route 404 after API v1 discovery is not retried through GitHub', async () => {
+  let legacyCalls = 0;
+  let projectReads = 0;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/git/providers') {
+      gitProvidersApiV1Response(res);
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/v1/project/proj_123/deploy') {
+      jsonResponse(res, 404, { status: 'failed', message: 'project not found' });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/project/proj_123') projectReads += 1;
+    if (req.url.includes('/github/')) legacyCalls += 1;
+    jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['deploy', '--project', 'proj_123', '--branch', 'main'], { apiBase, configDir });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /project not found/);
+    assert.equal(projectReads, 0);
+    assert.equal(legacyCalls, 0);
+  });
+});
+
 test('create project fails early when http exposure is missing', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {
@@ -3803,10 +4204,21 @@ test('build logs explain when only a summary was available while JSON remains un
   };
   await withCliServer(async (req, res) => {
     assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/git/providers') {
+      jsonResponse(res, 404, { status: 'failed', message: 'route not found' });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/project/proj_123') {
+      jsonResponse(res, 200, {
+        status: 'success',
+        data: { github: { repository_owner: 'zenifra', repository_name: 'zenifra-cli', branch: 'main' } },
+      });
+      return;
+    }
     assert.equal(req.method, 'GET');
     assert.equal(req.url, '/v1/project/proj_123/github/builds/build_123/logs?cursor=0&limit=200');
     jsonResponse(res, 200, { status: 'success', data: payload });
-  }, async ({ apiBase, configDir }) => {
+  }, async ({ apiBase, configDir, requests }) => {
     const text = await runCli(['builds', 'logs', '--project', 'proj_123', '--build', 'build_123'], { apiBase, configDir });
     const json = await runCli(['builds', 'logs', '--project', 'proj_123', '--build', 'build_123', '--json'], { apiBase, configDir });
 
@@ -3815,6 +4227,14 @@ test('build logs explain when only a summary was available while JSON remains un
     assert.match(text.stdout, /eventos detalhados.*nao estavam disponiveis/i);
     assert.equal(json.code, 0, json.stderr);
     assert.deepEqual(JSON.parse(json.stdout), payload);
+    assert.deepEqual(requests.map(({ method, url }) => `${method} ${url}`), [
+      'GET /v1/git/providers',
+      'GET /v1/project/proj_123',
+      'GET /v1/project/proj_123/github/builds/build_123/logs?cursor=0&limit=200',
+      'GET /v1/git/providers',
+      'GET /v1/project/proj_123',
+      'GET /v1/project/proj_123/github/builds/build_123/logs?cursor=0&limit=200',
+    ]);
   });
 });
 
