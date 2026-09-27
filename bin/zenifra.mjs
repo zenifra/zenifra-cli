@@ -177,9 +177,10 @@ const ANSI = {
 };
 
 class CliError extends Error {
-  constructor(message, exitCode = 1) {
+  constructor(message, exitCode = 1, httpStatus) {
     super(message);
     this.exitCode = exitCode;
+    if (httpStatus !== undefined) this.httpStatus = httpStatus;
   }
 }
 
@@ -770,7 +771,7 @@ const HELP_SPECS = [
   {
     command: 'builds',
     usage: 'zenifra builds --project <id> [--page <n>] [--limit <n>] [--branch <name>] [--status <status>] [--json]',
-    description: 'Lista builds GitHub de um projeto.',
+    description: 'Lista builds de um projeto com origem Git.',
     flags: ['--project <id>   ID do projeto.', '--page <n>      Pagina.', '--limit <n>     Itens por pagina.', '--branch <name> Filtra branch.', '--status <status> Filtra status.', '--json          Imprime a resposta em JSON.'],
     examples: ['zenifra builds --project 507f1f77bcf86cd799439012 --status success'],
     output: 'Build                     Status   Branch  Commit\nbuild_123                 success  main    abc123',
@@ -779,7 +780,7 @@ const HELP_SPECS = [
   {
     command: 'builds logs',
     usage: 'zenifra builds logs --project <id> --build <id> [--cursor <n>] [--limit <n>] [--follow] [--interval <seconds>] [--timeout <seconds>] [--json]',
-    description: 'Lê os logs de um build GitHub existente e opcionalmente acompanha novos chunks em tempo real.',
+    description: 'Le os logs de um build Git existente e opcionalmente acompanha novos eventos em tempo real.',
     flags: [
       '--project <id>        ID do projeto.',
       '--build <id>          ID do build.',
@@ -797,7 +798,7 @@ const HELP_SPECS = [
   {
     command: 'deployments',
     usage: 'zenifra deployments --project <id> [--page <n>] [--limit <n>] [--branch <name>] [--status <status>] [--json]',
-    description: 'Alias para listar builds/deployments GitHub de um projeto.',
+    description: 'Alias para listar builds e deployments Git de um projeto.',
     flags: ['--project <id>   ID do projeto.', '--page <n>      Pagina.', '--limit <n>     Itens por pagina.', '--branch <name> Filtra branch.', '--status <status> Filtra status.', '--json          Imprime a resposta em JSON.'],
     examples: ['zenifra deployments --project 507f1f77bcf86cd799439012'],
     output: 'Build                     Status   Branch  Commit\nbuild_123                 success  main    abc123',
@@ -806,7 +807,7 @@ const HELP_SPECS = [
   {
     command: 'deploy',
     usage: 'zenifra deploy --project <id> [--branch <name>] [--commit-sha <sha>] [--json]',
-    description: 'Dispara um build/deploy GitHub para o projeto e retorna o build_id para acompanhamento posterior.',
+    description: 'Dispara um build/deploy Git para o projeto e retorna o build_id para acompanhamento posterior.',
     flags: ['--project <id>    ID do projeto.', '--branch <name>  Branch a publicar.', '--commit-sha <sha> Commit especifico.', '--json           Imprime a resposta em JSON.'],
     examples: [
       'zenifra deploy --project 507f1f77bcf86cd799439012 --branch main',
@@ -1692,28 +1693,90 @@ async function request(session, flags, method, path, {
 
   if (!response.ok) {
     const message = payload?.message || payload?.error || `Zenifra API retornou HTTP ${response.status}`;
+    const httpError = (errorMessage) => new CliError(errorMessage, 1, response.status);
     if (response.status === 401) {
       if (credential?.type === 'api_key') {
-        throw new CliError(`${message}. Verifique se a API key esta ativa e se o IP atual esta permitido.`);
+        throw httpError(`${message}. Verifique se a API key esta ativa e se o IP atual esta permitido.`);
       }
-      throw new CliError(`${message}. Rode "zenifra auth login" para renovar sua sessao.`);
+      throw httpError(`${message}. Rode "zenifra auth login" para renovar sua sessao.`);
     }
     if (response.status === 403) {
-      throw new CliError(message);
+      throw httpError(message);
     }
     if (response.status === 429 && Number.isFinite(Number(payload?.retry_after_seconds))) {
-      throw new CliError(`${message} Tente novamente em ${Number(payload.retry_after_seconds)} segundo(s).`);
+      throw httpError(`${message} Tente novamente em ${Number(payload.retry_after_seconds)} segundo(s).`);
     }
     if (response.status === 402 && path.includes('/metrics') && /support metrics/i.test(String(message))) {
-      throw new CliError('Este projeto nao possui acesso a metricas.');
+      throw httpError('Este projeto nao possui acesso a metricas.');
     }
     if (String(message).includes('missing x-organization-id')) {
-      throw new CliError('Organizacao nao selecionada. Rode "zenifra org set" ou use --org <id>.');
+      throw httpError('Organizacao nao selecionada. Rode "zenifra org set" ou use --org <id>.');
     }
-    throw new CliError(message);
+    throw httpError(message);
   }
 
   return payload;
+}
+
+function hasValidGitProvidersApiV1(payload) {
+  if (payload?.status !== 'success' || !isRecord(payload.data) || payload.data.api_version !== 1 || !Array.isArray(payload.data.providers)) {
+    return false;
+  }
+
+  return payload.data.providers.every((provider) => (
+    isRecord(provider)
+    && typeof provider.id === 'string'
+    && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider.id)
+    && typeof provider.available === 'boolean'
+    && isRecord(provider.capabilities)
+    && typeof provider.capabilities.repositoryDiscovery === 'boolean'
+    && typeof provider.capabilities.pushDeploy === 'boolean'
+    && typeof provider.capabilities.nativePreviews === 'boolean'
+  ));
+}
+
+async function supportsNeutralGitRoutes(session, flags, orgId) {
+  let payload;
+  try {
+    payload = await request(session, flags, 'GET', '/git/providers', { orgId });
+  } catch (error) {
+    if ([404, 405, 501].includes(error?.httpStatus)) return false;
+    throw error;
+  }
+
+  if (!hasValidGitProvidersApiV1(payload)) {
+    throw new CliError('A API retornou uma resposta invalida para as capacidades de origem Git.');
+  }
+  return true;
+}
+
+function hasLegacyGithubSource(project) {
+  if (!isRecord(project)) return false;
+  // Public Git source projections must never be rewritten as legacy GitHub input.
+  // preview.source is separate preview metadata and does not identify the primary project source.
+  const genericSourceFields = ['source', 'build', 'git_source', 'git_build'];
+  if (genericSourceFields.some((field) => project[field] !== undefined || project.config?.[field] !== undefined)) {
+    return false;
+  }
+
+  const github = project.github || project.config?.github;
+  return isRecord(github)
+    && typeof github.repository_owner === 'string'
+    && github.repository_owner.trim().length > 0
+    && typeof github.repository_name === 'string'
+    && github.repository_name.trim().length > 0;
+}
+
+async function resolveGitProjectApiPath(session, flags, projectId, orgId) {
+  if (await supportsNeutralGitRoutes(session, flags, orgId)) {
+    return `/project/${projectId}`;
+  }
+
+  const project = await getProject(session, flags, projectId, orgId);
+  if (!hasLegacyGithubSource(project)) {
+    throw new CliError('Esta API antiga so permite builds e deploys de projetos com uma origem GitHub legada compativel.');
+  }
+  return `/project/${projectId}/github`;
 }
 
 function unwrapData(payload) {
@@ -3067,6 +3130,17 @@ function validateCreateInput({ plan, paymentMode, config, valkeyCatalog }) {
     throw new CliError(`type_project invalido: "${config?.type_project}". Valores aceitos: ${formatAllowedValues(ALLOWED_TYPE_PROJECT_VALUES)}. Docs: ${DOCS_CREATE_HTTP_URL}`);
   }
 
+  const hasGenericGitConfig = config?.source !== undefined || config?.build !== undefined;
+  if (hasGenericGitConfig && (!isRecord(config.source) || !isRecord(config.build))) {
+    throw new CliError('config.source e config.build devem ser informados juntos para projetos com origem Git.');
+  }
+  if (hasGenericGitConfig && nextTypeProject !== 'http') {
+    throw new CliError('config.source e config.build so podem ser usados em projetos HTTP.');
+  }
+  if (hasGenericGitConfig && config.github !== undefined) {
+    throw new CliError('Use config.github ou config.source/config.build, sem misturar os formatos de origem Git.');
+  }
+
   const nextConfig = { ...config, type_project: nextTypeProject };
   if (nextTypeProject === 'valkey') {
     return {
@@ -3764,6 +3838,12 @@ async function handleProjectCreate(session, flags) {
     ? requireValkeyCatalog(unwrapData(await request(session, flags, 'GET', '/managed-services/catalog')))
     : undefined;
   const validated = validateCreateInput({ plan, paymentMode, config, valkeyCatalog });
+
+  if (validated.config.source !== undefined || validated.config.build !== undefined) {
+    if (!await supportsNeutralGitRoutes(session, flags, orgId)) {
+      throw new CliError('Esta API nao oferece suporte a criacao de projetos com origem Git generica. Atualize a API ou use a configuracao GitHub legada compativel.');
+    }
+  }
 
   const payload = await request(session, flags, 'POST', '/project', {
     orgId,
@@ -4742,8 +4822,9 @@ async function handleDeployments(session, flags) {
     return
   }
   const orgId = await resolveOrgId(session, flags);
+  const projectApiPath = await resolveGitProjectApiPath(session, flags, projectId, orgId);
   const query = buildQuery(flags, ['page', 'limit', 'branch', 'status']);
-  const data = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/github/builds${query}`, { orgId }));
+  const data = unwrapData(await request(session, flags, 'GET', `${projectApiPath}/builds${query}`, { orgId }));
   const builds = asArray(data);
 
   if (flags.json) return printJson(data);
@@ -4764,11 +4845,12 @@ async function handleDeploy(session, flags) {
     return;
   }
   const orgId = await resolveOrgId(session, flags);
+  const projectApiPath = await resolveGitProjectApiPath(session, flags, projectId, orgId);
   const body = {};
   if (flags.branch) body.branch = String(flags.branch);
   if (flags.commitSha) body.commit_sha = String(flags.commitSha);
 
-  const payload = await request(session, flags, 'POST', `/project/${projectId}/github/deploy`, {
+  const payload = await request(session, flags, 'POST', `${projectApiPath}/deploy`, {
     orgId,
     body,
   });
@@ -4778,9 +4860,9 @@ async function handleDeploy(session, flags) {
   process.stdout.write(`Deploy iniciado${buildId ? `: ${buildId}` : '.'}\n`);
 }
 
-async function getBuildLogs(session, flags, projectId, buildId, orgId, { cursor = 0, limit = 200 } = {}) {
+async function getBuildLogs(session, flags, projectApiPath, buildId, orgId, { cursor = 0, limit = 200 } = {}) {
   const query = buildQuery({ cursor, limit }, ['cursor', 'limit'])
-  return unwrapData(await request(session, flags, 'GET', `/project/${projectId}/github/builds/${buildId}/logs${query}`, { orgId }))
+  return unwrapData(await request(session, flags, 'GET', `${projectApiPath}/builds/${buildId}/logs${query}`, { orgId }))
 }
 
 function parseIntegerOption(value, flagName, { defaultValue, min, max }) {
@@ -4831,7 +4913,7 @@ function printBuildLogEventsJson(logs) {
   }
 }
 
-async function followBuildLogs(session, flags, projectId, buildId, orgId, {
+async function followBuildLogs(session, flags, projectApiPath, buildId, orgId, {
   initialCursor = 0,
   limit = 200,
   intervalSeconds = 5,
@@ -4844,7 +4926,7 @@ async function followBuildLogs(session, flags, projectId, buildId, orgId, {
   const startedAt = Date.now()
 
   while (true) {
-    const result = await getBuildLogs(session, flags, projectId, buildId, orgId, {
+    const result = await getBuildLogs(session, flags, projectApiPath, buildId, orgId, {
       cursor,
       limit: pollLimit,
     })
@@ -4885,20 +4967,27 @@ async function handleBuildLogs(session, flags) {
     return
   }
 
-  const orgId = await resolveOrgId(session, flags);
   const cursor = parseIntegerOption(flags.cursor, '--cursor', { defaultValue: 0, min: 0 })
   const limit = parseIntegerOption(flags.limit, '--limit', { defaultValue: 200, min: 1, max: 500 })
+  const intervalSeconds = flags.follow
+    ? parseSecondsOption(flags.interval, '--interval', { defaultValue: 5, min: 0.1 })
+    : undefined;
+  const timeoutSeconds = flags.follow
+    ? parseSecondsOption(flags.timeout, '--timeout', { defaultValue: 900, min: 1 })
+    : undefined;
+  const orgId = await resolveOrgId(session, flags);
+  const projectApiPath = await resolveGitProjectApiPath(session, flags, projectId, orgId);
 
   if (flags.follow) {
-    return followBuildLogs(session, flags, projectId, buildId, orgId, {
+    return followBuildLogs(session, flags, projectApiPath, buildId, orgId, {
       initialCursor: cursor,
       limit,
-      intervalSeconds: parseSecondsOption(flags.interval, '--interval', { defaultValue: 5, min: 0.1 }),
-      timeoutSeconds: parseSecondsOption(flags.timeout, '--timeout', { defaultValue: 900, min: 1 }),
+      intervalSeconds,
+      timeoutSeconds,
     })
   }
 
-  const result = await getBuildLogs(session, flags, projectId, buildId, orgId, { cursor, limit })
+  const result = await getBuildLogs(session, flags, projectApiPath, buildId, orgId, { cursor, limit })
   if (flags.json) return printJson(result)
   printBuildLogs(result?.logs)
 }
@@ -4911,12 +5000,15 @@ async function handleDeployWatch(session, flags) {
     return;
   }
 
+  const intervalSeconds = parseSecondsOption(flags.interval, '--interval', { defaultValue: 5, min: 0.1 });
+  const timeoutSeconds = parseSecondsOption(flags.timeout, '--timeout', { defaultValue: 900, min: 1 });
   const orgId = await resolveOrgId(session, flags);
-  return followBuildLogs(session, flags, projectId, buildId, orgId, {
+  const projectApiPath = await resolveGitProjectApiPath(session, flags, projectId, orgId);
+  return followBuildLogs(session, flags, projectApiPath, buildId, orgId, {
     initialCursor: 0,
     limit: 200,
-    intervalSeconds: parseSecondsOption(flags.interval, '--interval', { defaultValue: 5, min: 0.1 }),
-    timeoutSeconds: parseSecondsOption(flags.timeout, '--timeout', { defaultValue: 900, min: 1 }),
+    intervalSeconds,
+    timeoutSeconds,
   })
 }
 

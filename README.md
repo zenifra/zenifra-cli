@@ -57,6 +57,7 @@ zenifra plans --type storage --json
 zenifra create project
 zenifra create project --name <name> --plan free --payment-mode hourly --config @examples/http-project.json
 zenifra create project --name <name> --plan basic --payment-mode hourly --config @examples/http-github-project.json
+zenifra create project --name <name> --plan basic --payment-mode hourly --config @examples/http-git-project.json
 zenifra create project --name <name> --plan premium --payment-mode hourly --config @examples/http-autoscaling-project.json
 zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/postgresql-project.json
 zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/mariadb-project.json
@@ -138,9 +139,9 @@ zenifra project metrics capabilities --project <project-id> --json
 
 ---
 
-## Builds GitHub
+## Builds e deployments Git
 
-Use `zenifra builds` para listar o historico de builds e `zenifra builds logs` para ler os logs do pipeline GitHub de um build especifico.
+Use `zenifra builds` para listar o historico de builds e `zenifra builds logs` para ler os logs de um build de projeto com origem Git.
 
 ```bash
 zenifra builds --project <project-id>
@@ -153,9 +154,13 @@ zenifra deploy watch --project <project-id> --build <build-id>
 Fluxos:
 
 - `zenifra project logs`: logs da aplicacao em execucao
-- `zenifra builds logs`: logs do build GitHub
-- `zenifra deploy`: dispara o build/deploy GitHub e retorna o `build_id`
+- `zenifra builds logs`: logs do build Git
+- `zenifra deploy`: dispara o build/deploy Git e retorna o `build_id`
 - `zenifra deploy watch`: usa esse `build_id` para acompanhar o build em tempo real e imprimir os logs incrementais ate o fim
+
+Para criar um projeto HTTP com uma origem Git, use `config.source` e `config.build`, como em `examples/http-git-project.json`. Os valores de `connection_id` e `repository_id` sao exemplos: substitua-os pelos IDs retornados pela configuracao segura da conexao e do repositorio no Console/API. A CLI nao recebe nem armazena PATs.
+
+Em APIs antigas que ainda nao anunciam as rotas Git neutras, a CLI usa as rotas anteriores somente quando consegue confirmar a origem GitHub legada do projeto. Essa verificacao pode exigir permissao de leitura do projeto. Se a API negar essa leitura, a CLI encerra o comando sem tentar a rota antiga; projetos Forgejo ou com outra origem generica nunca sao tratados como GitHub.
 
 Alguns builds antigos podem disponibilizar somente um resumo terminal. Nesse caso, a saida legivel avisa que eventos detalhados nao estavam disponiveis; `--json` preserva a resposta recebida da API.
 
@@ -309,6 +314,7 @@ Use os arquivos em `examples/` como base para `zenifra create project`:
 - `examples/http-github-project.json`: projeto HTTP com build via GitHub
 - `examples/http-github-tag-project.json`: projeto HTTP com deploy por tag e padrao exato
 - `examples/http-github-release-project.json`: projeto HTTP com deploy por release e padrao `v*`
+- `examples/http-git-project.json`: projeto HTTP com origem Git por conexao configurada no Console/API
 - `examples/http-autoscaling-project.json`: projeto HTTP pago criado com auto-scaling
 - `examples/postgresql-project.json`: projeto PostgreSQL
 - `examples/mariadb-project.json`: projeto MariaDB
@@ -348,6 +354,7 @@ Valores aceitos:
 - `config.github.runtime` (quando houver GitHub em projeto HTTP): `nodejs` ou `python`
 - `config.github.auto_deploy`: use `true` para o modo `branch`; mantenha `false` ao habilitar `version_deploy`
 - `config.github.version_deploy`: use `enabled: true`, `event: "tag"` ou `"release"` e um `tag_pattern` explicito; `include_prereleases` e opcional e padrao `false`
+- `config.source` e `config.build` (quando houver origem Git por conexao): use os IDs retornados pela configuracao segura no Console/API; nao informe credenciais Git nesses campos
 - `config.autoscaling` (somente HTTP pago): `enabled: true`, `max_instances` maior ou igual a `config.instances` e alvos opcionais de CPU/memoria entre 1 e 100
 
 Observacoes do wizard:
