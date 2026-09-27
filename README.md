@@ -80,6 +80,10 @@ zenifra project metrics --project <project-id> --instance <instance-id>
 zenifra project metrics capabilities --project <project-id>
 zenifra project network --project <project-id> --view summary
 zenifra project image set --project <project-id> --image ghcr.io/zenifra/app:tag
+zenifra project github --project <project-id>
+zenifra project github deploy-settings set --project <project-id> --mode branch
+zenifra project github deploy-settings set --project <project-id> --mode tag --tag-pattern "v*"
+zenifra project github deploy-settings set --project <project-id> --mode release --tag-pattern "v*" --include-prereleases true
 zenifra project envs --project <project-id>
 zenifra project env add --project <project-id> --name NODE_ENV --value production
 zenifra project env update --project <project-id> --name NODE_ENV --value staging
@@ -154,6 +158,22 @@ Fluxos:
 - `zenifra deploy watch`: usa esse `build_id` para acompanhar o build em tempo real e imprimir os logs incrementais ate o fim
 
 Alguns builds antigos podem disponibilizar somente um resumo terminal. Nesse caso, a saida legivel avisa que eventos detalhados nao estavam disponiveis; `--json` preserva a resposta recebida da API.
+
+### Modos de deploy GitHub
+
+Consulte a configuracao publica atual e escolha exatamente um modo de deploy:
+
+```bash
+zenifra project github --project <project-id>
+zenifra project github deploy-settings set --project <project-id> --mode manual
+zenifra project github deploy-settings set --project <project-id> --mode branch
+zenifra project github deploy-settings set --project <project-id> --mode tag --tag-pattern "v*"
+zenifra project github deploy-settings set --project <project-id> --mode release --tag-pattern "v*" --include-prereleases false
+```
+
+Os modos aceitos sao `manual`, `branch`, `tag` e `release`. `tag` e `release` exigem `--tag-pattern`, que aceita curingas `*` e `?`. O padrao de prereleases e `false`; a opcao so esta disponivel no modo `release`. A CLI le a configuracao salva de volta antes de confirmar uma alteracao. O comando `zenifra deploy --project <project-id> --branch <branch>` continua disponivel para iniciar um deploy manual.
+
+Para criar um projeto HTTP com deploy por tag ou release, use `examples/http-github-tag-project.json` (padrao exato `v1.2.3`) ou `examples/http-github-release-project.json` (padrao `v*`).
 
 Antes de uma mutacao, confirme o perfil, a API e a organizacao ativa. Para criacoes, confirme tambem o catalogo, plano, pagamento, exposicao, dominio, origem do deploy, porta, instancias e ambientes. Depois, leia o projeto de volta e acompanhe o build/deployment ate um estado terminal.
 
@@ -287,6 +307,8 @@ Use os arquivos em `examples/` como base para `zenifra create project`:
 
 - `examples/http-project.json`: projeto HTTP com imagem OCI publica
 - `examples/http-github-project.json`: projeto HTTP com build via GitHub
+- `examples/http-github-tag-project.json`: projeto HTTP com deploy por tag e padrao exato
+- `examples/http-github-release-project.json`: projeto HTTP com deploy por release e padrao `v*`
 - `examples/http-autoscaling-project.json`: projeto HTTP pago criado com auto-scaling
 - `examples/postgresql-project.json`: projeto PostgreSQL
 - `examples/mariadb-project.json`: projeto MariaDB
@@ -324,12 +346,15 @@ Valores aceitos:
 - `config.version` em projetos Valkey: a versão retornada por `zenifra plans --type valkey`
 - `config.storage` em projetos Valkey: obrigatório e persistente para Key Value/Queue; omitido para Cache
 - `config.github.runtime` (quando houver GitHub em projeto HTTP): `nodejs` ou `python`
+- `config.github.auto_deploy`: use `true` para o modo `branch`; mantenha `false` ao habilitar `version_deploy`
+- `config.github.version_deploy`: use `enabled: true`, `event: "tag"` ou `"release"` e um `tag_pattern` explicito; `include_prereleases` e opcional e padrao `false`
 - `config.autoscaling` (somente HTTP pago): `enabled: true`, `max_instances` maior ou igual a `config.instances` e alvos opcionais de CPU/memoria entre 1 e 100
 
 Observacoes do wizard:
 
 - conflitos entre documentacao e API sao validados pelo contrato real aceito pela API
 - o wizard oferece auto-scaling apenas quando o plano selecionado informa essa disponibilidade
+- no modo GitHub, o wizard permite escolher entre `manual`, `branch`, `tag` e `release`; modos por versao exigem um padrao de tags
 - na criacao com auto-scaling, `config.instances` e o minimo inicial e `config.autoscaling.max_instances` e o maximo
 - em projetos de banco, o wizard nao pergunta `username`, `password` nem `database name`
 - em projetos de banco, a CLI preenche apenas campos tecnicos minimos exigidos pela validacao atual da API

@@ -2837,7 +2837,7 @@ test('create project wizard re-prompts invalid runtime and creates an http githu
       'ruby',
       'nodejs',
       '24',
-      's',
+      '2',
       'npm start',
       '',
       'npm run build',
@@ -3867,5 +3867,426 @@ test('Valkey rotation rejects an explicitly empty idempotency key without genera
     assert.equal(result.code, 1);
     assert.match(result.stderr, /entre 16 e 200 caracteres/);
     assert.equal(requests, 0);
+  });
+});
+
+test('create project wizard configures manual, tag, and release modes without combining deploy triggers', async () => {
+  const scenarios = [
+    {
+      mode: 'manual',
+      answer: '1',
+      expected: { auto_deploy: false },
+    },
+    {
+      mode: 'tag',
+      answer: '3',
+      tagPattern: 'v*',
+      expected: {
+        auto_deploy: false,
+        version_deploy: { enabled: true, event: 'tag', tag_pattern: 'v*', include_prereleases: false },
+      },
+    },
+    {
+      mode: 'release',
+      answer: '4',
+      tagPattern: 'v*',
+      includePrereleases: true,
+      expected: {
+        auto_deploy: false,
+        version_deploy: { enabled: true, event: 'release', tag_pattern: 'v*', include_prereleases: true },
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    let body;
+    await withWizardCatalogServer(async (req, res) => {
+      assert.equal(req.method, 'POST');
+      assert.equal(req.url, '/v1/project');
+      body = await readJson(req);
+      jsonResponse(res, 201, { status: 'success', data: { id: `proj_${scenario.mode}` } });
+    }, async ({ apiBase, configDir }) => {
+      const answers = [
+        'wizard-app',
+        '',
+        '1',
+        '1',
+        '2',
+        '1',
+        '3000',
+        '1',
+        'n',
+        '1',
+        'example-team',
+        'sample-app',
+        'main',
+        'nodejs',
+        '24',
+        scenario.answer,
+      ];
+      if (scenario.tagPattern) answers.push(scenario.tagPattern);
+      if (scenario.includePrereleases !== undefined) answers.push(String(scenario.includePrereleases ? 's' : 'n'));
+      answers.push('npm start', '', 'npm run build', 's');
+
+      const result = await runCli(['create', 'project'], { apiBase, configDir, stdin: answers.join('\n') });
+
+      assert.equal(result.code, 0, `${scenario.mode}\n${result.stderr}`);
+      assert.equal(body.config.github.auto_deploy, scenario.expected.auto_deploy);
+      assert.deepEqual(body.config.github.version_deploy, scenario.expected.version_deploy);
+      assert.notEqual(
+        body.config.github.auto_deploy && body.config.github.version_deploy?.enabled === true,
+        true,
+      );
+    });
+  }
+});
+
+test('project github help documents read-only configuration and explicit deploy modes', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const readHelp = await runCli(['help', 'project', 'github'], { configDir });
+    const setHelp = await runCli(['help', 'project', 'github', 'deploy-settings', 'set'], { configDir });
+
+    assert.equal(readHelp.code, 0, readHelp.stderr);
+    assert.match(readHelp.stdout, /zenifra project github --project <id>/);
+    assert.equal(setHelp.code, 0, setHelp.stderr);
+    assert.match(setHelp.stdout, /--mode <manual\|branch\|tag\|release>/);
+    assert.match(setHelp.stdout, /--tag-pattern <pattern>/);
+    assert.match(setHelp.stdout, /--include-prereleases <true\|false>/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('project github prints public configuration and uses the selected organization', async () => {
+  const privateMarker = 'installation-data-not-for-cli-output';
+  const publicConfiguration = {
+    repository_owner: 'example-team',
+    repository_name: 'sample-app',
+    branch: 'main',
+    runtime: 'nodejs',
+    version: '24',
+    auto_deploy: false,
+    version_deploy: {
+      enabled: true,
+      event: 'release',
+      tag_pattern: 'v*',
+      include_prereleases: false,
+    },
+    installation_id: privateMarker,
+  };
+
+  await withCliServer(async (req, res) => {
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/project/proj_github/github');
+    assert.equal(req.headers.authorization, 'Bearer user-token-for-cli-test');
+    assert.equal(req.headers['x-organization-id'], 'org_cli_test');
+    jsonResponse(res, 200, { status: 'success', data: publicConfiguration });
+  }, async ({ apiBase, configDir }) => {
+    await writeProfiles(configDir, {
+      version: 1,
+      activeProfile: 'staging',
+      profiles: {
+        staging: {
+          name: 'staging',
+          authMode: 'access_token',
+          apiBaseUrl: apiBase,
+          accessToken: 'user-token-for-cli-test',
+          selectedOrganizationId: 'org_cli_test',
+        },
+      },
+    });
+
+    const result = await runCli(['project', 'github', '--project', 'proj_github', '--json'], {
+      apiBase,
+      configDir,
+      envApiKey: null,
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      repository_owner: 'example-team',
+      repository_name: 'sample-app',
+      branch: 'main',
+      runtime: 'nodejs',
+      version: '24',
+      auto_deploy: false,
+      version_deploy: {
+        enabled: true,
+        event: 'release',
+        tag_pattern: 'v*',
+        include_prereleases: false,
+      },
+    });
+    assert.doesNotMatch(result.stdout, new RegExp(privateMarker));
+    assert.doesNotMatch(result.stdout, /user-token-for-cli-test/);
+  });
+});
+
+test('project github deploy-settings set switches modes exclusively and confirms each readback', async () => {
+  const cases = [
+    {
+      mode: 'manual',
+      patch: { auto_deploy: false, version_deploy: { enabled: false } },
+    },
+    {
+      mode: 'branch',
+      patch: { auto_deploy: true, version_deploy: { enabled: false } },
+    },
+    {
+      mode: 'tag',
+      pattern: 'v*',
+      patch: {
+        auto_deploy: false,
+        version_deploy: { enabled: true, event: 'tag', tag_pattern: 'v*', include_prereleases: false },
+      },
+    },
+    {
+      mode: 'release',
+      pattern: 'release/?*',
+      includePrereleases: true,
+      patch: {
+        auto_deploy: false,
+        version_deploy: { enabled: true, event: 'release', tag_pattern: 'release/?*', include_prereleases: true },
+      },
+    },
+    {
+      mode: 'release',
+      pattern: 'v*',
+      patch: {
+        auto_deploy: false,
+        version_deploy: { enabled: true, event: 'release', tag_pattern: 'v*', include_prereleases: false },
+      },
+    },
+    {
+      mode: 'tag',
+      pattern: 'v=1.*',
+      inlineTagPattern: true,
+      patch: {
+        auto_deploy: false,
+        version_deploy: { enabled: true, event: 'tag', tag_pattern: 'v=1.*', include_prereleases: false },
+      },
+    },
+  ];
+  let storedConfiguration = {
+    repository_owner: 'example-team',
+    repository_name: 'sample-app',
+    branch: 'main',
+    runtime: 'nodejs',
+    version: '24',
+    auto_deploy: true,
+    version_deploy: { enabled: false, event: 'tag', tag_pattern: '*', include_prereleases: false },
+  };
+  let activeCase;
+  let requestMethods = [];
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.headers['x-organization-id'], undefined);
+    if (req.method === 'PATCH' && req.url === '/v1/project/proj_github/github/deploy-settings') {
+      const body = await readJson(req);
+      requestMethods.push(req.method);
+      assert.deepEqual(body, activeCase.patch);
+      storedConfiguration = {
+        ...storedConfiguration,
+        ...body,
+        version_deploy: {
+          enabled: false,
+          event: 'tag',
+          tag_pattern: '*',
+          include_prereleases: false,
+          ...storedConfiguration.version_deploy,
+          ...body.version_deploy,
+        },
+      };
+      jsonResponse(res, 200, { status: 'success', message: 'settings updated' });
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/project/proj_github/github') {
+      requestMethods.push(req.method);
+      jsonResponse(res, 200, { status: 'success', data: storedConfiguration });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+  }, async ({ apiBase, configDir }) => {
+    for (const scenario of cases) {
+      activeCase = scenario;
+      requestMethods = [];
+      const args = [
+        'project', 'github', 'deploy-settings', 'set',
+        '--project', 'proj_github', '--mode', scenario.mode,
+      ];
+      if (scenario.pattern) {
+        if (scenario.inlineTagPattern) args.push(`--tag-pattern=${scenario.pattern}`);
+        else args.push('--tag-pattern', scenario.pattern);
+      }
+      if (scenario.includePrereleases !== undefined) {
+        args.push('--include-prereleases', String(scenario.includePrereleases));
+      }
+      args.push('--json');
+
+      const result = await runCli(args, { apiBase, configDir });
+
+      assert.equal(result.code, 0, `${scenario.mode}\n${result.stderr}`);
+      assert.deepEqual(requestMethods, ['PATCH', 'GET']);
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.auto_deploy, scenario.mode === 'branch');
+      assert.equal(output.version_deploy.enabled, scenario.mode === 'tag' || scenario.mode === 'release');
+      if (scenario.mode === 'tag' || scenario.mode === 'release') {
+        assert.equal(output.version_deploy.event, scenario.mode);
+        assert.equal(output.version_deploy.tag_pattern, scenario.pattern);
+        assert.equal(output.version_deploy.include_prereleases, scenario.includePrereleases === true);
+      }
+      assert.equal(output.auto_deploy && output.version_deploy.enabled === true, false);
+    }
+  });
+});
+
+test('project github deploy-settings set rejects invalid combinations before sending a request', async () => {
+  const invalidCases = [
+    { args: ['--mode', 'tag'], error: /tag[-_]pattern.*obrigatorio/i },
+    { args: ['--mode', 'release'], error: /tag[-_]pattern.*obrigatorio/i },
+    { args: ['--mode', 'tag', '--tag-pattern', 'v[0-9]*'], error: /tag pattern.*invalido/i },
+    { args: ['--mode', 'tag', '--tag-pattern'], error: /tag-pattern.*requires a value/i },
+    { args: ['--mode', 'manual', '--tag-pattern', 'v*'], error: /tag-pattern.*so pode.*tag.*release/i },
+    { args: ['--mode', 'tag', '--tag-pattern', 'v*', '--include-prereleases', 'true'], error: /prereleases.*so pode.*release/i },
+    { args: ['--mode', 'release', '--tag-pattern', 'v*', '--include-prereleases', 'sometimes'], error: /true ou false/i },
+    { args: ['--mode', 'release', '--tag-pattern', 'v*', '--include-prereleases'], error: /include-prereleases.*requires.*true or false/i },
+  ];
+  let requests = 0;
+
+  await withCliServer(async (_req, res) => {
+    requests += 1;
+    jsonResponse(res, 200, { status: 'success' });
+  }, async ({ apiBase, configDir }) => {
+    for (const scenario of invalidCases) {
+      const result = await runCli([
+        'project', 'github', 'deploy-settings', 'set', '--project', 'proj_github', ...scenario.args,
+      ], { apiBase, configDir });
+
+      assert.equal(result.code, 1, `${scenario.args.join(' ')}\n${result.stdout}`);
+      assert.match(result.stderr, scenario.error);
+    }
+
+    assert.equal(requests, 0);
+  });
+});
+
+test('project github deploy-settings set rejects a successful PATCH when readback differs', async () => {
+  let requests = 0;
+  await withCliServer(async (req, res) => {
+    requests += 1;
+    if (req.method === 'PATCH') {
+      await readJson(req);
+      jsonResponse(res, 200, { status: 'success' });
+      return;
+    }
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        repository_owner: 'example-team',
+        repository_name: 'sample-app',
+        branch: 'main',
+        runtime: 'nodejs',
+        version: '24',
+        auto_deploy: true,
+        version_deploy: { enabled: false, event: 'tag', tag_pattern: '*', include_prereleases: false },
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'github', 'deploy-settings', 'set', '--project', 'proj_github',
+      '--mode', 'release', '--tag-pattern', 'v*', '--json',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /nao foi confirmada|readback|confer/i);
+    assert.equal(requests, 2);
+  });
+});
+
+test('create project validates GitHub version deployment config locally and accepts a release config', async () => {
+  const invalidModes = [
+    {
+      config: { auto_deploy: true, version_deploy: { enabled: true, event: 'tag', tag_pattern: 'v*' } },
+      error: /auto_deploy.*version_deploy|version_deploy.*auto_deploy/i,
+    },
+    {
+      config: { version_deploy: { enabled: true, event: 'tag' } },
+      error: /tag[_-]pattern.*obrigatorio/i,
+    },
+    {
+      config: { version_deploy: { enabled: true, event: 'release', tag_pattern: 'v[0-9]*' } },
+      error: /tag pattern.*invalido/i,
+    },
+    {
+      config: { version_deploy: { enabled: true, event: 'tag', tag_pattern: 'v*', include_prereleases: true } },
+      error: /prereleases.*so pode.*release/i,
+    },
+  ];
+  let requests = 0;
+  await withCliServer(async (req, res) => {
+    requests += 1;
+    if (req.method === 'POST' && req.url === '/v1/project') {
+      await readJson(req);
+      jsonResponse(res, 201, { status: 'success', data: { id: 'proj_valid_release' } });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+  }, async ({ apiBase, configDir }) => {
+    for (const scenario of invalidModes) {
+      const config = {
+        type_project: 'http',
+        exposure: 'public',
+        github: {
+          repository_owner: 'example-team',
+          repository_name: 'sample-app',
+          branch: 'main',
+          runtime: 'nodejs',
+          ...scenario.config,
+        },
+      };
+      const result = await runCli([
+        'create', 'project', '--name', 'sample-app', '--plan', 'free', '--payment-mode', 'hourly',
+        '--config', JSON.stringify(config),
+      ], { apiBase, configDir });
+
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, scenario.error);
+    }
+    assert.equal(requests, 0);
+
+    let createdPayload;
+    const validConfig = {
+      type_project: 'http',
+      exposure: 'public',
+      github: {
+        repository_owner: 'example-team',
+        repository_name: 'sample-app',
+        branch: 'main',
+        runtime: 'nodejs',
+        auto_deploy: false,
+        version_deploy: {
+          enabled: true,
+          event: 'release',
+          tag_pattern: 'v*',
+          include_prereleases: true,
+        },
+      },
+    };
+    await withCliServer(async (req, res) => {
+      assert.equal(req.method, 'POST');
+      assert.equal(req.url, '/v1/project');
+      createdPayload = await readJson(req);
+      jsonResponse(res, 201, { status: 'success', data: { id: 'proj_valid_release' } });
+    }, async (server) => {
+      const result = await runCli([
+        'create', 'project', '--name', 'sample-app', '--plan', 'free', '--payment-mode', 'hourly',
+        '--config', JSON.stringify(validConfig), '--json',
+      ], { apiBase: server.apiBase, configDir: server.configDir });
+
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(createdPayload.config.github, validConfig.github);
+    });
   });
 });

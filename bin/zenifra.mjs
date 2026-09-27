@@ -50,6 +50,7 @@ const KNOWN_FLAG_NAMES = new Set([
   'from',
   'help',
   'image',
+  'includePrereleases',
   'idempotencyKey',
   'instance',
   'interval',
@@ -73,6 +74,7 @@ const KNOWN_FLAG_NAMES = new Set([
   'revoke',
   'showValues',
   'status',
+  'tagPattern',
   'timeout',
   'to',
   'totp',
@@ -114,6 +116,21 @@ const ALLOWED_PLAN_VALUES = new Set([
 const ALLOWED_PAYMENT_MODE_VALUES = new Set(['hourly', 'monthly', 'yearly']);
 const ALLOWED_TYPE_PROJECT_VALUES = new Set(['http', 'postgresql', 'mariadb', 'valkey', 'clickhouse']);
 const ALLOWED_RUNTIME_VALUES = new Set(['nodejs', 'python']);
+const ALLOWED_GITHUB_VERSION_DEPLOY_EVENTS = new Set(['tag', 'release']);
+const ALLOWED_GITHUB_VERSION_DEPLOY_FIELDS = new Set(['enabled', 'event', 'tag_pattern', 'include_prereleases']);
+const GITHUB_TAG_PATTERN_BLOCKED_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\[\]{}\\]/u;
+const GITHUB_PUBLIC_CONFIG_FIELDS = [
+  'repository_owner',
+  'repository_name',
+  'branch',
+  'runtime',
+  'version',
+  'auto_deploy',
+  'start_command',
+  'pre_build_command',
+  'build_command',
+];
+const GITHUB_PUBLIC_VERSION_DEPLOY_FIELDS = ['enabled', 'event', 'tag_pattern', 'include_prereleases'];
 const ALLOWED_EXPOSURE_VALUES = new Set(['public', 'private']);
 const GITHUB_RUNTIME_VERSIONS = {
   nodejs: ['24', '22', '20'],
@@ -205,6 +222,8 @@ Usage:
   zenifra project healthcheck failures --project <id> [--page <n>] [--limit <n>] [--json]
   zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]
   zenifra project image set --project <id> --image <image> [--json]
+  zenifra project github --project <id> [--json]
+  zenifra project github deploy-settings set --project <id> --mode <manual|branch|tag|release> [--tag-pattern <pattern>] [--include-prereleases <true|false>] [--json]
   zenifra project exposure set --project <id> --exposure <public|private> [--json]
   zenifra project envs --project <id> [--json] [--show-values]
   zenifra project env add --project <id> --name <name> --value <value> [--json]
@@ -455,7 +474,41 @@ const HELP_SPECS = [
     description: 'Agrupa comandos operacionais e de introspecao sobre um projeto especifico.',
     examples: ['zenifra project', 'zenifra project info --project proj_1', 'zenifra project env add --project proj_1 --name NODE_ENV --value production'],
     output: 'Zenifra CLI - project',
-    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, stop, resume, delete, url, logs, metrics, capabilities, network, image, exposure, autoscaling, billing, envs e instances.'],
+    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, stop, resume, delete, url, logs, metrics, capabilities, network, image, github, exposure, autoscaling, billing, envs e instances.'],
+  },
+  {
+    command: 'project github',
+    usage: 'zenifra project github --project <id> [--json]',
+    description: 'Mostra a configuracao GitHub publica e o modo atual de deploy do projeto.',
+    flags: ['--project <id>  ID do projeto.', '--json          Imprime a configuracao publica em JSON.'],
+    examples: ['zenifra project github --project proj_1', 'zenifra project github --project proj_1 --json'],
+    output: 'Repositorio: example-team/sample-app\nBranch: main\nRuntime: nodejs@24\nModo de deploy: release\nPadrao de tags: v*\nIncluir prereleases: nao',
+    jsonOutput: '{"repository_owner":"example-team","repository_name":"sample-app","branch":"main","runtime":"nodejs","version":"24","auto_deploy":false,"version_deploy":{"enabled":true,"event":"release","tag_pattern":"v*","include_prereleases":false}}',
+    notes: ['A resposta mostra apenas campos publicos da configuracao do projeto.'],
+  },
+  {
+    command: 'project github deploy-settings set',
+    usage: 'zenifra project github deploy-settings set --project <id> --mode <manual|branch|tag|release> [--tag-pattern <pattern>] [--include-prereleases <true|false>] [--json]',
+    description: 'Define um unico modo de deploy para o projeto com origem GitHub e confirma a configuracao salva.',
+    flags: [
+      '--project <id>                     ID do projeto.',
+      '--mode <manual|branch|tag|release>  Modo de deploy exclusivo.',
+      '--tag-pattern <pattern>             Padrao obrigatorio para tag e release. Aceita * e ?.',
+      '--include-prereleases <true|false>  Inclui prereleases somente no modo release. Padrao: false.',
+      '--json                             Imprime a configuracao confirmada em JSON.',
+    ],
+    examples: [
+      'zenifra project github deploy-settings set --project proj_1 --mode manual',
+      'zenifra project github deploy-settings set --project proj_1 --mode branch',
+      'zenifra project github deploy-settings set --project proj_1 --mode tag --tag-pattern "v*"',
+      'zenifra project github deploy-settings set --project proj_1 --mode release --tag-pattern "v*" --include-prereleases true',
+    ],
+    output: 'Configuracao de deploy GitHub confirmada: release (v*).',
+    jsonOutput: '{"repository_owner":"example-team","repository_name":"sample-app","branch":"main","runtime":"nodejs","version":"24","auto_deploy":false,"version_deploy":{"enabled":true,"event":"release","tag_pattern":"v*","include_prereleases":true}}',
+    notes: [
+      'Tag e release exigem --tag-pattern explicito; prereleases so podem ser habilitadas no modo release.',
+      'A configuracao salva e lida novamente antes de a CLI informar sucesso. O comando deploy manual continua disponivel.',
+    ],
   },
   {
     command: 'project info',
@@ -861,7 +914,9 @@ function parseArgs(argv) {
       continue;
     }
 
-    const [rawKey, inlineValue] = arg.slice(2).split('=', 2);
+    const argumentValueSeparator = arg.indexOf('=');
+    const rawKey = argumentValueSeparator === -1 ? arg.slice(2) : arg.slice(2, argumentValueSeparator);
+    const inlineValue = argumentValueSeparator === -1 ? undefined : arg.slice(argumentValueSeparator + 1);
     const key = rawKey.replace(/-([a-z])/g, (_, value) => value.toUpperCase());
 
     if (inlineValue !== undefined) {
@@ -1218,7 +1273,9 @@ function estimateWizardTotal(state = {}) {
     total += 1;
 
     if (state.httpSource === 'github') {
-      total += 9;
+      total += state.httpGithubDeployMode === 'release'
+        ? 11
+        : state.httpGithubDeployMode === 'tag' ? 10 : 9;
     } else if (state.httpSource === 'oci') {
       total += 2;
       if (state.httpImagePublic === false) {
@@ -2943,6 +3000,57 @@ function validateValkeyConfig(config, plan, catalog) {
   };
 }
 
+function isValidGithubTagPattern(value) {
+  if (typeof value !== 'string') return false;
+  const length = Array.from(value).length;
+  return length >= 1 && length <= 255 && value.trim().length > 0
+    && !GITHUB_TAG_PATTERN_BLOCKED_CHARACTERS.test(value);
+}
+
+function validateGithubVersionDeployConfig(github) {
+  if (!isRecord(github)) {
+    throw new CliError('config.github deve ser um objeto.');
+  }
+  if (github.auto_deploy !== undefined && typeof github.auto_deploy !== 'boolean') {
+    throw new CliError('config.github.auto_deploy deve ser true ou false.');
+  }
+
+  const versionDeploy = github.version_deploy;
+  if (versionDeploy === undefined) return;
+  if (!isRecord(versionDeploy)) {
+    throw new CliError('config.github.version_deploy deve ser um objeto.');
+  }
+
+  const unsupportedField = Object.keys(versionDeploy).find((field) => !ALLOWED_GITHUB_VERSION_DEPLOY_FIELDS.has(field));
+  if (unsupportedField) {
+    throw new CliError(`Campo invalido: config.github.version_deploy.${unsupportedField}.`);
+  }
+  if (versionDeploy.enabled !== undefined && typeof versionDeploy.enabled !== 'boolean') {
+    throw new CliError('config.github.version_deploy.enabled deve ser true ou false.');
+  }
+  if (versionDeploy.event !== undefined && !ALLOWED_GITHUB_VERSION_DEPLOY_EVENTS.has(versionDeploy.event)) {
+    throw new CliError('config.github.version_deploy.event deve ser tag ou release.');
+  }
+  if (versionDeploy.tag_pattern !== undefined && !isValidGithubTagPattern(versionDeploy.tag_pattern)) {
+    throw new CliError('Tag pattern invalido: use de 1 a 255 caracteres e evite caracteres de controle, [ ] { } e barra invertida.');
+  }
+  if (versionDeploy.include_prereleases !== undefined && typeof versionDeploy.include_prereleases !== 'boolean') {
+    throw new CliError('config.github.version_deploy.include_prereleases deve ser true ou false.');
+  }
+
+  const enabled = versionDeploy.enabled === true;
+  const event = versionDeploy.event || 'tag';
+  if (enabled && versionDeploy.tag_pattern === undefined) {
+    throw new CliError('config.github.version_deploy.tag_pattern e obrigatorio quando o version_deploy esta ativo.');
+  }
+  if (enabled && github.auto_deploy === true) {
+    throw new CliError('github.auto_deploy e github.version_deploy nao podem ficar ativos ao mesmo tempo.');
+  }
+  if (versionDeploy.include_prereleases === true && event !== 'release') {
+    throw new CliError('github.version_deploy.include_prereleases so pode ser true no modo release.');
+  }
+}
+
 function validateCreateInput({ plan, paymentMode, config, valkeyCatalog }) {
   const nextTypeProject = normalizeTypeProject(config?.type_project);
   const nextPlan = normalizePlan(plan);
@@ -2969,6 +3077,7 @@ function validateCreateInput({ plan, paymentMode, config, valkeyCatalog }) {
   }
 
   if (nextTypeProject === 'http' && nextConfig.github) {
+    validateGithubVersionDeployConfig(nextConfig.github);
     const nextRuntime = normalizeRuntime(nextConfig.github.runtime);
     if (!nextRuntime || !ALLOWED_RUNTIME_VALUES.has(nextRuntime)) {
       throw new CliError(`Runtime invalido: "${nextConfig.github.runtime || ''}". Valores aceitos: ${formatAllowedValues(ALLOWED_RUNTIME_VALUES)}. Docs: ${DOCS_RUNTIME_URL}`);
@@ -3080,11 +3189,45 @@ async function buildHttpGithubConfig() {
     options: GITHUB_RUNTIME_VERSIONS[runtime].map((value) => ({ value })),
   });
 
-  const auto_deploy = await promptWizardBoolean({
-    label: 'Auto deploy',
+  const deployMode = await promptWizardSelect({
+    label: 'Modo de deploy GitHub',
     docs: DOCS_RUNTIME_URL,
-    examples: ['sim', 'nao'],
+    examples: ['manual', 'branch', 'tag', 'release'],
+    options: [
+      { value: 'manual', description: 'Deploy iniciado manualmente.' },
+      { value: 'branch', description: 'Deploy quando a branch configurada for atualizada.' },
+      { value: 'tag', description: 'Deploy quando uma tag corresponder ao padrao.' },
+      { value: 'release', description: 'Deploy quando uma release corresponder ao padrao.' },
+    ],
   });
+  promptWizardSelect.ui.state.httpGithubDeployMode = deployMode;
+
+  let versionDeploy;
+  if (deployMode === 'tag' || deployMode === 'release') {
+    const tagPattern = await promptWizardText({
+      label: 'Padrao de tags',
+      required: true,
+      examples: ['v*', 'release/?*'],
+      docs: DOCS_RUNTIME_URL,
+      validate: (value) => isValidGithubTagPattern(value)
+        ? null
+        : 'use de 1 a 255 caracteres; somente * e ? sao aceitos como curingas',
+    });
+    const includePrereleases = deployMode === 'release'
+      ? await promptWizardBoolean({
+        label: 'Incluir prereleases',
+        docs: DOCS_RUNTIME_URL,
+        examples: ['nao', 'sim'],
+      })
+      : false;
+
+    versionDeploy = {
+      enabled: true,
+      event: deployMode,
+      tag_pattern: tagPattern,
+      include_prereleases: includePrereleases,
+    };
+  }
 
   const start_command = await promptWizardText({
     label: 'Start command',
@@ -3114,7 +3257,8 @@ async function buildHttpGithubConfig() {
     branch,
     runtime,
     version,
-    auto_deploy,
+    auto_deploy: deployMode === 'branch',
+    ...(versionDeploy ? { version_deploy: versionDeploy } : {}),
     start_command,
     pre_build_command: preBuildCommand,
     build_command: buildCommandRaw,
@@ -3677,6 +3821,160 @@ async function handleProjectInfo(session, flags) {
 
   if (flags.json) return printJson(projectInfoForOutput(project));
   printProject({ ...project, id: projectId });
+}
+
+function githubConfigFromPayload(payload) {
+  const github = isRecord(payload?.github)
+    ? payload.github
+    : isRecord(payload?.config?.github) ? payload.config.github : payload;
+  if (!isRecord(github) || !github.repository_owner || !github.repository_name) {
+    throw new CliError('O projeto nao possui uma configuracao GitHub disponivel.');
+  }
+  return github;
+}
+
+function publicGithubConfiguration(github) {
+  const output = Object.fromEntries(GITHUB_PUBLIC_CONFIG_FIELDS
+    .filter((field) => github[field] !== undefined)
+    .map((field) => [field, github[field]]));
+  if (isRecord(github.version_deploy)) {
+    output.version_deploy = Object.fromEntries(GITHUB_PUBLIC_VERSION_DEPLOY_FIELDS
+      .filter((field) => github.version_deploy[field] !== undefined)
+      .map((field) => [field, github.version_deploy[field]]));
+  }
+  return output;
+}
+
+function githubDeploymentMode(github) {
+  const versionDeployEnabled = github.version_deploy?.enabled === true;
+  if (github.auto_deploy === true && versionDeployEnabled) {
+    throw new CliError('A configuracao GitHub do projeto possui modos de deploy conflitantes.');
+  }
+  if (github.auto_deploy === true) return 'branch';
+  if (!versionDeployEnabled) return 'manual';
+  if (!ALLOWED_GITHUB_VERSION_DEPLOY_EVENTS.has(github.version_deploy.event)) {
+    throw new CliError('A configuracao GitHub do projeto possui um modo de deploy invalido.');
+  }
+  return github.version_deploy.event;
+}
+
+function printGithubConfiguration(github) {
+  const mode = githubDeploymentMode(github);
+  const rows = [
+    { field: 'Repositorio', value: `${github.repository_owner}/${github.repository_name}` },
+    { field: 'Branch', value: github.branch || '-' },
+    { field: 'Runtime', value: github.runtime ? `${github.runtime}@${github.version || '-'}` : '-' },
+    { field: 'Modo de deploy', value: mode },
+  ];
+  if (mode === 'tag' || mode === 'release') {
+    rows.push(
+      { field: 'Padrao de tags', value: github.version_deploy.tag_pattern || '-' },
+      { field: 'Incluir prereleases', value: github.version_deploy.include_prereleases === true ? 'sim' : 'nao' },
+    );
+  }
+  printTable(rows, [
+    { label: 'Campo', value: (row) => row.field },
+    { label: 'Valor', value: (row) => row.value },
+  ]);
+}
+
+function parseGithubDeploySettings(flags) {
+  const mode = String(flags.mode || '').toLowerCase();
+  if (!['manual', 'branch', 'tag', 'release'].includes(mode)) {
+    throw new CliError('Informe --mode manual, branch, tag ou release.');
+  }
+
+  const usesVersionDeploy = mode === 'tag' || mode === 'release';
+  const hasTagPattern = flags.tagPattern !== undefined;
+  const hasPrereleaseOption = flags.includePrereleases !== undefined;
+  if (hasTagPattern && typeof flags.tagPattern !== 'string') {
+    throw new CliError('--tag-pattern requires a value.');
+  }
+  if (hasPrereleaseOption && typeof flags.includePrereleases !== 'string') {
+    throw new CliError('--include-prereleases requires a value of true or false.');
+  }
+  if (usesVersionDeploy && !hasTagPattern) {
+    throw new CliError('--tag-pattern e obrigatorio para os modos tag e release.');
+  }
+  if (!usesVersionDeploy && hasTagPattern) {
+    throw new CliError('--tag-pattern so pode ser usado nos modos tag e release.');
+  }
+  if (hasPrereleaseOption && mode !== 'release') {
+    throw new CliError('--include-prereleases so pode ser usado com --mode release.');
+  }
+
+  let includePrereleases = false;
+  if (hasPrereleaseOption) {
+    const value = String(flags.includePrereleases).toLowerCase();
+    if (value !== 'true' && value !== 'false') {
+      throw new CliError('--include-prereleases deve ser true ou false.');
+    }
+    includePrereleases = value === 'true';
+  }
+
+  const tagPattern = usesVersionDeploy ? String(flags.tagPattern) : undefined;
+  if (usesVersionDeploy && !isValidGithubTagPattern(tagPattern)) {
+    throw new CliError('Tag pattern invalido: use de 1 a 255 caracteres e evite caracteres de controle, [ ] { } e barra invertida.');
+  }
+
+  return {
+    mode,
+    includePrereleases,
+    body: {
+      auto_deploy: mode === 'branch',
+      version_deploy: usesVersionDeploy
+        ? { enabled: true, event: mode, tag_pattern: tagPattern, include_prereleases: includePrereleases }
+        : { enabled: false },
+    },
+  };
+}
+
+function githubDeploySettingsMatch(github, desired) {
+  let currentMode;
+  try {
+    currentMode = githubDeploymentMode(github);
+  } catch {
+    return false;
+  }
+  if (currentMode !== desired.mode) return false;
+  if (desired.mode !== 'tag' && desired.mode !== 'release') return true;
+
+  const versionDeploy = github.version_deploy || {};
+  return versionDeploy.enabled === true
+    && versionDeploy.event === desired.mode
+    && versionDeploy.tag_pattern === desired.body.version_deploy.tag_pattern
+    && (versionDeploy.include_prereleases === true) === desired.includePrereleases;
+}
+
+async function handleProjectGithub(session, flags) {
+  const projectId = requireProjectId(flags, 'project github');
+  if (!projectId) return;
+  const orgId = await resolveOrgId(session, flags);
+  const github = githubConfigFromPayload(unwrapData(await request(session, flags, 'GET', `/project/${projectId}/github`, { orgId })));
+  const publicConfig = publicGithubConfiguration(github);
+
+  if (flags.json) return printJson(publicConfig);
+  printGithubConfiguration(github);
+}
+
+async function handleProjectGithubDeploySettingsSet(session, flags) {
+  const projectId = requireProjectId(flags, 'project github deploy-settings set');
+  if (!projectId) return;
+  const desired = parseGithubDeploySettings(flags);
+  const orgId = await resolveOrgId(session, flags);
+
+  await request(session, flags, 'PATCH', `/project/${projectId}/github/deploy-settings`, {
+    orgId,
+    body: desired.body,
+  });
+  const github = githubConfigFromPayload(unwrapData(await request(session, flags, 'GET', `/project/${projectId}/github`, { orgId })));
+  if (!githubDeploySettingsMatch(github, desired)) {
+    throw new CliError('A configuracao solicitada nao foi confirmada pela API. Consulte "zenifra project github".');
+  }
+
+  const publicConfig = publicGithubConfiguration(github);
+  if (flags.json) return printJson(publicConfig);
+  process.stdout.write(`Configuracao de deploy GitHub confirmada: ${desired.mode}${desired.mode === 'tag' || desired.mode === 'release' ? ` (${desired.body.version_deploy.tag_pattern})` : ''}.\n`);
 }
 
 async function handleProjectLifecycleMutation(session, flags, action) {
@@ -4685,6 +4983,12 @@ async function main() {
     if (command === 'project' && subcommand === 'healthcheck' && positional[2] === 'set') return handleProjectHealthcheckSet(session, flags);
     if (command === 'project' && subcommand === 'healthcheck' && positional[2] === 'disable') return handleProjectHealthcheckDisable(session, flags);
     if (command === 'project' && subcommand === 'healthcheck' && positional[2] === 'failures') return handleProjectHealthcheckFailures(session, flags);
+    if (command === 'project' && subcommand === 'github' && positional[2] === 'deploy-settings' && positional[3] === 'set') return handleProjectGithubDeploySettingsSet(session, flags);
+    if (command === 'project' && subcommand === 'github' && positional[2] === 'deploy-settings') {
+      process.stdout.write(commandHelp(['project', 'github', 'deploy-settings', 'set']));
+      return;
+    }
+    if (command === 'project' && subcommand === 'github' && positional.length === 2) return handleProjectGithub(session, flags);
     if (command === 'project' && subcommand === 'info') return handleProjectInfo(session, flags);
     if (command === 'project' && subcommand === 'stop') return handleProjectLifecycleMutation(session, flags, 'stop');
     if (command === 'project' && subcommand === 'resume') return handleProjectLifecycleMutation(session, flags, 'resume');
