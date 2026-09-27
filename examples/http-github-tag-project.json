@@ -1,0 +1,42 @@
+{
+  "type_project": "http",
+  "exposure": "public",
+  "github": {
+    "repository_owner": "example-team",
+    "repository_name": "sample-app",
+    "branch": "main",
+    "runtime": "nodejs",
+    "version": "24",
+    "auto_deploy": false,
+    "version_deploy": {
+      "enabled": true,
+      "event": "tag",
+      "tag_pattern": "v1.2.3",
+      "include_prereleases": false
+    },
+    "start_command": "npm start",
+    "pre_build_command": null,
+    "build_command": "npm run build"
+  },
+  "port": 3000,
+  "instances": 1,
+  "storage": {
+    "persistent": false,
+    "capacity": 1
+  },
+  "envs": [
+    {
+      "name": "NODE_ENV",
+      "value": "production"
+    }
+  ],
+  "network_access": {
+    "ingress_white_list": [
+      {
+        "cidr": "0.0.0.0/0",
+        "description": "Allow all"
+      }
+    ],
+    "ingress_black_list": []
+  }
+}
