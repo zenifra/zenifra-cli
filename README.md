@@ -54,6 +54,11 @@ zenifra plans
 zenifra plans --type http
 zenifra plans --type valkey
 zenifra plans --type storage --json
+zenifra git providers
+zenifra git runtimes
+zenifra git connections
+zenifra git repositories resolve --connection <connection-id> --path equipe/aplicacao
+zenifra git branches --connection <connection-id> --repository <repository-id>
 zenifra create project
 zenifra create project --name <name> --plan free --payment-mode hourly --config @examples/http-project.json
 zenifra create project --name <name> --plan basic --payment-mode hourly --config @examples/http-github-project.json
@@ -83,6 +88,9 @@ zenifra project network --project <project-id> --view summary
 zenifra project image set --project <project-id> --image ghcr.io/zenifra/app:tag
 zenifra project github --project <project-id>
 zenifra project github deploy-settings set --project <project-id> --mode branch
+zenifra project source --project <project-id>
+zenifra project source branches --project <project-id>
+zenifra project source deploy-settings set --project <project-id> --mode branch
 zenifra project github deploy-settings set --project <project-id> --mode tag --tag-pattern "v*"
 zenifra project github deploy-settings set --project <project-id> --mode release --tag-pattern "v*" --include-prereleases true
 zenifra project envs --project <project-id>
@@ -158,7 +166,30 @@ Fluxos:
 - `zenifra deploy`: dispara o build/deploy Git e retorna o `build_id`
 - `zenifra deploy watch`: usa esse `build_id` para acompanhar o build em tempo real e imprimir os logs incrementais ate o fim
 
-Para criar um projeto HTTP com uma origem Git, use `config.source` e `config.build`, como em `examples/http-git-project.json`. Os valores de `connection_id` e `repository_id` sao exemplos: substitua-os pelos IDs retornados pela configuracao segura da conexao e do repositorio no Console/API. A CLI nao recebe nem armazena PATs.
+Para criar um projeto HTTP com uma origem Git Forgejo, primeiro uma pessoa proprietaria da organizacao cria a conexao no Console. A CLI lista e usa conexoes existentes; ela nao solicita nem exibe credenciais do provedor.
+
+Use os catalogos para conferir provedores, capacidades e runtimes, depois resolva o caminho explicito do repositorio. O ID opaco retornado pertence a essa conexao e deve ser usado com ela ao listar branches:
+
+```bash
+zenifra git providers --json
+zenifra git runtimes
+zenifra git connections --json
+zenifra git repositories resolve --connection <connection-id> --path equipe/aplicacao --json
+zenifra git branches --connection <connection-id> --repository <repository-id>
+```
+
+Use os IDs confirmados em `config.source` e `config.build`, como no arquivo `examples/http-git-project.json`, para criar o projeto. Esse exemplo contem valores ilustrativos e nao credenciais:
+
+```bash
+zenifra create project --name api-web --plan basic --payment-mode hourly --config @examples/http-git-project.json
+zenifra project source --project <project-id> --json
+zenifra project source branches --project <project-id>
+zenifra project source deploy-settings set --project <project-id> --mode branch
+zenifra deploy --project <project-id> --branch main
+zenifra deploy watch --project <project-id> --build <build-id>
+```
+
+O deploy manual retorna um ID de build para acompanhar com `zenifra deploy watch`. Para ativar deploy por tag ou release, use `zenifra project source deploy-settings set --project <project-id> --mode tag --tag-pattern "v*"` ou o modo `release`; prereleases podem ser habilitadas somente no modo `release`. O comando preserva a origem e as configuracoes de build e confirma a alteracao com uma leitura posterior. A API nao oferece precondicao de revisao para essa atualizacao; evite alterar a origem ao mesmo tempo pelo Console ou por outro cliente. Projetos com configuracao GitHub legada continuam usando `zenifra project github` e `zenifra project github deploy-settings set`.
 
 Em APIs antigas que ainda nao anunciam as rotas Git neutras, a CLI usa as rotas anteriores somente quando consegue confirmar a origem GitHub legada do projeto. Essa verificacao pode exigir permissao de leitura do projeto. Se a API negar essa leitura, a CLI encerra o comando sem tentar a rota antiga; projetos Forgejo ou com outra origem generica nunca sao tratados como GitHub.
 
