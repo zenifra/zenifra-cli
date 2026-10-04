@@ -37,6 +37,7 @@ const KNOWN_FLAG_NAMES = new Set([
   'challengeToken',
   'code',
   'connectionFile',
+  'connection',
   'commitSha',
   'config',
   'count',
@@ -71,6 +72,7 @@ const KNOWN_FLAG_NAMES = new Set([
   'plan',
   'profile',
   'project',
+  'repository',
   'revoke',
   'showValues',
   'status',
@@ -131,6 +133,15 @@ const GITHUB_PUBLIC_CONFIG_FIELDS = [
   'build_command',
 ];
 const GITHUB_PUBLIC_VERSION_DEPLOY_FIELDS = ['enabled', 'event', 'tag_pattern', 'include_prereleases'];
+const GIT_BUILD_SETTINGS_FIELDS = [
+  'runtime',
+  'version',
+  'start_command',
+  'pre_build_command',
+  'build_command',
+  'dockerfile_path',
+  'context_path',
+];
 const ALLOWED_EXPOSURE_VALUES = new Set(['public', 'private']);
 const GITHUB_RUNTIME_VERSIONS = {
   nodejs: ['24', '22', '20'],
@@ -177,9 +188,10 @@ const ANSI = {
 };
 
 class CliError extends Error {
-  constructor(message, exitCode = 1) {
+  constructor(message, exitCode = 1, httpStatus) {
     super(message);
     this.exitCode = exitCode;
+    if (httpStatus !== undefined) this.httpStatus = httpStatus;
   }
 }
 
@@ -201,6 +213,11 @@ Usage:
   zenifra orgs [--json]
   zenifra org set [--org <id>]
   zenifra plans [--type <all|http|database|storage|valkey>] [--json]
+  zenifra git providers [--json]
+  zenifra git runtimes [--json]
+  zenifra git connections [--json]
+  zenifra git repositories resolve --connection <id> --path <owner/repo> [--json]
+  zenifra git branches --connection <id> --repository <opaque-id> [--json]
   zenifra create project
   zenifra create project --name <name> --plan <plan> --payment-mode <mode> --config <json|@file> [--description <text>] [--org <id>] [--json]
   zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|valkey>] [--page <n>] [--limit <n>]
@@ -224,6 +241,9 @@ Usage:
   zenifra project image set --project <id> --image <image> [--json]
   zenifra project github --project <id> [--json]
   zenifra project github deploy-settings set --project <id> --mode <manual|branch|tag|release> [--tag-pattern <pattern>] [--include-prereleases <true|false>] [--json]
+  zenifra project source --project <id> [--json]
+  zenifra project source branches --project <id> [--json]
+  zenifra project source deploy-settings set --project <id> --mode <manual|branch|tag|release> [--tag-pattern <pattern>] [--include-prereleases <true|false>] [--json]
   zenifra project exposure set --project <id> --exposure <public|private> [--json]
   zenifra project envs --project <id> [--json] [--show-values]
   zenifra project env add --project <id> --name <name> --value <value> [--json]
@@ -401,6 +421,68 @@ const HELP_SPECS = [
     jsonOutput: '{"http":[{"plan":"free","prices":{"hourly":0,"monthly":0,"yearly":0},"features":["1 GB Armazenamento Efemero"]}],"database":[],"storage":[]}',
   },
   {
+    command: 'git',
+    usage: 'zenifra git\n  zenifra git providers [--json]\n  zenifra git runtimes [--json]\n  zenifra git connections [--json]\n  zenifra git repositories resolve --connection <id> --path <owner/repo> [--json]\n  zenifra git branches --connection <id> --repository <opaque-id> [--json]',
+    description: 'Consulta provedores, runtimes, conexoes e repositorios Git disponiveis na organizacao.',
+    examples: ['zenifra git providers', 'zenifra git connections', 'zenifra git repositories resolve --connection conn-1 --path equipe/aplicacao'],
+    output: 'Zenifra CLI - git',
+    notes: ['A conexao Forgejo e criada no Console por uma pessoa proprietaria da organizacao. A CLI lista e usa conexoes existentes.'],
+  },
+  {
+    command: 'git providers',
+    usage: 'zenifra git providers [--json]',
+    description: 'Lista provedores Git e as capacidades disponiveis para a organizacao selecionada.',
+    flags: ['--json  Imprime a resposta publica da API em JSON.'],
+    examples: ['zenifra git providers', 'zenifra git providers --json'],
+    output: 'Provedor  Disponivel  Descoberta  Deploy por branch  Deploy por versao\nforgejo   sim         nao          sim                sim',
+    jsonOutput: '{"status":"success","data":{"api_version":1,"providers":[{"id":"forgejo","available":true,"capabilities":{"repositoryDiscovery":false,"pushDeploy":true,"nativePreviews":false,"versionDeploy":true}}]}}',
+  },
+  {
+    command: 'git runtimes',
+    usage: 'zenifra git runtimes [--json]',
+    description: 'Lista runtimes e versoes disponiveis para builds de repositorios Git.',
+    flags: ['--json  Imprime a resposta publica da API em JSON.'],
+    examples: ['zenifra git runtimes', 'zenifra git runtimes --json'],
+    output: 'Runtime  Versao padrao  Versoes\nnodejs   24             24, 22, 20',
+    jsonOutput: '{"status":"success","data":[{"id":"nodejs","label":"Node.js","default_version":"24","default_port":3000,"default_start_command":"npm start","default_build_command":"npm run build","versions":[{"id":"24","label":"24"}]}]}',
+  },
+  {
+    command: 'git connections',
+    usage: 'zenifra git connections [--json]',
+    description: 'Lista as conexoes Git disponiveis para a organizacao selecionada.',
+    flags: ['--json  Imprime as conexoes publicas em JSON.'],
+    examples: ['zenifra git connections', 'zenifra git connections --json'],
+    output: 'ID           Provedor  Nome          Status\nconnection-1 forgejo   Forgejo team  active',
+    jsonOutput: '{"status":"success","data":[{"id":"connection-1","provider_id":"forgejo","display_name":"Forgejo team","status":"active","capabilities":{"repositoryDiscovery":false,"pushDeploy":true,"nativePreviews":false,"versionDeploy":true}}]}',
+    notes: ['A conexao precisa ter sido criada por uma pessoa proprietaria no Console. As credenciais nao aparecem na resposta.'],
+  },
+  {
+    command: 'git repositories',
+    usage: 'zenifra git repositories resolve --connection <id> --path <owner/repo> [--json]',
+    description: 'Agrupa comandos para resolver repositorios por caminho explicito.',
+    examples: ['zenifra git repositories resolve --connection conn-1 --path equipe/aplicacao'],
+    output: 'Zenifra CLI - git repositories',
+  },
+  {
+    command: 'git repositories resolve',
+    usage: 'zenifra git repositories resolve --connection <id> --path <owner/repo> [--json]',
+    description: 'Valida e resolve o caminho explicito de um repositorio na conexao selecionada.',
+    flags: ['--connection <id>    ID da conexao Git da organizacao.', '--path <owner/repo>  Caminho explicito do repositorio.', '--json               Imprime o resultado em JSON.'],
+    examples: ['zenifra git repositories resolve --connection conn-1 --path equipe/aplicacao --json'],
+    output: 'ID             Caminho           Branch padrao  Privado\nrepo_opaque_1  equipe/aplicacao   main           sim',
+    jsonOutput: '{"status":"success","data":{"id":"repository-id","path":"equipe/aplicacao","default_branch":"main","private":true}}',
+    notes: ['Use o ID opaco retornado somente com a mesma conexao.'],
+  },
+  {
+    command: 'git branches',
+    usage: 'zenifra git branches --connection <id> --repository <opaque-id> [--json]',
+    description: 'Lista branches de um repositorio resolvido pela conexao informada.',
+    flags: ['--connection <id>   ID da conexao Git da organizacao.', '--repository <id>  ID opaco retornado por git repositories resolve.', '--json              Imprime a resposta em JSON.'],
+    examples: ['zenifra git branches --connection conn-1 --repository repository-id'],
+    output: 'Branch  Commit\nmain    abc123',
+    jsonOutput: '{"status":"success","data":[{"name":"main","commit_sha":"<commit-sha>"}]}',
+  },
+  {
     command: 'valkey',
     usage: 'zenifra valkey\n  zenifra valkey status --project <id> [--json]\n  zenifra valkey connection --project <id> [--json]\n  zenifra valkey credentials rotate --project <id> [--idempotency-key <key>] [--wait] [--interval <seconds>] [--timeout <seconds>] [--json]\n  zenifra valkey credentials status --project <id> --operation <id> [--json]',
     description: 'Consulta projetos Valkey e gerencia suas conexoes e credenciais.',
@@ -470,11 +552,61 @@ const HELP_SPECS = [
   },
   {
     command: 'project',
-    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project stop --project <id> [--json]\n  zenifra project resume --project <id> [--json]\n  zenifra project delete --project <id> --yes [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project metrics capabilities --project <id> [--json]\n  zenifra project healthcheck get --project <id> [--json]\n  zenifra project healthcheck set --project <id> --path /health [--json]\n  zenifra project healthcheck disable --project <id> [--json]\n  zenifra project healthcheck failures --project <id> [--page <n>] [--limit <n>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project autoscaling --project <id> [--json]\n  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]\n  zenifra project autoscaling disable --project <id> [--json]\n  zenifra project autoscaling events --project <id> [--direction <scale_up|scale_down>] [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project billing usage --project <id> [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
+    usage: 'zenifra project\n  zenifra project info --project <id> [--json]\n  zenifra project source --project <id> [--json]\n  zenifra project source branches --project <id> [--json]\n  zenifra project source deploy-settings set --project <id> --mode <manual|branch|tag|release> [--tag-pattern <pattern>] [--include-prereleases <true|false>] [--json]\n  zenifra project stop --project <id> [--json]\n  zenifra project resume --project <id> [--json]\n  zenifra project delete --project <id> --yes [--json]\n  zenifra project url --project <id> [--json]\n  zenifra project logs --project <id> [--instance <id>] [--json]\n  zenifra project metrics --project <id> [--instance <id>] [--json]\n  zenifra project metrics capabilities --project <id> [--json]\n  zenifra project healthcheck get --project <id> [--json]\n  zenifra project healthcheck set --project <id> --path /health [--json]\n  zenifra project healthcheck disable --project <id> [--json]\n  zenifra project healthcheck failures --project <id> [--page <n>] [--limit <n>] [--json]\n  zenifra project network --project <id> [--view <summary|status-codes|routes|user-agents|request-events|source-ips>] [--json]\n  zenifra project image set --project <id> --image <image> [--json]\n  zenifra project exposure set --project <id> --exposure <public|private> [--json]\n  zenifra project envs --project <id> [--json] [--show-values]\n  zenifra project env add --project <id> --name <name> --value <value> [--json]\n  zenifra project env update --project <id> --name <name> --value <value> [--json]\n  zenifra project env remove --project <id> --name <name> [--json]\n  zenifra project autoscaling --project <id> [--json]\n  zenifra project autoscaling set --project <id> --min <n> --max <n> [--cpu <percent>] [--memory <percent>] [--json]\n  zenifra project autoscaling disable --project <id> [--json]\n  zenifra project autoscaling events --project <id> [--direction <scale_up|scale_down>] [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project billing usage --project <id> [--from <iso>] [--to <iso>] [--page <n>] [--limit <n>] [--json]\n  zenifra project instances --project <id> [--json]\n  zenifra project instances set --project <id> --count <n> [--json]',
     description: 'Agrupa comandos operacionais e de introspecao sobre um projeto especifico.',
-    examples: ['zenifra project', 'zenifra project info --project proj_1', 'zenifra project env add --project proj_1 --name NODE_ENV --value production'],
+    examples: ['zenifra project', 'zenifra project info --project proj_1', 'zenifra project source --project proj_1', 'zenifra project env add --project proj_1 --name NODE_ENV --value production'],
     output: 'Zenifra CLI - project',
-    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, stop, resume, delete, url, logs, metrics, capabilities, network, image, github, exposure, autoscaling, billing, envs e instances.'],
+    notes: ['Use "zenifra help project <subcomando>" para detalhes de info, stop, resume, delete, url, logs, metrics, capabilities, network, image, github, source, exposure, autoscaling, billing, envs e instances.'],
+  },
+  {
+    command: 'project source',
+    usage: 'zenifra project source --project <id> [--json]\n  zenifra project source branches --project <id> [--json]\n  zenifra project source deploy-settings set --project <id> --mode <manual|branch|tag|release> [--tag-pattern <pattern>] [--include-prereleases <true|false>] [--json]',
+    description: 'Consulta a origem Git generica de um projeto, lista branches ou altera seu modo de deploy.',
+    examples: ['zenifra project source --project proj_1', 'zenifra project source branches --project proj_1'],
+    output: 'Zenifra CLI - project source',
+    notes: ['Use project github para ler ou alterar configuracoes GitHub legadas.'],
+  },
+  {
+    command: 'project source branches',
+    usage: 'zenifra project source branches --project <id> [--json]',
+    description: 'Lista branches disponiveis para a origem Git generica atual do projeto.',
+    flags: ['--project <id>  ID do projeto.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra project source branches --project proj_1'],
+    output: 'Branch  Commit\nmain    abc123',
+    jsonOutput: '{"status":"success","data":[{"name":"main","commit_sha":"<commit-sha>"}]}',
+  },
+  {
+    command: 'project source deploy-settings',
+    usage: 'zenifra project source deploy-settings set --project <id> --mode <manual|branch|tag|release> [--tag-pattern <pattern>] [--include-prereleases <true|false>] [--json]',
+    description: 'Agrupa os modos de deploy da origem Git generica.',
+    examples: ['zenifra project source deploy-settings set --project proj_1 --mode branch'],
+    output: 'Zenifra CLI - project source deploy-settings',
+  },
+  {
+    command: 'project source deploy-settings set',
+    usage: 'zenifra project source deploy-settings set --project <id> --mode <manual|branch|tag|release> [--tag-pattern <pattern>] [--include-prereleases <true|false>] [--json]',
+    description: 'Define e confirma o modo de deploy da origem Git Forgejo do projeto.',
+    flags: [
+      '--project <id>                      ID do projeto.',
+      '--mode <manual|branch|tag|release>   Modo de deploy exclusivo.',
+      '--tag-pattern <pattern>             Obrigatorio para tag e release; aceita * e ?.',
+      '--include-prereleases <true|false>   Inclui prereleases somente no modo release. Padrao: false.',
+      '--json                               Imprime a configuracao confirmada em JSON.',
+    ],
+    examples: [
+      'zenifra project source deploy-settings set --project proj_1 --mode manual',
+      'zenifra project source deploy-settings set --project proj_1 --mode branch',
+      'zenifra project source deploy-settings set --project proj_1 --mode tag --tag-pattern "v*"',
+      'zenifra project source deploy-settings set --project proj_1 --mode release --tag-pattern "v*" --include-prereleases true',
+    ],
+    output: 'Configuracao de deploy da origem Git confirmada: release (v*).',
+    jsonOutput: '{"status":"success","data":{"source":{"connection_id":"connection-id","repository_id":"repository-id","branch":"main","auto_deploy":false,"version_deploy":{"enabled":true,"event":"release","tag_pattern":"v*","include_prereleases":true},"provider_id":"forgejo","repository_path":"equipe/aplicacao"},"build":{"runtime":"nodejs","version":"24","start_command":"npm start"},"source_revision":2}}',
+    notes: [
+      'Tag e release exigem --tag-pattern; prereleases so podem ser habilitadas para release.',
+      'O comando preserva identidade, branch e configuracao de build da origem e confirma o resultado com uma nova leitura.',
+      'A API substitui source e build juntos e nao oferece precondicao de revisao. Evite alterar a origem ao mesmo tempo por outro cliente.',
+      'Para projetos com origem GitHub legada, use "zenifra project github deploy-settings set".',
+    ],
   },
   {
     command: 'project github',
@@ -770,7 +902,7 @@ const HELP_SPECS = [
   {
     command: 'builds',
     usage: 'zenifra builds --project <id> [--page <n>] [--limit <n>] [--branch <name>] [--status <status>] [--json]',
-    description: 'Lista builds GitHub de um projeto.',
+    description: 'Lista builds de um projeto com origem Git.',
     flags: ['--project <id>   ID do projeto.', '--page <n>      Pagina.', '--limit <n>     Itens por pagina.', '--branch <name> Filtra branch.', '--status <status> Filtra status.', '--json          Imprime a resposta em JSON.'],
     examples: ['zenifra builds --project 507f1f77bcf86cd799439012 --status success'],
     output: 'Build                     Status   Branch  Commit\nbuild_123                 success  main    abc123',
@@ -779,7 +911,7 @@ const HELP_SPECS = [
   {
     command: 'builds logs',
     usage: 'zenifra builds logs --project <id> --build <id> [--cursor <n>] [--limit <n>] [--follow] [--interval <seconds>] [--timeout <seconds>] [--json]',
-    description: 'Lê os logs de um build GitHub existente e opcionalmente acompanha novos chunks em tempo real.',
+    description: 'Le os logs de um build Git existente e opcionalmente acompanha novos eventos em tempo real.',
     flags: [
       '--project <id>        ID do projeto.',
       '--build <id>          ID do build.',
@@ -797,7 +929,7 @@ const HELP_SPECS = [
   {
     command: 'deployments',
     usage: 'zenifra deployments --project <id> [--page <n>] [--limit <n>] [--branch <name>] [--status <status>] [--json]',
-    description: 'Alias para listar builds/deployments GitHub de um projeto.',
+    description: 'Alias para listar builds e deployments Git de um projeto.',
     flags: ['--project <id>   ID do projeto.', '--page <n>      Pagina.', '--limit <n>     Itens por pagina.', '--branch <name> Filtra branch.', '--status <status> Filtra status.', '--json          Imprime a resposta em JSON.'],
     examples: ['zenifra deployments --project 507f1f77bcf86cd799439012'],
     output: 'Build                     Status   Branch  Commit\nbuild_123                 success  main    abc123',
@@ -806,7 +938,7 @@ const HELP_SPECS = [
   {
     command: 'deploy',
     usage: 'zenifra deploy --project <id> [--branch <name>] [--commit-sha <sha>] [--json]',
-    description: 'Dispara um build/deploy GitHub para o projeto e retorna o build_id para acompanhamento posterior.',
+    description: 'Dispara um build/deploy Git para o projeto e retorna o build_id para acompanhamento posterior.',
     flags: ['--project <id>    ID do projeto.', '--branch <name>  Branch a publicar.', '--commit-sha <sha> Commit especifico.', '--json           Imprime a resposta em JSON.'],
     examples: [
       'zenifra deploy --project 507f1f77bcf86cd799439012 --branch main',
@@ -900,7 +1032,7 @@ function removedProjectsCreateMessage() {
 }
 
 function isNamespaceCommand(command) {
-  return ['auth', 'profile', 'project', 'org', 'valkey'].includes(command);
+  return ['auth', 'profile', 'project', 'org', 'valkey', 'git'].includes(command);
 }
 
 function parseArgs(argv) {
@@ -1692,28 +1824,391 @@ async function request(session, flags, method, path, {
 
   if (!response.ok) {
     const message = payload?.message || payload?.error || `Zenifra API retornou HTTP ${response.status}`;
+    const httpError = (errorMessage) => new CliError(errorMessage, 1, response.status);
     if (response.status === 401) {
       if (credential?.type === 'api_key') {
-        throw new CliError(`${message}. Verifique se a API key esta ativa e se o IP atual esta permitido.`);
+        throw httpError(`${message}. Verifique se a API key esta ativa e se o IP atual esta permitido.`);
       }
-      throw new CliError(`${message}. Rode "zenifra auth login" para renovar sua sessao.`);
+      throw httpError(`${message}. Rode "zenifra auth login" para renovar sua sessao.`);
     }
     if (response.status === 403) {
-      throw new CliError(message);
+      throw httpError(message);
     }
     if (response.status === 429 && Number.isFinite(Number(payload?.retry_after_seconds))) {
-      throw new CliError(`${message} Tente novamente em ${Number(payload.retry_after_seconds)} segundo(s).`);
+      throw httpError(`${message} Tente novamente em ${Number(payload.retry_after_seconds)} segundo(s).`);
     }
     if (response.status === 402 && path.includes('/metrics') && /support metrics/i.test(String(message))) {
-      throw new CliError('Este projeto nao possui acesso a metricas.');
+      throw httpError('Este projeto nao possui acesso a metricas.');
     }
     if (String(message).includes('missing x-organization-id')) {
-      throw new CliError('Organizacao nao selecionada. Rode "zenifra org set" ou use --org <id>.');
+      throw httpError('Organizacao nao selecionada. Rode "zenifra org set" ou use --org <id>.');
     }
-    throw new CliError(message);
+    throw httpError(message);
   }
 
   return payload;
+}
+
+function hasValidGitProvidersApiV1(payload) {
+  if (payload?.status !== 'success' || !isRecord(payload.data) || payload.data.api_version !== 1 || !Array.isArray(payload.data.providers)) {
+    return false;
+  }
+
+  return payload.data.providers.every((provider) => (
+    isRecord(provider)
+    && typeof provider.id === 'string'
+    && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider.id)
+    && typeof provider.available === 'boolean'
+    && isRecord(provider.capabilities)
+    && typeof provider.capabilities.repositoryDiscovery === 'boolean'
+    && typeof provider.capabilities.pushDeploy === 'boolean'
+    && typeof provider.capabilities.nativePreviews === 'boolean'
+  ));
+}
+
+async function supportsNeutralGitRoutes(session, flags, orgId) {
+  let payload;
+  try {
+    payload = await request(session, flags, 'GET', '/git/providers', { orgId });
+  } catch (error) {
+    if ([404, 405, 501].includes(error?.httpStatus)) return false;
+    throw error;
+  }
+
+  if (!hasValidGitProvidersApiV1(payload)) {
+    throw new CliError('A API retornou uma resposta invalida para as capacidades de origem Git.');
+  }
+  return true;
+}
+
+function hasLegacyGithubSource(project) {
+  if (!isRecord(project)) return false;
+  // Public Git source projections must never be rewritten as legacy GitHub input.
+  // preview.source is separate preview metadata and does not identify the primary project source.
+  const genericSourceFields = ['source', 'build', 'git_source', 'git_build'];
+  if (genericSourceFields.some((field) => project[field] !== undefined || project.config?.[field] !== undefined)) {
+    return false;
+  }
+
+  const github = project.github || project.config?.github;
+  return isRecord(github)
+    && typeof github.repository_owner === 'string'
+    && github.repository_owner.trim().length > 0
+    && typeof github.repository_name === 'string'
+    && github.repository_name.trim().length > 0;
+}
+
+async function resolveGitProjectApiPath(session, flags, projectId, orgId) {
+  if (await supportsNeutralGitRoutes(session, flags, orgId)) {
+    return `/project/${projectId}`;
+  }
+
+  const project = await getProject(session, flags, projectId, orgId);
+  if (!hasLegacyGithubSource(project)) {
+    throw new CliError('Esta API antiga so permite builds e deploys de projetos com uma origem GitHub legada compativel.');
+  }
+  return `/project/${projectId}/github`;
+}
+
+function requiredGitOpaqueId(flags, name, commandKey) {
+  const value = flags[name];
+  if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value)) {
+    printCommandHelpAndFail(commandKey);
+    return null;
+  }
+  return value;
+}
+
+function requiredGitRepositoryPath(flags, commandKey) {
+  const value = flags.path;
+  const segments = typeof value === 'string' ? value.split('/') : [];
+  if (typeof value !== 'string'
+    || value.length < 3
+    || value.length > 1024
+    || segments.length < 2
+    || segments.some((segment) => segment.length === 0)
+    || /[\u0000-\u001f\u007f-\u009f\\?#%]/u.test(value)) {
+    printCommandHelpAndFail(commandKey);
+    return null;
+  }
+  return value;
+}
+
+function yesNo(value) {
+  if (value === true) return 'sim';
+  if (value === false) return 'nao';
+  return 'indisponivel';
+}
+
+async function handleGitProviders(session, flags) {
+  const orgId = await resolveOrgId(session, flags);
+  const payload = await request(session, flags, 'GET', '/git/providers', { orgId });
+  if (!hasValidGitProvidersApiV1(payload)) {
+    throw new CliError('A API retornou uma resposta invalida para o catalogo de provedores Git.');
+  }
+  if (flags.json) return printJson(payload);
+
+  printTable(payload.data.providers, [
+    { label: 'Provedor', value: (provider) => provider.id },
+    { label: 'Disponivel', value: (provider) => yesNo(provider.available) },
+    { label: 'Descoberta', value: (provider) => yesNo(provider.capabilities.repositoryDiscovery) },
+    { label: 'Deploy por branch', value: (provider) => yesNo(provider.capabilities.pushDeploy) },
+    { label: 'Deploy por versao', value: (provider) => yesNo(provider.capabilities.versionDeploy) },
+  ]);
+}
+
+async function handleGitRuntimes(session, flags) {
+  const orgId = await resolveOrgId(session, flags);
+  const payload = await request(session, flags, 'GET', '/git/runtime-catalog', { orgId });
+  const runtimes = unwrapData(payload);
+  if (!Array.isArray(runtimes)) {
+    throw new CliError('A API retornou uma resposta invalida para o catalogo de runtimes Git.');
+  }
+  if (flags.json) return printJson(payload);
+
+  printTable(runtimes, [
+    { label: 'Runtime', value: (runtime) => runtime.label || runtime.id || '-' },
+    { label: 'Versao padrao', value: (runtime) => runtime.default_version || '-' },
+    { label: 'Versoes', value: (runtime) => Array.isArray(runtime.versions) ? runtime.versions.map((version) => version.id).join(', ') : '-' },
+  ]);
+}
+
+async function handleGitConnections(session, flags) {
+  const orgId = await resolveOrgId(session, flags);
+  const payload = await request(session, flags, 'GET', '/git/connections', { orgId });
+  const connections = unwrapData(payload);
+  if (!Array.isArray(connections)) {
+    throw new CliError('A API retornou uma resposta invalida para as conexoes Git.');
+  }
+  if (flags.json) return printJson(payload);
+
+  printTable(connections, [
+    { label: 'ID', value: (connection) => connection.id || '-' },
+    { label: 'Provedor', value: (connection) => connection.provider_id || '-' },
+    { label: 'Nome', value: (connection) => connection.display_name || '-' },
+    { label: 'Status', value: (connection) => connection.status || '-' },
+  ]);
+}
+
+async function handleGitRepositoryResolve(session, flags) {
+  const connectionId = requiredGitOpaqueId(flags, 'connection', 'git repositories resolve');
+  const repositoryPath = requiredGitRepositoryPath(flags, 'git repositories resolve');
+  if (!connectionId || !repositoryPath) return;
+
+  const orgId = await resolveOrgId(session, flags);
+  const endpoint = '/git/connections/' + encodeURIComponent(connectionId) + '/repositories/resolve';
+  const payload = await request(session, flags, 'POST', endpoint, {
+    orgId,
+    body: { path: repositoryPath },
+  });
+  if (flags.json) return printJson(payload);
+
+  const repository = unwrapData(payload);
+  printTable([repository], [
+    { label: 'ID', value: (entry) => entry.id || '-' },
+    { label: 'Caminho', value: (entry) => entry.path || '-' },
+    { label: 'Branch padrao', value: (entry) => entry.default_branch || '-' },
+    { label: 'Privado', value: (entry) => yesNo(entry.private) },
+  ]);
+}
+
+async function handleGitBranches(session, flags) {
+  const connectionId = requiredGitOpaqueId(flags, 'connection', 'git branches');
+  const repositoryId = requiredGitOpaqueId(flags, 'repository', 'git branches');
+  if (!connectionId || !repositoryId) return;
+
+  const orgId = await resolveOrgId(session, flags);
+  const endpoint = '/git/connections/' + encodeURIComponent(connectionId)
+    + '/repositories/' + encodeURIComponent(repositoryId) + '/branches';
+  const payload = await request(session, flags, 'GET', endpoint, { orgId });
+  const branches = unwrapData(payload);
+  if (!Array.isArray(branches)) {
+    throw new CliError('A API retornou uma resposta invalida para as branches Git.');
+  }
+  if (flags.json) return printJson(payload);
+
+  printTable(branches, [
+    { label: 'Branch', value: (branch) => branch.name || '-' },
+    { label: 'Commit', value: (branch) => branch.commit_sha || '-' },
+  ]);
+}
+
+function printGitProjectSource(data) {
+  if (!isRecord(data?.source)) {
+    process.stdout.write('Este projeto nao possui uma origem Git generica configurada.\n');
+    return;
+  }
+
+  const source = data.source;
+  const build = isRecord(data.build) ? data.build : {};
+  const mode = source.provider_id === 'github' ? null : gitSourceDeploymentMode(source);
+  const rows = [
+    { field: 'Provedor', value: source.provider_id || '-' },
+    { field: 'Repositorio', value: source.repository_path || source.repository_id || '-' },
+    { field: 'Branch', value: source.branch || '-' },
+    { field: 'Runtime', value: build.runtime ? build.runtime + '@' + (build.version || '-') : '-' },
+    { field: 'Modo de deploy', value: mode || (source.provider_id === 'github' ? 'consulte project github' : 'indisponivel') },
+  ];
+  if (mode === 'tag' || mode === 'release') {
+    rows.push(
+      { field: 'Padrao de tags', value: source.version_deploy?.tag_pattern || '-' },
+      { field: 'Incluir prereleases', value: source.version_deploy?.include_prereleases === true ? 'sim' : 'nao' },
+    );
+  }
+  printTable(rows, [
+    { label: 'Campo', value: (row) => row.field },
+    { label: 'Valor', value: (row) => row.value },
+  ]);
+}
+
+async function handleProjectSource(session, flags) {
+  const projectId = requireProjectId(flags, 'project source');
+  if (!projectId) return;
+  const orgId = await resolveOrgId(session, flags);
+  const payload = await request(session, flags, 'GET', '/project/' + encodeURIComponent(projectId) + '/source', { orgId });
+  const source = unwrapData(payload);
+  if (flags.json) return printJson(payload);
+  printGitProjectSource(source);
+}
+
+async function handleProjectSourceBranches(session, flags) {
+  const projectId = requireProjectId(flags, 'project source branches');
+  if (!projectId) return;
+  const orgId = await resolveOrgId(session, flags);
+  const endpoint = '/project/' + encodeURIComponent(projectId) + '/source/branches';
+  const payload = await request(session, flags, 'GET', endpoint, { orgId });
+  const branches = unwrapData(payload);
+  if (!Array.isArray(branches)) {
+    throw new CliError('A API retornou uma resposta invalida para as branches da origem Git.');
+  }
+  if (flags.json) return printJson(payload);
+  printTable(branches, [
+    { label: 'Branch', value: (branch) => branch.name || '-' },
+    { label: 'Commit', value: (branch) => branch.commit_sha || '-' },
+  ]);
+}
+
+function projectGitSourceInput(source) {
+  if (!isRecord(source)
+    || typeof source.connection_id !== 'string'
+    || typeof source.repository_id !== 'string'
+    || typeof source.branch !== 'string'
+    || typeof source.auto_deploy !== 'boolean') {
+    throw new CliError('A API retornou uma origem Git incompleta; nenhuma alteracao foi enviada.');
+  }
+
+  const input = {
+    connection_id: source.connection_id,
+    repository_id: source.repository_id,
+    branch: source.branch,
+    auto_deploy: source.auto_deploy,
+  };
+  if (source.version_deploy === undefined || source.version_deploy === null) return input;
+  if (!isRecord(source.version_deploy)) {
+    throw new CliError('A API retornou configuracoes de deploy Git invalidas; nenhuma alteracao foi enviada.');
+  }
+  const versionDeploy = {};
+  for (const field of GITHUB_PUBLIC_VERSION_DEPLOY_FIELDS) {
+    if (Object.hasOwn(source.version_deploy, field)) versionDeploy[field] = source.version_deploy[field];
+  }
+  input.version_deploy = versionDeploy;
+  return input;
+}
+
+function projectGitBuildSettingsInput(build) {
+  if (!isRecord(build)) {
+    throw new CliError('A API retornou configuracoes de build incompletas; nenhuma alteracao foi enviada.');
+  }
+  const input = {};
+  for (const field of GIT_BUILD_SETTINGS_FIELDS) {
+    if (Object.hasOwn(build, field)) input[field] = build[field];
+  }
+  return input;
+}
+
+function gitSourceDeploymentMode(source) {
+  const versionDeployEnabled = source?.version_deploy?.enabled === true;
+  if (source?.auto_deploy === true && versionDeployEnabled) return null;
+  if (source?.auto_deploy === true) return 'branch';
+  if (!versionDeployEnabled) return 'manual';
+  if (!ALLOWED_GITHUB_VERSION_DEPLOY_EVENTS.has(source.version_deploy.event)) return null;
+  return source.version_deploy.event;
+}
+
+function projectGitSourceMatches(data, expectedSource, expectedBuild, desired) {
+  if (!isRecord(data) || !isRecord(data.source) || !isRecord(data.build)) return false;
+  const source = data.source;
+  if (source.provider_id !== 'forgejo'
+    || source.connection_id !== expectedSource.connection_id
+    || source.repository_id !== expectedSource.repository_id
+    || source.branch !== expectedSource.branch
+    || gitSourceDeploymentMode(source) !== desired.mode) return false;
+
+  if (desired.mode === 'tag' || desired.mode === 'release') {
+    if (source.version_deploy?.tag_pattern !== desired.body.version_deploy.tag_pattern
+      || (source.version_deploy?.include_prereleases === true) !== desired.includePrereleases) return false;
+  }
+
+  return Object.entries(expectedBuild).every(([field, value]) => data.build[field] === value);
+}
+
+async function handleProjectSourceDeploySettingsSet(session, flags) {
+  const desired = parseGithubDeploySettings(flags);
+  const projectId = requireProjectId(flags, 'project source deploy-settings set');
+  if (!projectId) return;
+  const orgId = await resolveOrgId(session, flags);
+  const endpoint = '/project/' + encodeURIComponent(projectId) + '/source';
+  let current;
+  try {
+    current = unwrapData(await request(session, flags, 'GET', endpoint, { orgId }));
+  } catch (error) {
+    if (error?.httpStatus === 404) {
+      throw new CliError('A origem Git generica nao esta disponivel para este projeto ou API. Para projetos GitHub legados, use "zenifra project github deploy-settings set".', 1, 404);
+    }
+    throw error;
+  }
+
+  if (!isRecord(current?.source) || !isRecord(current?.build)) {
+    throw new CliError('Este projeto nao tem uma origem Git generica configurada. Configure-a antes de alterar o modo de deploy.');
+  }
+  if (current.source.provider_id === 'github') {
+    throw new CliError('Esta origem GitHub nao pode ser alterada por este comando. Consulte e altere com "zenifra project github deploy-settings set".');
+  }
+  if (current.source.provider_id !== 'forgejo') {
+    throw new CliError('O provedor da origem nao e suportado por este comando; nenhuma alteracao foi enviada.');
+  }
+  if (desired.mode === 'branch' && current.capabilities?.pushDeploy !== true) {
+    throw new CliError('A origem Git nao oferece deploy automatico por branch.');
+  }
+  if ((desired.mode === 'tag' || desired.mode === 'release') && current.capabilities?.versionDeploy !== true) {
+    throw new CliError('A origem Git nao oferece deploy automatico por tag ou release.');
+  }
+
+  const source = projectGitSourceInput(current.source);
+  const build = projectGitBuildSettingsInput(current.build);
+  source.auto_deploy = desired.body.auto_deploy;
+  delete source.version_deploy;
+  if (desired.mode === 'tag' || desired.mode === 'release') {
+    source.version_deploy = desired.body.version_deploy;
+  }
+  const expectedSource = {
+    connection_id: source.connection_id,
+    repository_id: source.repository_id,
+    branch: source.branch,
+  };
+
+  await request(session, flags, 'PUT', endpoint, {
+    orgId,
+    body: { source, build },
+  });
+  const confirmed = unwrapData(await request(session, flags, 'GET', endpoint, { orgId }));
+  if (!projectGitSourceMatches(confirmed, expectedSource, build, desired)) {
+    throw new CliError('A configuracao solicitada nao foi confirmada pela API. Consulte "zenifra project source".');
+  }
+
+  if (flags.json) return printJson({ status: 'success', data: confirmed });
+  process.stdout.write('Configuracao de deploy da origem Git confirmada: ' + desired.mode
+    + ((desired.mode === 'tag' || desired.mode === 'release') ? ' (' + desired.body.version_deploy.tag_pattern + ')' : '') + '.\n');
 }
 
 function unwrapData(payload) {
@@ -3067,6 +3562,17 @@ function validateCreateInput({ plan, paymentMode, config, valkeyCatalog }) {
     throw new CliError(`type_project invalido: "${config?.type_project}". Valores aceitos: ${formatAllowedValues(ALLOWED_TYPE_PROJECT_VALUES)}. Docs: ${DOCS_CREATE_HTTP_URL}`);
   }
 
+  const hasGenericGitConfig = config?.source !== undefined || config?.build !== undefined;
+  if (hasGenericGitConfig && (!isRecord(config.source) || !isRecord(config.build))) {
+    throw new CliError('config.source e config.build devem ser informados juntos para projetos com origem Git.');
+  }
+  if (hasGenericGitConfig && nextTypeProject !== 'http') {
+    throw new CliError('config.source e config.build so podem ser usados em projetos HTTP.');
+  }
+  if (hasGenericGitConfig && config.github !== undefined) {
+    throw new CliError('Use config.github ou config.source/config.build, sem misturar os formatos de origem Git.');
+  }
+
   const nextConfig = { ...config, type_project: nextTypeProject };
   if (nextTypeProject === 'valkey') {
     return {
@@ -3764,6 +4270,12 @@ async function handleProjectCreate(session, flags) {
     ? requireValkeyCatalog(unwrapData(await request(session, flags, 'GET', '/managed-services/catalog')))
     : undefined;
   const validated = validateCreateInput({ plan, paymentMode, config, valkeyCatalog });
+
+  if (validated.config.source !== undefined || validated.config.build !== undefined) {
+    if (!await supportsNeutralGitRoutes(session, flags, orgId)) {
+      throw new CliError('Esta API nao oferece suporte a criacao de projetos com origem Git generica. Atualize a API ou use a configuracao GitHub legada compativel.');
+    }
+  }
 
   const payload = await request(session, flags, 'POST', '/project', {
     orgId,
@@ -4742,8 +5254,9 @@ async function handleDeployments(session, flags) {
     return
   }
   const orgId = await resolveOrgId(session, flags);
+  const projectApiPath = await resolveGitProjectApiPath(session, flags, projectId, orgId);
   const query = buildQuery(flags, ['page', 'limit', 'branch', 'status']);
-  const data = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/github/builds${query}`, { orgId }));
+  const data = unwrapData(await request(session, flags, 'GET', `${projectApiPath}/builds${query}`, { orgId }));
   const builds = asArray(data);
 
   if (flags.json) return printJson(data);
@@ -4764,11 +5277,12 @@ async function handleDeploy(session, flags) {
     return;
   }
   const orgId = await resolveOrgId(session, flags);
+  const projectApiPath = await resolveGitProjectApiPath(session, flags, projectId, orgId);
   const body = {};
   if (flags.branch) body.branch = String(flags.branch);
   if (flags.commitSha) body.commit_sha = String(flags.commitSha);
 
-  const payload = await request(session, flags, 'POST', `/project/${projectId}/github/deploy`, {
+  const payload = await request(session, flags, 'POST', `${projectApiPath}/deploy`, {
     orgId,
     body,
   });
@@ -4778,9 +5292,9 @@ async function handleDeploy(session, flags) {
   process.stdout.write(`Deploy iniciado${buildId ? `: ${buildId}` : '.'}\n`);
 }
 
-async function getBuildLogs(session, flags, projectId, buildId, orgId, { cursor = 0, limit = 200 } = {}) {
+async function getBuildLogs(session, flags, projectApiPath, buildId, orgId, { cursor = 0, limit = 200 } = {}) {
   const query = buildQuery({ cursor, limit }, ['cursor', 'limit'])
-  return unwrapData(await request(session, flags, 'GET', `/project/${projectId}/github/builds/${buildId}/logs${query}`, { orgId }))
+  return unwrapData(await request(session, flags, 'GET', `${projectApiPath}/builds/${buildId}/logs${query}`, { orgId }))
 }
 
 function parseIntegerOption(value, flagName, { defaultValue, min, max }) {
@@ -4831,7 +5345,7 @@ function printBuildLogEventsJson(logs) {
   }
 }
 
-async function followBuildLogs(session, flags, projectId, buildId, orgId, {
+async function followBuildLogs(session, flags, projectApiPath, buildId, orgId, {
   initialCursor = 0,
   limit = 200,
   intervalSeconds = 5,
@@ -4844,7 +5358,7 @@ async function followBuildLogs(session, flags, projectId, buildId, orgId, {
   const startedAt = Date.now()
 
   while (true) {
-    const result = await getBuildLogs(session, flags, projectId, buildId, orgId, {
+    const result = await getBuildLogs(session, flags, projectApiPath, buildId, orgId, {
       cursor,
       limit: pollLimit,
     })
@@ -4885,20 +5399,27 @@ async function handleBuildLogs(session, flags) {
     return
   }
 
-  const orgId = await resolveOrgId(session, flags);
   const cursor = parseIntegerOption(flags.cursor, '--cursor', { defaultValue: 0, min: 0 })
   const limit = parseIntegerOption(flags.limit, '--limit', { defaultValue: 200, min: 1, max: 500 })
+  const intervalSeconds = flags.follow
+    ? parseSecondsOption(flags.interval, '--interval', { defaultValue: 5, min: 0.1 })
+    : undefined;
+  const timeoutSeconds = flags.follow
+    ? parseSecondsOption(flags.timeout, '--timeout', { defaultValue: 900, min: 1 })
+    : undefined;
+  const orgId = await resolveOrgId(session, flags);
+  const projectApiPath = await resolveGitProjectApiPath(session, flags, projectId, orgId);
 
   if (flags.follow) {
-    return followBuildLogs(session, flags, projectId, buildId, orgId, {
+    return followBuildLogs(session, flags, projectApiPath, buildId, orgId, {
       initialCursor: cursor,
       limit,
-      intervalSeconds: parseSecondsOption(flags.interval, '--interval', { defaultValue: 5, min: 0.1 }),
-      timeoutSeconds: parseSecondsOption(flags.timeout, '--timeout', { defaultValue: 900, min: 1 }),
+      intervalSeconds,
+      timeoutSeconds,
     })
   }
 
-  const result = await getBuildLogs(session, flags, projectId, buildId, orgId, { cursor, limit })
+  const result = await getBuildLogs(session, flags, projectApiPath, buildId, orgId, { cursor, limit })
   if (flags.json) return printJson(result)
   printBuildLogs(result?.logs)
 }
@@ -4911,12 +5432,15 @@ async function handleDeployWatch(session, flags) {
     return;
   }
 
+  const intervalSeconds = parseSecondsOption(flags.interval, '--interval', { defaultValue: 5, min: 0.1 });
+  const timeoutSeconds = parseSecondsOption(flags.timeout, '--timeout', { defaultValue: 900, min: 1 });
   const orgId = await resolveOrgId(session, flags);
-  return followBuildLogs(session, flags, projectId, buildId, orgId, {
+  const projectApiPath = await resolveGitProjectApiPath(session, flags, projectId, orgId);
+  return followBuildLogs(session, flags, projectApiPath, buildId, orgId, {
     initialCursor: 0,
     limit: 200,
-    intervalSeconds: parseSecondsOption(flags.interval, '--interval', { defaultValue: 5, min: 0.1 }),
-    timeoutSeconds: parseSecondsOption(flags.timeout, '--timeout', { defaultValue: 900, min: 1 }),
+    intervalSeconds,
+    timeoutSeconds,
   })
 }
 
@@ -4962,6 +5486,15 @@ async function main() {
     if (command === 'login') return await handleLogin(session, flags);
     if (command === 'logout') return handleLogout(session, flags);
     if (command === 'plans') return handlePlans(session, flags);
+    if (command === 'git' && subcommand === 'providers') return handleGitProviders(session, flags);
+    if (command === 'git' && subcommand === 'runtimes') return handleGitRuntimes(session, flags);
+    if (command === 'git' && subcommand === 'connections') return handleGitConnections(session, flags);
+    if (command === 'git' && subcommand === 'repositories' && positional.length === 2) {
+      process.stdout.write(commandHelp(['git', 'repositories']));
+      return;
+    }
+    if (command === 'git' && subcommand === 'repositories' && positional[2] === 'resolve') return handleGitRepositoryResolve(session, flags);
+    if (command === 'git' && subcommand === 'branches') return handleGitBranches(session, flags);
     if (command === 'create' && subcommand === 'project') return handleProjectCreate(session, flags);
     if (command === 'orgs') return handleOrgs(session, flags);
     if (command === 'whoami') return handleWhoami(session, flags);
@@ -4989,6 +5522,15 @@ async function main() {
       return;
     }
     if (command === 'project' && subcommand === 'github' && positional.length === 2) return handleProjectGithub(session, flags);
+    if (command === 'project' && subcommand === 'source' && positional.length === 2) return handleProjectSource(session, flags);
+    if (command === 'project' && subcommand === 'source' && positional[2] === 'branches') return handleProjectSourceBranches(session, flags);
+    if (command === 'project' && subcommand === 'source' && positional[2] === 'deploy-settings' && positional[3] === 'set') {
+      return handleProjectSourceDeploySettingsSet(session, flags);
+    }
+    if (command === 'project' && subcommand === 'source' && positional[2] === 'deploy-settings') {
+      process.stdout.write(commandHelp(['project', 'source', 'deploy-settings']));
+      return;
+    }
     if (command === 'project' && subcommand === 'info') return handleProjectInfo(session, flags);
     if (command === 'project' && subcommand === 'stop') return handleProjectLifecycleMutation(session, flags, 'stop');
     if (command === 'project' && subcommand === 'resume') return handleProjectLifecycleMutation(session, flags, 'resume');
