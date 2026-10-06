@@ -425,9 +425,9 @@ const HELP_SPECS = [
     usage: 'zenifra plans [--type <all|http|database|storage|valkey|job>] [--json]',
     description: 'Lista os catalogos publicos de preco de planos HTTP, banco, armazenamento, Valkey e Jobs agendados.',
     flags: ['--type <type>  Filtra o catalogo: all, http, database, storage, valkey, job, key-value, cache ou queue.', '--json         Imprime a resposta em JSON.'],
-    examples: ['zenifra plans', 'zenifra plans --type http', 'zenifra plans --type job --json'],
-    output: 'Jobs agendados\nPlano       Por minuto  Features\njob-basic   R$ 0,02      500m CPU, 512Mi memory',
-    jsonOutput: '{"http":[],"database":[],"storage":[],"job":[{"plan":"job-basic","payment_mode":"per_minute","price_per_minute":2}]}',
+    examples: ['zenifra plans', 'zenifra plans --type http', 'zenifra plans --type valkey --json', 'zenifra plans --type job --json'],
+    output: 'HTTP\nPlano  Hora     Mes      Ano      Recursos\nfree   R$ 0,00  R$ 0,00  R$ 0,00  1 GB Armazenamento Efemero',
+    jsonOutput: '{"http":[{"plan":"free","prices":{"hourly":0,"monthly":0,"yearly":0},"features":["1 GB Armazenamento Efemero"]}],"database":[],"storage":[]}',
   },
   {
     command: 'git',
@@ -6138,6 +6138,6 @@ main().catch((error) => {
     process.exit(error.exitCode);
   }
 
-  process.stderr.write('Nao foi possivel concluir a operacao. Tente novamente mais tarde.\n');
+  process.stderr.write(`${error.stack || error.message}\n`);
   process.exit(1);
 });
