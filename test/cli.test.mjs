@@ -4730,7 +4730,7 @@ test('plans recognizes the public Scheduled Jobs catalog and keeps the grouped J
     assert.match(text.stdout, /R\$[\s\u00a0]*0,025/);
     const preciseRow = text.stdout.split('\n').find((line) => line.includes('job-precise'));
     assert.ok(preciseRow);
-    assert.match(preciseRow, /R\$[\s\u00a0]*1,2346/);
+    assert.match(preciseRow, /R\$[\s\u00a0]*1,234567/);
     const unknownRow = text.stdout.split('\n').find((line) => line.includes('job-unknown'));
     assert.ok(unknownRow);
     assert.match(unknownRow, /\s-\s*$/);
