@@ -3329,7 +3329,7 @@ function formatJobBrlFromCents(value) {
     style: 'currency',
     currency: 'BRL',
     minimumFractionDigits: 2,
-    maximumFractionDigits: 3,
+    maximumFractionDigits: 4,
   }).format(number / 100);
 }
 
