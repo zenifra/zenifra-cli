@@ -389,7 +389,7 @@ Valores aceitos:
 - `config.profile` em projetos Valkey: `key_value`, `cache` ou `queue`
 - `config.version` em projetos Valkey: a versão retornada por `zenifra plans --type valkey`
 - `config.storage` em projetos Valkey: obrigatório e persistente para Key Value/Queue; omitido para Cache
-- `config.github.runtime` (quando houver GitHub em projeto HTTP): `nodejs` ou `python`
+- `config.github.runtime` (quando houver GitHub em projeto HTTP): `nodejs`, `python` ou `bun`
 - `config.github.auto_deploy`: use `true` para o modo `branch`; mantenha `false` ao habilitar `version_deploy`
 - `config.github.version_deploy`: use `enabled: true`, `event: "tag"` ou `"release"` e um `tag_pattern` explicito; `include_prereleases` e opcional e padrao `false`
 - `config.source` e `config.build` (quando houver origem Git por conexao): use os IDs retornados pela configuracao segura no Console/API; nao informe credenciais Git nesses campos
