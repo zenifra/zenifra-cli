@@ -153,13 +153,13 @@ function httpConfig({ persistent = false, capacity = 1, autoscaling } = {}) {
 }
 
 function projectIdFromCreate(payload) {
-  return payload?.data?.project_id || payload?.data?.id || payload?.data?._id || payload?.id || payload?._id;
+  return payload?.data?.project_id || payload?.data?.id || payload?.id;
 }
 
 function projectData(payload) {
   const project = payload?.data || payload || {};
   return {
-    id: project.id || project._id,
+    id: project.id,
     name: project.name,
     status: project.status,
     plan: project.plan,

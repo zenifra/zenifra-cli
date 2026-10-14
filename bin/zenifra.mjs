@@ -400,7 +400,7 @@ const HELP_SPECS = [
     flags: ['--json  Imprime a resposta em JSON.'],
     examples: ['zenifra orgs', 'zenifra orgs --json'],
     output: 'ID                        Nome        Role   Status\n507f1f77bcf86cd799439011  Minha org   owner  active',
-    jsonOutput: '[{"_id":"507f1f77bcf86cd799439011","name":"Minha org","role":"owner","status":"active"}]',
+    jsonOutput: '[{"id":"507f1f77bcf86cd799439011","name":"Minha org","role":"owner","status":"active"}]',
   },
   {
     command: 'whoami',
@@ -556,7 +556,7 @@ const HELP_SPECS = [
     flags: ['--name <name>             Nome do projeto.', '--plan <plan>             Plano do projeto.', '--payment-mode <mode>     Opcional para Jobs; demais tipos seguem a validacao do catalogo.', '--config <json|@file>     JSON inline ou arquivo.', '--description <text>      Descricao opcional.', '--idempotency-key <key>   Chave para repetir a mesma criacao com seguranca.', '--json                    Imprime a resposta em JSON.'],
     examples: ['zenifra create project', 'zenifra create project --name api-web --plan free --payment-mode hourly --config @examples/http-project.json'],
     output: 'Campo    Valor\n-------  --------------------------------------\nProjeto  507f1f77bcf86cd799439012\nDominio  https://api-web.clients.zenifra.com',
-    jsonOutput: '{"status":"success","data":{"id":"507f1f77bcf86cd799439012","name":"api-web"}}',
+    jsonOutput: '{"status":"success","data":{"project_id":"507f1f77bcf86cd799439012","domain":"api-web.clients.zenifra.com"}}',
     notes: ['Sem flags de criacao, a CLI abre um wizard guiado com docs, exemplos e indicacao de campos obrigatorios.'],
   },
   {
@@ -2426,7 +2426,7 @@ function asArray(value) {
 }
 
 function idOf(item) {
-  return item?._id || item?.id || item?.organization_id || item?.project_id || '';
+  return item?.id || item?.organization_id || item?.project_id || '';
 }
 
 function projectIdOf(project) {
@@ -2434,7 +2434,7 @@ function projectIdOf(project) {
 }
 
 function buildIdOf(build) {
-  return build?.id || build?._id || build?.build_id || '';
+  return build?.id || build?.build_id || '';
 }
 
 function buildLogLineOf(log) {
@@ -4897,7 +4897,7 @@ const PUBLIC_JOB_RUN_KEYS = [
 function sanitizeJobRun(run) {
   if (!run || typeof run !== 'object' || Array.isArray(run)) return {};
   const output = {};
-  const id = run.id || run._id || run.run_id;
+  const id = run.id || run.run_id;
   if (id !== undefined) output.id = id;
   for (const key of PUBLIC_JOB_RUN_KEYS) {
     if (run[key] !== undefined) output[key] = run[key];
