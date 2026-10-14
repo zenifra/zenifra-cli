@@ -303,6 +303,22 @@ test('global help shows the command index and points to command-specific help', 
   }
 });
 
+test('help examples name identifiers with public fields only', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const orgs = await runCli(['help', 'orgs'], { configDir });
+    const create = await runCli(['help', 'create', 'project'], { configDir });
+
+    assert.equal(orgs.code, 0, orgs.stderr);
+    assert.equal(create.code, 0, create.stderr);
+    assert.match(orgs.stdout, /\[\{"id":"/);
+    assert.match(create.stdout, /\{"status":"success","data":\{"project_id":"/);
+    for (const output of [orgs.stdout, create.stdout]) assert.doesNotMatch(output, /"_id"/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
 test('project namespace help includes scheduled Job run cancellation', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {
@@ -4592,7 +4608,7 @@ test('whoami identifies the active profile and selected organization without exp
     assert.equal(req.headers.authorization, 'Bearer user-access-token');
     jsonResponse(res, 200, {
       status: 'success',
-      data: [{ _id: 'org_123', name: 'Minha organizacao' }],
+      data: [{ id: 'org_123', name: 'Minha organizacao' }],
     });
   }, async ({ apiBase, configDir }) => {
     await writeProfiles(configDir, {
