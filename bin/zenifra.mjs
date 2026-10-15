@@ -3470,6 +3470,18 @@ async function fetchPlansCatalogs(session, flags, type) {
   };
 }
 
+const MODE_COLUMN_LABELS = [['hourly', 'Hora'], ['monthly', 'Mes'], ['yearly', 'Ano']];
+
+function planPaymentModes(plan) {
+  return Array.isArray(plan?.payment_modes) ? plan.payment_modes : ['hourly'];
+}
+
+function paymentModeColumns(plans, format) {
+  return MODE_COLUMN_LABELS
+    .filter(([mode]) => plans.some((plan) => planPaymentModes(plan).includes(mode)))
+    .map(([mode, label]) => ({ label, value: (plan) => (planPaymentModes(plan).includes(mode) ? format(plan.prices?.[mode]) : '-') }));
+}
+
 function printValkeyCatalog(catalog, profileFilter) {
   const profiles = profileFilter ? [profileFilter] : Object.keys(VALKEY_PROFILE_LABELS);
   profiles.forEach((profile, index) => {
@@ -3478,9 +3490,7 @@ function printValkeyCatalog(catalog, profileFilter) {
     const plans = catalog.plans.filter((plan) => plan.profile === profile);
     printTable(plans, [
       { label: 'Plano', value: (plan) => plan.id || '-' },
-      { label: 'Hora', value: (plan) => formatBrl(plan.prices?.hourly, catalog.currency) },
-      { label: 'Mes', value: (plan) => formatBrl(plan.prices?.monthly, catalog.currency) },
-      { label: 'Ano', value: (plan) => formatBrl(plan.prices?.yearly, catalog.currency) },
+      ...paymentModeColumns(plans, (amount) => formatBrl(amount, catalog.currency)),
       { label: 'Capacidade', value: (plan) => `${plan.resources?.vcpu ?? '-'} vCPU / ${plan.resources?.memory_mb ?? '-'} MB` },
       { label: 'Storage incluído', value: (plan) => `${plan.included_storage_gb ?? 0} GB` },
       { label: 'Alta disponibilidade', value: (plan) => plan.high_availability?.[profile] ? 'sim' : 'nao' },
@@ -3529,11 +3539,10 @@ function printPlansCatalogs(payload, type) {
   if (type === 'all' || type === 'database') {
     if (type === 'all') process.stdout.write('\n');
     process.stdout.write('PostgreSQL / MariaDB\n');
-    printTable(asArray(payload.database), [
+    const databasePlans = asArray(payload.database);
+    printTable(databasePlans, [
       { label: 'Plano', value: (plan) => plan.plan || '-' },
-      { label: 'Hora', value: (plan) => formatBrlFromCents(plan.prices?.hourly) },
-      { label: 'Mes', value: (plan) => formatBrlFromCents(plan.prices?.monthly) },
-      { label: 'Ano', value: (plan) => formatBrlFromCents(plan.prices?.yearly) },
+      ...paymentModeColumns(databasePlans, formatBrlFromCents),
       { label: 'Recursos', value: (plan) => asArray(plan.features).join(', ') || '-' },
     ]);
   }

@@ -801,6 +801,28 @@ test('plans --type valkey and profile aliases use the managed services catalog',
   }
 });
 
+test('plans --type valkey shows hourly prices only', async () => {
+  await withCliServer(async (req, res) => {
+    jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['plans', '--type', 'valkey'], { apiBase, configDir, envApiKey: null });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Hora/);
+    assert.doesNotMatch(result.stdout, /\bMes\b|\bAno\b/);
+  });
+});
+
+test('plans --type database shows hourly prices only', async () => {
+  await withPlansCatalogServer(null, async ({ apiBase, configDir }) => {
+    const result = await runCli(['plans', '--type', 'database'], { apiBase, configDir, envApiKey: null });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Hora/);
+    assert.doesNotMatch(result.stdout, /\bMes\b|\bAno\b/);
+  });
+});
+
 test('plans --type valkey --json returns the live catalog without requiring authentication', async () => {
   await withCliServer(async (req, res) => {
     assert.equal(req.method, 'GET');
