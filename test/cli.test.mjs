@@ -56,7 +56,7 @@ const VALKEY_CATALOG = {
       features: ['1 GB incluído'],
       included_storage_gb: 1,
       high_availability: { key_value: false, cache: false, queue: false },
-      resources: { cpu: '250m', memory: '256Mi' },
+      resources: { cpu: '250m', memory: '256Mi', vcpu: 0.25, memory_mb: 256 },
     },
     {
       id: 'db-basic',
@@ -65,7 +65,7 @@ const VALKEY_CATALOG = {
       features: ['Alta disponibilidade'],
       included_storage_gb: 5,
       high_availability: { key_value: true, cache: false, queue: true },
-      resources: { cpu: '1000m', memory: '1Gi' },
+      resources: { cpu: '1000m', memory: '1Gi', vcpu: 1, memory_mb: 1024 },
     },
     {
       id: 'cache-free',
@@ -74,7 +74,7 @@ const VALKEY_CATALOG = {
       features: ['Dados temporários'],
       included_storage_gb: 0,
       high_availability: { key_value: false, cache: false, queue: false },
-      resources: { cpu: '250m', memory: '256Mi' },
+      resources: { cpu: '250m', memory: '256Mi', vcpu: 0.25, memory_mb: 256 },
     },
     {
       id: 'cache-basic',
@@ -83,7 +83,7 @@ const VALKEY_CATALOG = {
       features: ['Dados temporários'],
       included_storage_gb: 0,
       high_availability: { key_value: true, cache: false, queue: true },
-      resources: { cpu: '1000m', memory: '1Gi' },
+      resources: { cpu: '1000m', memory: '1Gi', vcpu: 1, memory_mb: 1024 },
     },
     {
       id: 'queue-free',
@@ -92,7 +92,7 @@ const VALKEY_CATALOG = {
       features: ['1 GB incluído'],
       included_storage_gb: 1,
       high_availability: { key_value: false, cache: false, queue: false },
-      resources: { cpu: '250m', memory: '256Mi' },
+      resources: { cpu: '250m', memory: '256Mi', vcpu: 0.25, memory_mb: 256 },
     },
     {
       id: 'queue-basic',
@@ -101,7 +101,7 @@ const VALKEY_CATALOG = {
       features: ['Alta disponibilidade'],
       included_storage_gb: 5,
       high_availability: { key_value: true, cache: false, queue: true },
-      resources: { cpu: '1000m', memory: '1Gi' },
+      resources: { cpu: '1000m', memory: '1Gi', vcpu: 1, memory_mb: 1024 },
     },
   ],
 };
@@ -790,6 +790,8 @@ test('plans --type valkey and profile aliases use the managed services catalog',
 
       assert.equal(result.code, 0, `${scenario.type}\n${result.stderr}`);
       assert.match(result.stdout, scenario.expectedText);
+      assert.match(result.stdout, /0\.25 vCPU \/ 256 MB/);
+      assert.doesNotMatch(result.stdout, /250m|256Mi/);
       assert.deepEqual(requests.map((request) => request.url), ['/v1/managed-services/catalog']);
       if (scenario.expectedProfile) {
         const otherProfiles = ['key_value', 'cache', 'queue'].filter((profile) => profile !== scenario.expectedProfile);

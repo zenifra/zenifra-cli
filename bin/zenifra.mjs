@@ -3481,7 +3481,7 @@ function printValkeyCatalog(catalog, profileFilter) {
       { label: 'Hora', value: (plan) => formatBrl(plan.prices?.hourly, catalog.currency) },
       { label: 'Mes', value: (plan) => formatBrl(plan.prices?.monthly, catalog.currency) },
       { label: 'Ano', value: (plan) => formatBrl(plan.prices?.yearly, catalog.currency) },
-      { label: 'Capacidade', value: (plan) => `${plan.resources?.cpu || '-'} / ${plan.resources?.memory || '-'}` },
+      { label: 'Capacidade', value: (plan) => `${plan.resources?.vcpu ?? '-'} vCPU / ${plan.resources?.memory_mb ?? '-'} MB` },
       { label: 'Storage incluído', value: (plan) => `${plan.included_storage_gb ?? 0} GB` },
       { label: 'Alta disponibilidade', value: (plan) => plan.high_availability?.[profile] ? 'sim' : 'nao' },
     ]);
