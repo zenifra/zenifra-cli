@@ -1582,24 +1582,34 @@ test('project metrics reports missing access with a user-facing message', async 
   });
 });
 
-test('project instances set explains an organization with pending payments', async () => {
-  await withCliServer(async (req, res) => {
-    assertApiKeyAuth(req);
-    assert.equal(req.method, 'PATCH');
-    assert.equal(req.url, '/v1/project/proj_1/instances');
-    jsonResponse(res, 402, { status: 'failed', code: 'ORGANIZATION_BILLING_BLOCKED', message: 'This organization has pending payments' });
-  }, async ({ apiBase, configDir }) => {
-    const result = await runCli([
-      'project', 'instances', 'set',
-      '--project', 'proj_1',
-      '--count', '3',
-    ], { apiBase, configDir });
+const lifecycleRefusals = [
+  [409, 'PROJECT_STATE_CONFLICT', 'Esta acao nao esta disponivel no estado atual do projeto.'],
+  [409, 'PROJECT_OPERATION_IN_PROGRESS', 'Outra operacao esta em andamento neste projeto. Tente novamente em instantes.'],
+  [402, 'ORGANIZATION_BILLING_BLOCKED', 'A organizacao tem pagamentos pendentes. Regularize para aumentar o uso.'],
+  [422, 'PROJECT_OPERATION_NOT_SUPPORTED', 'Esta acao nao esta disponivel para este tipo de projeto.'],
+  [409, 'PROJECT_PLAN_ALREADY_SELECTED', 'O projeto ja usa este plano.'],
+  [409, 'SOME_UNKNOWN_CODE', 'Projeto bloqueado por regra desconhecida'],
+];
 
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /A organizacao tem pagamentos pendentes/);
-    assert.doesNotMatch(result.stderr, /pending payments/);
+for (const [status, code, expected] of lifecycleRefusals) {
+  test(`project instances set prints the public message for ${code}`, async () => {
+    await withCliServer(async (req, res) => {
+      assertApiKeyAuth(req);
+      assert.equal(req.method, 'PATCH');
+      assert.equal(req.url, '/v1/project/proj_1/instances');
+      jsonResponse(res, status, { status: 'failed', code, message: 'Projeto bloqueado por regra desconhecida' });
+    }, async ({ apiBase, configDir }) => {
+      const result = await runCli([
+        'project', 'instances', 'set',
+        '--project', 'proj_1',
+        '--count', '3',
+      ], { apiBase, configDir });
+
+      assert.equal(result.code, 1);
+      assert.ok(result.stderr.includes(expected), result.stderr);
+    });
   });
-});
+}
 
 test('project metrics renders native Valkey cache metrics for humans', async () => {
   await withCliServer(async (req, res) => {
