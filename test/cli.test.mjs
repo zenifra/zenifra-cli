@@ -1582,6 +1582,25 @@ test('project metrics reports missing access with a user-facing message', async 
   });
 });
 
+test('project instances set explains an organization with pending payments', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'PATCH');
+    assert.equal(req.url, '/v1/project/proj_1/instances');
+    jsonResponse(res, 402, { status: 'failed', code: 'ORGANIZATION_BILLING_BLOCKED', message: 'This organization has pending payments' });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'project', 'instances', 'set',
+      '--project', 'proj_1',
+      '--count', '3',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /A organizacao tem pagamentos pendentes/);
+    assert.doesNotMatch(result.stderr, /pending payments/);
+  });
+});
+
 test('project metrics renders native Valkey cache metrics for humans', async () => {
   await withCliServer(async (req, res) => {
     assertApiKeyAuth(req);

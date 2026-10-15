@@ -1809,6 +1809,14 @@ function publicApiErrorMessage(value) {
   return message;
 }
 
+const PUBLIC_ERROR_CODE_MESSAGES = {
+  PROJECT_STATE_CONFLICT: 'Esta acao nao esta disponivel no estado atual do projeto.',
+  PROJECT_OPERATION_IN_PROGRESS: 'Outra operacao esta em andamento neste projeto. Tente novamente em instantes.',
+  ORGANIZATION_BILLING_BLOCKED: 'A organizacao tem pagamentos pendentes. Regularize para aumentar o uso.',
+  PROJECT_OPERATION_NOT_SUPPORTED: 'Esta acao nao esta disponivel para este tipo de projeto.',
+  PROJECT_PLAN_ALREADY_SELECTED: 'O projeto ja usa este plano.',
+};
+
 async function request(session, flags, method, path, {
   body,
   orgId,
@@ -1891,6 +1899,9 @@ async function request(session, flags, method, path, {
     }
     if (response.status === 402 && path.includes('/metrics') && /support metrics/i.test(String(message))) {
       throw httpError('Este projeto nao possui acesso a metricas.');
+    }
+    if (Object.hasOwn(PUBLIC_ERROR_CODE_MESSAGES, payload?.code)) {
+      throw httpError(PUBLIC_ERROR_CODE_MESSAGES[payload.code]);
     }
     if (String(message).includes('missing x-organization-id')) {
       throw httpError('Organizacao nao selecionada. Rode "zenifra org set" ou use --org <id>.');
