@@ -65,8 +65,8 @@ zenifra create project --name <name> --plan free --payment-mode hourly --config 
 zenifra create project --name <name> --plan basic --payment-mode hourly --config @examples/http-github-project.json
 zenifra create project --name <name> --plan basic --payment-mode hourly --config @examples/http-git-project.json
 zenifra create project --name <name> --plan premium --payment-mode hourly --config @examples/http-autoscaling-project.json
-zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/postgresql-project.json
-zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/mariadb-project.json
+zenifra create project --name <name> --plan db-basic --payment-mode hourly --config @examples/postgresql-project.json
+zenifra create project --name <name> --plan db-basic --payment-mode hourly --config @examples/mariadb-project.json
 zenifra create project --name <name> --plan analytics-starter --payment-mode hourly --config @examples/clickhouse-project.json
 zenifra create project --name <name> --plan db-free --payment-mode hourly --config @examples/valkey-key-value-project.json
 zenifra create project --name <name> --plan cache-free --payment-mode hourly --config @examples/valkey-cache-project.json
@@ -382,7 +382,7 @@ Antes de escolher um plano com o usuario, compare os catalogos com `zenifra plan
 
 Valores aceitos:
 
-- `payment_mode`: `hourly`, `monthly`, `yearly`, `per_minute` (somente Jobs)
+- `payment_mode`: `hourly`, `monthly`, `yearly` (projetos HTTP) ou `per_minute` (somente Jobs); bancos e servicos gerenciados aceitam apenas `hourly`
 - `type_project` no `config`: `http`, `postgresql`, `mariadb`, `valkey`, `clickhouse`, `job`
 - `exposure` no `config` HTTP: `public`, `private`
 - `plan`: consulte `zenifra plans` para os planos atuais; ClickHouse usa `analytics-*`; Valkey usa `db-*` para Key Value, `cache-*` para Cache e `queue-*` para Queue

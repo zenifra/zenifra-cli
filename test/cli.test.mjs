@@ -2499,6 +2499,28 @@ test('create project fails early when payment mode is invalid', async () => {
   }
 });
 
+for (const [type, plan] of [['postgresql', 'db-basic'], ['mariadb', 'db-basic'], ['clickhouse', 'analytics-starter'], ['valkey', 'db-free']]) {
+  test(`create project rejects non-hourly billing for ${type} before creating it`, async () => {
+    const requests = [];
+    await withCliServer(async (req, res) => {
+      requests.push(`${req.method} ${req.url}`);
+      jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
+    }, async ({ apiBase, configDir }) => {
+      const result = await runCli([
+        'create', 'project',
+        '--name', 'db-app',
+        '--plan', plan,
+        '--payment-mode', 'monthly',
+        '--config', JSON.stringify({ type_project: type, version: VALKEY_CATALOG.version }),
+      ], { apiBase, configDir });
+
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /aceitam apenas "hourly"/);
+      assert.equal(requests.some((request) => request.startsWith('POST ')), false);
+    });
+  });
+}
+
 test('create scheduled Job rejects an invalid image reference before calling the API', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {
@@ -4046,7 +4068,7 @@ test('create project wizard creates a postgresql project with transport shim fie
       '',
       '2',
       '1',
-      '3',
+      '1',
       '4',
       '3',
       '20',
@@ -4057,7 +4079,7 @@ test('create project wizard creates a postgresql project with transport shim fie
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(body.plan, 'db-basic');
-    assert.equal(body.payment_mode, 'yearly');
+    assert.equal(body.payment_mode, 'hourly');
     assert.deepEqual(body.config, {
       type_project: 'postgresql',
       version: '18',

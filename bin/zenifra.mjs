@@ -3815,6 +3815,10 @@ function validateCreateInput({ plan, paymentMode, config, valkeyCatalog }) {
     throw new CliError(`type_project invalido: "${config?.type_project}". Valores aceitos: ${formatAllowedValues(ALLOWED_TYPE_PROJECT_VALUES)}. Docs: ${DOCS_CREATE_HTTP_URL}`);
   }
 
+  if (nextTypeProject !== 'http' && nextPaymentMode !== 'hourly') {
+    throw new CliError(`Modo de pagamento invalido para ${nextTypeProject}: bancos e servicos gerenciados aceitam apenas "hourly". Docs: ${DOCS_PAYMENTS_URL}`);
+  }
+
   const hasGenericGitConfig = config?.source !== undefined || config?.build !== undefined;
   if (hasGenericGitConfig && (!isRecord(config.source) || !isRecord(config.build))) {
     throw new CliError('config.source e config.build devem ser informados juntos para projetos com origem Git.');
@@ -4535,11 +4539,12 @@ async function runProjectCreateWizard(session, flags) {
     ui.state.planAllowsSubdomain = isSubdomainCustomizable(catalogs.httpPlans, plan);
     ui.state.planAllowsAutoscaling = isAutoscalingEnabledForPlan(catalogs.httpPlans, plan);
   }
+  const paymentModeOptions = typeProject === 'http' ? WIZARD_PAYMENT_MODE_OPTIONS : ['hourly'];
   const paymentMode = typeProject === 'job' ? 'per_minute' : await promptWizardSelect({
     label: 'Modo de pagamento',
     docs: DOCS_PAYMENTS_URL,
-    examples: WIZARD_PAYMENT_MODE_OPTIONS,
-    options: WIZARD_PAYMENT_MODE_OPTIONS.map((value) => ({ value })),
+    examples: paymentModeOptions,
+    options: paymentModeOptions.map((value) => ({ value })),
   });
 
   let config;
