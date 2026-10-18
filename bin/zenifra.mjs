@@ -3481,18 +3481,6 @@ async function fetchPlansCatalogs(session, flags, type) {
   };
 }
 
-const MODE_COLUMN_LABELS = [['hourly', 'Hora'], ['monthly', 'Mes'], ['yearly', 'Ano']];
-
-function planPaymentModes(plan) {
-  return Array.isArray(plan?.payment_modes) ? plan.payment_modes : ['hourly'];
-}
-
-function paymentModeColumns(plans, format) {
-  return MODE_COLUMN_LABELS
-    .filter(([mode]) => plans.some((plan) => planPaymentModes(plan).includes(mode)))
-    .map(([mode, label]) => ({ label, value: (plan) => (planPaymentModes(plan).includes(mode) ? format(plan.prices?.[mode]) : '-') }));
-}
-
 function printValkeyCatalog(catalog, profileFilter) {
   const profiles = profileFilter ? [profileFilter] : Object.keys(VALKEY_PROFILE_LABELS);
   profiles.forEach((profile, index) => {
@@ -3501,7 +3489,9 @@ function printValkeyCatalog(catalog, profileFilter) {
     const plans = catalog.plans.filter((plan) => plan.profile === profile);
     printTable(plans, [
       { label: 'Plano', value: (plan) => plan.id || '-' },
-      ...paymentModeColumns(plans, (amount) => formatBrl(amount, catalog.currency)),
+      { label: 'Hora', value: (plan) => formatBrl(plan.prices?.hourly, catalog.currency) },
+      { label: 'Mes', value: (plan) => formatBrl(plan.prices?.monthly, catalog.currency) },
+      { label: 'Ano', value: (plan) => formatBrl(plan.prices?.yearly, catalog.currency) },
       { label: 'Capacidade', value: (plan) => `${plan.resources?.vcpu ?? '-'} vCPU / ${plan.resources?.memory_mb ?? '-'} MB` },
       { label: 'Storage incluído', value: (plan) => `${plan.included_storage_gb ?? 0} GB` },
       { label: 'Alta disponibilidade', value: (plan) => plan.high_availability?.[profile] ? 'sim' : 'nao' },
@@ -3550,10 +3540,11 @@ function printPlansCatalogs(payload, type) {
   if (type === 'all' || type === 'database') {
     if (type === 'all') process.stdout.write('\n');
     process.stdout.write('PostgreSQL / MariaDB\n');
-    const databasePlans = asArray(payload.database);
-    printTable(databasePlans, [
+    printTable(asArray(payload.database), [
       { label: 'Plano', value: (plan) => plan.plan || '-' },
-      ...paymentModeColumns(databasePlans, formatBrlFromCents),
+      { label: 'Hora', value: (plan) => formatBrlFromCents(plan.prices?.hourly) },
+      { label: 'Mes', value: (plan) => formatBrlFromCents(plan.prices?.monthly) },
+      { label: 'Ano', value: (plan) => formatBrlFromCents(plan.prices?.yearly) },
       { label: 'Recursos', value: (plan) => asArray(plan.features).join(', ') || '-' },
     ]);
   }
@@ -3833,10 +3824,6 @@ function validateCreateInput({ plan, paymentMode, config, valkeyCatalog }) {
 
   if (!nextTypeProject || !ALLOWED_TYPE_PROJECT_VALUES.has(nextTypeProject)) {
     throw new CliError(`type_project invalido: "${config?.type_project}". Valores aceitos: ${formatAllowedValues(ALLOWED_TYPE_PROJECT_VALUES)}. Docs: ${DOCS_CREATE_HTTP_URL}`);
-  }
-
-  if (nextTypeProject !== 'http' && nextPaymentMode !== 'hourly') {
-    throw new CliError(`Modo de pagamento invalido para ${nextTypeProject}: bancos e servicos gerenciados aceitam apenas "hourly". Docs: ${DOCS_PAYMENTS_URL}`);
   }
 
   const hasGenericGitConfig = config?.source !== undefined || config?.build !== undefined;
@@ -4559,12 +4546,11 @@ async function runProjectCreateWizard(session, flags) {
     ui.state.planAllowsSubdomain = isSubdomainCustomizable(catalogs.httpPlans, plan);
     ui.state.planAllowsAutoscaling = isAutoscalingEnabledForPlan(catalogs.httpPlans, plan);
   }
-  const paymentModeOptions = typeProject === 'http' ? WIZARD_PAYMENT_MODE_OPTIONS : ['hourly'];
   const paymentMode = typeProject === 'job' ? 'per_minute' : await promptWizardSelect({
     label: 'Modo de pagamento',
     docs: DOCS_PAYMENTS_URL,
-    examples: paymentModeOptions,
-    options: paymentModeOptions.map((value) => ({ value })),
+    examples: WIZARD_PAYMENT_MODE_OPTIONS,
+    options: WIZARD_PAYMENT_MODE_OPTIONS.map((value) => ({ value })),
   });
 
   let config;

@@ -771,6 +771,23 @@ test('plans preserves BRL units for storage catalog prices', async () => {
   });
 });
 
+test('plans --type valkey and database show hourly, monthly and yearly prices', async () => {
+  await withCliServer(async (req, res) => {
+    jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['plans', '--type', 'valkey'], { apiBase, configDir, envApiKey: null });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Hora[\s\S]*Mes[\s\S]*Ano/);
+  });
+  await withPlansCatalogServer(null, async ({ apiBase, configDir }) => {
+    const result = await runCli(['plans', '--type', 'database'], { apiBase, configDir, envApiKey: null });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Hora[\s\S]*Mes[\s\S]*Ano/);
+  });
+});
+
 test('plans --type valkey and profile aliases use the managed services catalog', async () => {
   const scenarios = [
     { type: 'valkey', expectedProfile: null, expectedText: /Key Value/ },
@@ -799,28 +816,6 @@ test('plans --type valkey and profile aliases use the managed services catalog',
       }
     });
   }
-});
-
-test('plans --type valkey shows hourly prices only', async () => {
-  await withCliServer(async (req, res) => {
-    jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
-  }, async ({ apiBase, configDir }) => {
-    const result = await runCli(['plans', '--type', 'valkey'], { apiBase, configDir, envApiKey: null });
-
-    assert.equal(result.code, 0, result.stderr);
-    assert.match(result.stdout, /Hora/);
-    assert.doesNotMatch(result.stdout, /\bMes\b|\bAno\b/);
-  });
-});
-
-test('plans --type database shows hourly prices only', async () => {
-  await withPlansCatalogServer(null, async ({ apiBase, configDir }) => {
-    const result = await runCli(['plans', '--type', 'database'], { apiBase, configDir, envApiKey: null });
-
-    assert.equal(result.code, 0, result.stderr);
-    assert.match(result.stdout, /Hora/);
-    assert.doesNotMatch(result.stdout, /\bMes\b|\bAno\b/);
-  });
 });
 
 test('plans --type valkey --json returns the live catalog without requiring authentication', async () => {
@@ -2550,24 +2545,29 @@ test('create project fails early when payment mode is invalid', async () => {
   }
 });
 
-for (const [type, plan] of [['postgresql', 'db-basic'], ['mariadb', 'db-basic'], ['clickhouse', 'analytics-starter'], ['valkey', 'db-free']]) {
-  test(`create project rejects non-hourly billing for ${type} before creating it`, async () => {
-    const requests = [];
+for (const [type, plan, mode, extra] of [['postgresql', 'db-basic', 'monthly', {}], ['mariadb', 'db-basic', 'yearly', {}], ['clickhouse', 'analytics-starter', 'monthly', {}], ['valkey', 'db-free', 'yearly', { profile: 'key_value', storage: { persistent: true, capacity: 1 } }]]) {
+  test(`create project sends ${mode} billing for ${type} to the API`, async () => {
+    const posts = [];
     await withCliServer(async (req, res) => {
-      requests.push(`${req.method} ${req.url}`);
+      if (req.method === 'POST') {
+        posts.push(await readJson(req));
+        jsonResponse(res, 201, { status: 'success', data: { project_id: 'proj-1' } });
+        return;
+      }
       jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
     }, async ({ apiBase, configDir }) => {
       const result = await runCli([
         'create', 'project',
         '--name', 'db-app',
         '--plan', plan,
-        '--payment-mode', 'monthly',
-        '--config', JSON.stringify({ type_project: type, version: VALKEY_CATALOG.version }),
+        '--payment-mode', mode,
+        '--config', JSON.stringify({ type_project: type, version: VALKEY_CATALOG.version, ...extra }),
       ], { apiBase, configDir });
 
-      assert.equal(result.code, 1);
-      assert.match(result.stderr, /aceitam apenas "hourly"/);
-      assert.equal(requests.some((request) => request.startsWith('POST ')), false);
+      assert.equal(result.code, 0, result.stderr);
+      assert.doesNotMatch(result.stderr, /Modo de pagamento invalido/);
+      assert.equal(posts.length, 1);
+      assert.equal(posts[0].payment_mode, mode);
     });
   });
 }
@@ -4119,7 +4119,7 @@ test('create project wizard creates a postgresql project with transport shim fie
       '',
       '2',
       '1',
-      '1',
+      '3',
       '4',
       '3',
       '20',
@@ -4130,7 +4130,7 @@ test('create project wizard creates a postgresql project with transport shim fie
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(body.plan, 'db-basic');
-    assert.equal(body.payment_mode, 'hourly');
+    assert.equal(body.payment_mode, 'yearly');
     assert.deepEqual(body.config, {
       type_project: 'postgresql',
       version: '18',
