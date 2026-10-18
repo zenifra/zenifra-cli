@@ -801,6 +801,28 @@ test('plans --type valkey and profile aliases use the managed services catalog',
   }
 });
 
+test('plans --type valkey shows hourly prices only', async () => {
+  await withCliServer(async (req, res) => {
+    jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['plans', '--type', 'valkey'], { apiBase, configDir, envApiKey: null });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Hora/);
+    assert.doesNotMatch(result.stdout, /\bMes\b|\bAno\b/);
+  });
+});
+
+test('plans --type database shows hourly prices only', async () => {
+  await withPlansCatalogServer(null, async ({ apiBase, configDir }) => {
+    const result = await runCli(['plans', '--type', 'database'], { apiBase, configDir, envApiKey: null });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Hora/);
+    assert.doesNotMatch(result.stdout, /\bMes\b|\bAno\b/);
+  });
+});
+
 test('plans --type valkey --json returns the live catalog without requiring authentication', async () => {
   await withCliServer(async (req, res) => {
     assert.equal(req.method, 'GET');
@@ -1559,6 +1581,35 @@ test('project metrics reports missing access with a user-facing message', async 
     assert.doesNotMatch(result.stderr, /plan dont support metrics/);
   });
 });
+
+const lifecycleRefusals = [
+  [409, 'PROJECT_STATE_CONFLICT', 'Esta acao nao esta disponivel no estado atual do projeto.'],
+  [409, 'PROJECT_OPERATION_IN_PROGRESS', 'Outra operacao esta em andamento neste projeto. Tente novamente em instantes.'],
+  [402, 'ORGANIZATION_BILLING_BLOCKED', 'A organizacao tem pagamentos pendentes. Regularize para aumentar o uso.'],
+  [422, 'PROJECT_OPERATION_NOT_SUPPORTED', 'Esta acao nao esta disponivel para este tipo de projeto.'],
+  [409, 'PROJECT_PLAN_ALREADY_SELECTED', 'O projeto ja usa este plano.'],
+  [409, 'SOME_UNKNOWN_CODE', 'Projeto bloqueado por regra desconhecida'],
+];
+
+for (const [status, code, expected] of lifecycleRefusals) {
+  test(`project instances set prints the public message for ${code}`, async () => {
+    await withCliServer(async (req, res) => {
+      assertApiKeyAuth(req);
+      assert.equal(req.method, 'PATCH');
+      assert.equal(req.url, '/v1/project/proj_1/instances');
+      jsonResponse(res, status, { status: 'failed', code, message: 'Projeto bloqueado por regra desconhecida' });
+    }, async ({ apiBase, configDir }) => {
+      const result = await runCli([
+        'project', 'instances', 'set',
+        '--project', 'proj_1',
+        '--count', '3',
+      ], { apiBase, configDir });
+
+      assert.equal(result.code, 1);
+      assert.ok(result.stderr.includes(expected), result.stderr);
+    });
+  });
+}
 
 test('project metrics renders native Valkey cache metrics for humans', async () => {
   await withCliServer(async (req, res) => {
@@ -2498,6 +2549,28 @@ test('create project fails early when payment mode is invalid', async () => {
     await rm(configDir, { recursive: true, force: true });
   }
 });
+
+for (const [type, plan] of [['postgresql', 'db-basic'], ['mariadb', 'db-basic'], ['clickhouse', 'analytics-starter'], ['valkey', 'db-free']]) {
+  test(`create project rejects non-hourly billing for ${type} before creating it`, async () => {
+    const requests = [];
+    await withCliServer(async (req, res) => {
+      requests.push(`${req.method} ${req.url}`);
+      jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
+    }, async ({ apiBase, configDir }) => {
+      const result = await runCli([
+        'create', 'project',
+        '--name', 'db-app',
+        '--plan', plan,
+        '--payment-mode', 'monthly',
+        '--config', JSON.stringify({ type_project: type, version: VALKEY_CATALOG.version }),
+      ], { apiBase, configDir });
+
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /aceitam apenas "hourly"/);
+      assert.equal(requests.some((request) => request.startsWith('POST ')), false);
+    });
+  });
+}
 
 test('create scheduled Job rejects an invalid image reference before calling the API', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
@@ -4046,7 +4119,7 @@ test('create project wizard creates a postgresql project with transport shim fie
       '',
       '2',
       '1',
-      '3',
+      '1',
       '4',
       '3',
       '20',
@@ -4057,7 +4130,7 @@ test('create project wizard creates a postgresql project with transport shim fie
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(body.plan, 'db-basic');
-    assert.equal(body.payment_mode, 'yearly');
+    assert.equal(body.payment_mode, 'hourly');
     assert.deepEqual(body.config, {
       type_project: 'postgresql',
       version: '18',
