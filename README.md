@@ -68,7 +68,7 @@ zenifra create project --name <name> --plan premium --payment-mode hourly --conf
 zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/postgresql-project.json
 zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/mariadb-project.json
 zenifra create project --name <name> --plan analytics-starter --payment-mode hourly --config @examples/clickhouse-project.json
-zenifra create project --name <name> --plan db-free --payment-mode hourly --config @examples/valkey-key-value-project.json
+zenifra create project --name <name> --plan db-starter --payment-mode hourly --config @examples/valkey-key-value-project.json
 zenifra create project --name <name> --plan cache-free --payment-mode hourly --config @examples/valkey-cache-project.json
 zenifra create project --name <name> --plan queue-free --payment-mode hourly --config @examples/valkey-queue-project.json
 zenifra create project --name nightly-report --plan job-basic --payment-mode per_minute --config @examples/job-project.json
