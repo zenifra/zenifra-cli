@@ -2572,6 +2572,36 @@ for (const [type, plan, mode, extra] of [['postgresql', 'db-basic', 'monthly', {
   });
 }
 
+test('create scheduled Job accepts job-starter and rejects job-free before calling the API', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const run = (plan) => runCli([
+      'create', 'project',
+      '--name', 'nightly-job',
+      '--plan', plan,
+      '--payment-mode', 'per_minute',
+      '--config', JSON.stringify({
+        type_project: 'job',
+        image: { url: 'invalid-image-without-tag', is_public: true },
+        envs: [],
+        storage: { persistent: false, capacity: 1 },
+        job: { cron: '0 3 * * *' },
+      }),
+    ], { configDir });
+
+    const starter = await run('job-starter');
+    assert.equal(starter.code, 1);
+    assert.doesNotMatch(starter.stderr, /Plano invalido/);
+
+    const free = await run('job-free');
+    assert.equal(free.code, 1);
+    assert.match(free.stderr, /Plano invalido para Jobs: "job[-_]free"/);
+    assert.match(free.stderr, /job-starter/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
 test('create scheduled Job rejects an invalid image reference before calling the API', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {

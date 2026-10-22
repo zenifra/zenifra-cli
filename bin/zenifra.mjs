@@ -176,7 +176,7 @@ const WIZARD_DATABASE_PLAN_OPTIONS = [
   'db-free',
 ];
 const WIZARD_PAYMENT_MODE_OPTIONS = ['hourly', 'monthly', 'yearly'];
-const WIZARD_JOB_PLAN_OPTIONS = WIZARD_HTTP_PLAN_OPTIONS.map((plan) => `job-${plan}`);
+const WIZARD_JOB_PLAN_OPTIONS = [...WIZARD_HTTP_PLAN_OPTIONS.filter((plan) => plan !== 'free').map((plan) => `job-${plan}`), 'job-starter'];
 const WIZARD_TYPE_PROJECT_OPTIONS = ['http', 'postgresql', 'mariadb', 'valkey'];
 const WIZARD_VALKEY_PROFILE_OPTIONS = ['key_value', 'cache', 'queue'];
 const WIZARD_HTTP_EXPOSURE_OPTIONS = ['public', 'private'];
