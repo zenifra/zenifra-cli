@@ -474,3 +474,14 @@ git push origin main --follow-tags
 ```
 
 Tags `v*` disparam `.github/workflows/publish.yml`, que roda `npm ci`, `npm run check`, `npm test`, `npm pack --dry-run` e `npm publish --access public`.
+
+### Pacotes alias
+
+`aliases/zenifra` e `aliases/zenifra-cli` reservam os nomes sem escopo no npm. Ambos instalam o mesmo comando `zenifra` e dependem de `@zenifra/cli >=0.7.1`, entao so precisam ser republicados se o proprio alias mudar. O publish e manual:
+
+```bash
+npm login
+(cd aliases/zenifra && npm publish)
+(cd aliases/zenifra-cli && npm publish)
+npm deprecate zenifra-cli "Use @zenifra/cli: npm install -g @zenifra/cli"
+```

@@ -1,0 +1,22 @@
+{
+  "name": "zenifra-cli",
+  "version": "0.1.0",
+  "description": "Alias for @zenifra/cli, the official Zenifra command line interface.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://zenifra.com/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zenifra/zenifra-cli.git",
+    "directory": "aliases/zenifra-cli"
+  },
+  "bin": {
+    "zenifra": "bin/zenifra.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@zenifra/cli": ">=0.7.1"
+  }
+}
