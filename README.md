@@ -52,15 +52,17 @@ zenifra orgs
 zenifra org set
 zenifra plans
 zenifra plans --type http
-zenifra plans --type key-value
+zenifra plans --type database
+zenifra plans --type analytics
 zenifra plans --type cache
+zenifra plans --type queue
 zenifra plans --type storage --json
 zenifra git providers
 zenifra git runtimes
 zenifra git connections
 zenifra git repositories resolve --connection <connection-id> --path equipe/aplicacao
 zenifra git branches --connection <connection-id> --repository <repository-id>
-zenifra plans --type job
+zenifra plans --type jobs
 zenifra create project
 zenifra create project --name <name> --plan free --payment-mode hourly --config @examples/http-project.json
 zenifra create project --name <name> --plan basic --payment-mode hourly --config @examples/http-github-project.json
@@ -322,8 +324,14 @@ Para comparar custo antes de criar um projeto, use:
 zenifra plans
 zenifra plans --type http
 zenifra plans --type database
+zenifra plans --type analytics
+zenifra plans --type jobs
+zenifra plans --type queue
+zenifra plans --type cache
 zenifra plans --type storage --json
 ```
+
+Os grupos de `--type` são os mesmos do console: `http` (aplicações), `database` (PostgreSQL, MariaDB e Key Value), `analytics` (ClickHouse), `jobs` (jobs agendados), `queue`, `cache` e `storage` (armazenamento das aplicações).
 
 `zenifra plans` funciona sem autenticacao e mostra os catalogos publicos de HTTP, banco, armazenamento, Jobs agendados, Key Value, Cache e Queue. Use `--type job` para consultar Jobs agendados ou `--type key-value`, `--type cache` e `--type queue` para consultar cada perfil.
 
@@ -432,7 +440,7 @@ Valores aceitos:
 - `exposure` no `config` HTTP: `public`, `private`
 - `plan`: consulte `zenifra plans` para os planos atuais; ClickHouse usa `analytics-*`; Key Value usa `db-*`, Cache usa `cache-*` e Queue usa `queue-*`
 - `config.profile` em Key Value, Cache e Queue: `key_value`, `cache` ou `queue`
-- `config.version` em Key Value, Cache e Queue: a versão retornada por `zenifra plans --type key-value` (ou `cache`, `queue`)
+- `config.version` em Key Value, Cache e Queue: a versão retornada por `zenifra plans --type database` (Key Value), `--type cache` ou `--type queue`
 - `config.storage` em Key Value, Cache e Queue: obrigatório e persistente para Key Value/Queue; omitido para Cache
 - `config.github.runtime` (quando houver GitHub em projeto HTTP): `nodejs`, `python` ou `bun`
 - `config.github.auto_deploy`: use `true` para o modo `branch`; mantenha `false` ao habilitar `version_deploy`

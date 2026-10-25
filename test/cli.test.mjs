@@ -38,6 +38,7 @@ const DATABASE_PLAN_CATALOG = [
   { plan: 'db-basic', prices: { hourly: 2, monthly: 20, yearly: 200 }, features: ['Até 3 réplicas'] },
   { plan: 'db-premium', prices: { hourly: 3, monthly: 30, yearly: 300 }, features: ['Até 4 réplicas'] },
   { plan: 'db-enterprise', prices: { hourly: 4, monthly: 40, yearly: 400 }, features: ['Até 5 réplicas'] },
+  { plan: 'analytics-starter', engines: { clickhouse: {} }, prices: { hourly: 5, monthly: 50, yearly: 500 }, features: ['3 réplicas'] },
 ];
 const VALKEY_CATALOG = {
   engine: 'valkey',
@@ -675,7 +676,7 @@ test('plans help works without authentication', async () => {
     for (const args of [['plans', '--help'], ['help', 'plans']]) {
       const result = await runCli(args, { configDir, envApiKey: null });
       assert.equal(result.code, 0, `${args.join(' ')}\n${result.stderr}`);
-      assert.match(result.stdout, /Usage:\n  zenifra plans \[--type <all\|http\|database\|storage\|key-value\|cache\|queue\|job>] \[--json]/);
+      assert.match(result.stdout, /Usage:\n  zenifra plans \[--type <all\|http\|database\|analytics\|jobs\|queue\|cache\|storage>] \[--json]/);
       assert.match(result.stdout, /Examples:/);
       assert.doesNotMatch(result.stdout, /Voce precisa autenticar primeiro/);
     }
@@ -706,7 +707,8 @@ test('plans lists all catalogs without authentication by default', async () => {
 
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /HTTP/);
-    assert.match(result.stdout, /PostgreSQL \/ MariaDB/);
+    assert.match(result.stdout, /Bancos de dados \(PostgreSQL e MariaDB\)/);
+    assert.match(result.stdout, /Analytics \(ClickHouse\)/);
     assert.match(result.stdout, /Armazenamento/);
     assert.match(result.stdout, /Jobs agendados/);
     assert.match(result.stdout, /job-basic/);
@@ -785,6 +787,29 @@ test('plans --type valkey and database show hourly, monthly and yearly prices', 
 
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /Hora[\s\S]*Mes[\s\S]*Ano/);
+  });
+});
+
+test('plans --type groups match the product: http, database, analytics, jobs, queue and cache', async () => {
+  const scenarios = [
+    { type: 'database', expected: [/Bancos de dados/, /db-basic/, /Key Value/], absent: [/analytics-starter/, /cache-free/, /queue-free/] },
+    { type: 'analytics', expected: [/Analytics/, /analytics-starter/], absent: [/db-basic/, /Key Value/] },
+    { type: 'jobs', expected: [/Jobs agendados/], absent: [/db-basic/] },
+    { type: 'queue', expected: [/Queue/, /queue-free/], absent: [/db-basic/, /cache-free/] },
+    { type: 'cache', expected: [/Cache/, /cache-free/], absent: [/db-basic/, /queue-free/] },
+  ];
+  for (const scenario of scenarios) {
+    await withPlansCatalogServer(null, async ({ apiBase, configDir }) => {
+      const result = await runCli(['plans', '--type', scenario.type], { apiBase, configDir, envApiKey: null });
+      assert.equal(result.code, 0, `${scenario.type}\n${result.stderr}`);
+      for (const pattern of scenario.expected) assert.match(result.stdout, pattern, scenario.type);
+      for (const pattern of scenario.absent) assert.doesNotMatch(result.stdout, pattern, scenario.type);
+    });
+  }
+  await withPlansCatalogServer(null, async ({ apiBase, configDir }) => {
+    const result = await runCli(['plans', '--type', 'redis'], { apiBase, configDir, envApiKey: null });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /all, http, database, analytics, jobs, queue, cache ou storage/);
   });
 });
 
@@ -871,10 +896,10 @@ test('plans fails clearly when the Valkey catalog is malformed', async () => {
 test('plans --type filters the requested catalog and aliases database types', async () => {
   const scenarios = [
     { type: 'http', expectedPath: '/v1/project/plans', unexpected: ['/v1/project/database/plans', '/v1/project/storage/plans'], expectedText: /HTTP/ },
-    { type: 'database', expectedPath: '/v1/project/database/plans', unexpected: ['/v1/project/plans', '/v1/project/storage/plans'], expectedText: /PostgreSQL \/ MariaDB/ },
-    { type: 'db', expectedPath: '/v1/project/database/plans', unexpected: ['/v1/project/plans', '/v1/project/storage/plans'], expectedText: /PostgreSQL \/ MariaDB/ },
-    { type: 'postgresql', expectedPath: '/v1/project/database/plans', unexpected: ['/v1/project/plans', '/v1/project/storage/plans'], expectedText: /PostgreSQL \/ MariaDB/ },
-    { type: 'mariadb', expectedPath: '/v1/project/database/plans', unexpected: ['/v1/project/plans', '/v1/project/storage/plans'], expectedText: /PostgreSQL \/ MariaDB/ },
+    { type: 'database', expectedPath: ['/v1/project/database/plans', '/v1/managed-services/catalog'], unexpected: ['/v1/project/plans', '/v1/project/storage/plans'], expectedText: /Bancos de dados \(PostgreSQL e MariaDB\)/ },
+    { type: 'db', expectedPath: ['/v1/project/database/plans', '/v1/managed-services/catalog'], unexpected: ['/v1/project/plans', '/v1/project/storage/plans'], expectedText: /Bancos de dados \(PostgreSQL e MariaDB\)/ },
+    { type: 'postgresql', expectedPath: ['/v1/project/database/plans', '/v1/managed-services/catalog'], unexpected: ['/v1/project/plans', '/v1/project/storage/plans'], expectedText: /Bancos de dados \(PostgreSQL e MariaDB\)/ },
+    { type: 'mariadb', expectedPath: ['/v1/project/database/plans', '/v1/managed-services/catalog'], unexpected: ['/v1/project/plans', '/v1/project/storage/plans'], expectedText: /Bancos de dados \(PostgreSQL e MariaDB\)/ },
     { type: 'storage', expectedPath: '/v1/project/storage/plans', unexpected: ['/v1/project/plans', '/v1/project/database/plans'], expectedText: /Armazenamento/ },
   ];
 
@@ -893,6 +918,10 @@ test('plans --type filters the requested catalog and aliases database types', as
         jsonResponse(res, 200, { status: 'success', data: STORAGE_PLAN_CATALOG });
         return;
       }
+      if (req.method === 'GET' && req.url === '/v1/managed-services/catalog') {
+        jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
+        return;
+      }
       jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
     }, async ({ apiBase, configDir, requests }) => {
       const result = await runCli(['plans', '--type', scenario.type], { apiBase, configDir, envApiKey: null });
@@ -900,8 +929,8 @@ test('plans --type filters the requested catalog and aliases database types', as
       assert.equal(result.code, 0, `${scenario.type}\n${result.stderr}`);
       assert.match(result.stdout, scenario.expectedText);
       assert.deepEqual(
-        requests.map((request) => request.url),
-        [scenario.expectedPath],
+        requests.map((request) => request.url).sort(),
+        [scenario.expectedPath].flat().sort(),
         `${scenario.type}\n${requests.map((request) => request.url).join('\n')}`,
       );
       for (const path of scenario.unexpected) {
@@ -932,7 +961,7 @@ test('plans fails clearly on invalid type', async () => {
 
     assert.equal(result.code, 1);
     assert.match(result.stderr, /Tipo de catalogo invalido/);
-    assert.match(result.stderr, /all, http, database, storage, key-value, cache, queue/);
+    assert.match(result.stderr, /all, http, database, analytics, jobs, queue, cache ou storage/);
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }

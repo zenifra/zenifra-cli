@@ -232,7 +232,7 @@ Usage:
   zenifra whoami [--json]
   zenifra orgs [--json]
   zenifra org set [--org <id>]
-  zenifra plans [--type <all|http|database|storage|key-value|cache|queue|job>] [--json]
+  zenifra plans [--type <all|http|database|analytics|jobs|queue|cache|storage>] [--json]
   zenifra git providers [--json]
   zenifra git runtimes [--json]
   zenifra git connections [--json]
@@ -454,10 +454,10 @@ const HELP_SPECS = [
   },
   {
     command: 'plans',
-    usage: 'zenifra plans [--type <all|http|database|storage|key-value|cache|queue|job>] [--json]',
+    usage: 'zenifra plans [--type <all|http|database|analytics|jobs|queue|cache|storage>] [--json]',
     description: 'Lista os catalogos publicos de preco de planos HTTP, banco, armazenamento, Key Value, Cache, Queue e Jobs agendados.',
-    flags: ['--type <type>  Filtra o catalogo: all, http, database, storage, key-value, cache, queue ou job.', '--json         Imprime a resposta em JSON.'],
-    examples: ['zenifra plans', 'zenifra plans --type http', 'zenifra plans --type key-value --json', 'zenifra plans --type job --json'],
+    flags: ['--type <type>  Filtra o catalogo: all, http, database (PostgreSQL, MariaDB e Key Value), analytics, jobs, queue, cache ou storage.', '--json         Imprime a resposta em JSON.'],
+    examples: ['zenifra plans', 'zenifra plans --type http', 'zenifra plans --type database', 'zenifra plans --type analytics', 'zenifra plans --type jobs --json'],
     output: 'HTTP\nPlano  Hora     Mes      Ano      Recursos\nfree   R$ 0,00  R$ 0,00  R$ 0,00  1 GB Armazenamento Efemero',
     jsonOutput: '{"http":[{"plan":"free","prices":{"hourly":0,"monthly":0,"yearly":0},"features":["1 GB Armazenamento Efemero"]}],"database":[],"storage":[]}',
   },
@@ -3530,7 +3530,8 @@ function normalizePlansCatalogType(value) {
   const normalized = normalizeFreeText(value || 'all');
   if (!normalized || normalized === 'all') return 'all';
   if (normalized === 'http') return 'http';
-  if (['database', 'db', 'postgresql', 'mariadb'].includes(normalized)) return 'database';
+  if (['database', 'databases', 'db', 'postgresql', 'mariadb'].includes(normalized)) return 'database';
+  if (normalized === 'analytics' || normalized === 'clickhouse') return 'analytics';
   if (normalized === 'valkey') return 'valkey';
   if (normalized === 'job' || normalized === 'jobs' || normalized === 'scheduled job' || normalized === 'scheduled jobs') return 'job';
   if (normalized === 'key-value' || normalized === 'key value' || normalized === 'key_value') return 'profile-key_value';
@@ -3641,13 +3642,27 @@ async function fetchPlansCatalogs(session, flags, type) {
   }
 
   if (type === 'database') {
+    const [databasePayload, managedDatabasePayload] = await Promise.all([
+      request(session, flags, 'GET', '/project/database/plans', { tokenRequired: false }),
+      request(session, flags, 'GET', '/managed-services/catalog', { tokenRequired: false }),
+    ]);
     return {
       http: [],
-      database: requireWizardCatalogArray(
+      database: requireWizardCatalogArray(unwrapData(databasePayload), 'os planos de banco').filter((plan) => !isAnalyticsPlan(plan)),
+      storage: [],
+      valkey: filterManagedDatabaseCatalog(requireManagedDatabaseCatalog(unwrapData(managedDatabasePayload)), 'key_value'),
+    };
+  }
+
+  if (type === 'analytics') {
+    return {
+      http: [],
+      database: [],
+      storage: [],
+      analytics: requireWizardCatalogArray(
         unwrapData(await request(session, flags, 'GET', '/project/database/plans', { tokenRequired: false })),
         'os planos de banco',
-      ),
-      storage: [],
+      ).filter(isAnalyticsPlan),
     };
   }
 
@@ -3693,13 +3708,29 @@ async function fetchPlansCatalogs(session, flags, type) {
     request(session, flags, 'GET', '/managed-services/catalog', { tokenRequired: false }),
   ]);
 
+  const databasePlans = requireWizardCatalogArray(unwrapData(databasePayload), 'os planos de banco');
   return {
     http: requireWizardCatalogArray(unwrapData(httpPayload), 'os planos HTTP'),
-    database: requireWizardCatalogArray(unwrapData(databasePayload), 'os planos de banco'),
+    database: databasePlans.filter((plan) => !isAnalyticsPlan(plan)),
+    analytics: databasePlans.filter(isAnalyticsPlan),
     storage: requireWizardCatalogArray(unwrapData(storagePayload), 'os planos de storage'),
     job: requireJobPlans(unwrapData(jobPayload)),
     valkey: requireManagedDatabaseCatalog(unwrapData(managedDatabasePayload)),
   };
+}
+
+function isAnalyticsPlan(plan) {
+  return Boolean(plan?.engines?.clickhouse) || String(plan?.plan || '').startsWith('analytics-');
+}
+
+function printDatabasePlansTable(plans) {
+  printTable(asArray(plans), [
+    { label: 'Plano', value: (plan) => plan.plan || '-' },
+    { label: 'Hora', value: (plan) => formatBrlFromCents(plan.prices?.hourly) },
+    { label: 'Mes', value: (plan) => formatBrlFromCents(plan.prices?.monthly) },
+    { label: 'Ano', value: (plan) => formatBrlFromCents(plan.prices?.yearly) },
+    { label: 'Recursos', value: (plan) => asArray(plan.features).join(', ') || '-' },
+  ]);
 }
 
 function printManagedDatabaseCatalog(catalog, profileFilter) {
@@ -3760,14 +3791,18 @@ function printPlansCatalogs(payload, type) {
 
   if (type === 'all' || type === 'database') {
     if (type === 'all') process.stdout.write('\n');
-    process.stdout.write('PostgreSQL / MariaDB\n');
-    printTable(asArray(payload.database), [
-      { label: 'Plano', value: (plan) => plan.plan || '-' },
-      { label: 'Hora', value: (plan) => formatBrlFromCents(plan.prices?.hourly) },
-      { label: 'Mes', value: (plan) => formatBrlFromCents(plan.prices?.monthly) },
-      { label: 'Ano', value: (plan) => formatBrlFromCents(plan.prices?.yearly) },
-      { label: 'Recursos', value: (plan) => asArray(plan.features).join(', ') || '-' },
-    ]);
+    process.stdout.write('Bancos de dados (PostgreSQL e MariaDB)\n');
+    printDatabasePlansTable(payload.database);
+    if (type === 'database' && payload.valkey) {
+      process.stdout.write('\n');
+      printManagedDatabaseCatalog(payload.valkey, 'key_value');
+    }
+  }
+
+  if (type === 'all' || type === 'analytics') {
+    if (type === 'all') process.stdout.write('\n');
+    process.stdout.write('Analytics (ClickHouse)\n');
+    printDatabasePlansTable(payload.analytics);
   }
 
   if (type === 'all' || type === 'storage') {
@@ -3801,7 +3836,7 @@ function printPlansCatalogs(payload, type) {
 async function handlePlans(session, flags) {
   const type = normalizePlansCatalogType(flags.type);
   if (!type) {
-    throw new CliError('Tipo de catalogo invalido. Valores aceitos: all, http, database, storage, key-value, cache, queue ou job.');
+    throw new CliError('Tipo de catalogo invalido. Valores aceitos: all, http, database, analytics, jobs, queue, cache ou storage.');
   }
 
   const payload = await fetchPlansCatalogs(session, flags, type);
