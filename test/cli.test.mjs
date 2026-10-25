@@ -818,6 +818,24 @@ test('plans --type valkey and profile aliases use the managed services catalog',
   }
 });
 
+test('plans --type key-value shows catalog prices in reais from cents, like the database plans', async () => {
+  const catalog = {
+    ...VALKEY_CATALOG,
+    plans: [{ ...VALKEY_CATALOG.plans[0], id: 'db-starter', prices: { hourly: 1.8, monthly: 1190, yearly: 13090 } }],
+  };
+  await withCliServer(async (req, res) => {
+    jsonResponse(res, 200, { status: 'success', data: catalog });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['plans', '--type', 'key-value'], { apiBase, configDir, envApiKey: null });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /R\$\s?0,02/);
+    assert.match(result.stdout, /R\$\s?11,90/);
+    assert.match(result.stdout, /R\$\s?130,90/);
+    assert.doesNotMatch(result.stdout, /1\.190,00|13\.090,00|R\$\s?1,80/);
+  });
+});
+
 test('plans --type valkey --json returns the live catalog without requiring authentication', async () => {
   await withCliServer(async (req, res) => {
     assert.equal(req.method, 'GET');

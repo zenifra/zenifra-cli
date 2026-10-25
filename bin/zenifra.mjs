@@ -3710,9 +3710,9 @@ function printManagedDatabaseCatalog(catalog, profileFilter) {
     const plans = catalog.plans.filter((plan) => plan.profile === profile);
     printTable(plans, [
       { label: 'Plano', value: (plan) => plan.id || '-' },
-      { label: 'Hora', value: (plan) => formatBrl(plan.prices?.hourly, catalog.currency) },
-      { label: 'Mes', value: (plan) => formatBrl(plan.prices?.monthly, catalog.currency) },
-      { label: 'Ano', value: (plan) => formatBrl(plan.prices?.yearly, catalog.currency) },
+      { label: 'Hora', value: (plan) => formatBrlFromCents(plan.prices?.hourly) },
+      { label: 'Mes', value: (plan) => formatBrlFromCents(plan.prices?.monthly) },
+      { label: 'Ano', value: (plan) => formatBrlFromCents(plan.prices?.yearly) },
       { label: 'Capacidade', value: (plan) => `${plan.resources?.vcpu ?? '-'} vCPU / ${plan.resources?.memory_mb ?? '-'} MB` },
       { label: 'Storage incluído', value: (plan) => `${plan.included_storage_gb ?? 0} GB` },
       { label: 'Alta disponibilidade', value: (plan) => plan.high_availability?.[profile] ? 'sim' : 'nao' },
