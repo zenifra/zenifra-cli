@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 
 import { randomUUID } from 'node:crypto';
-import { readFile, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFile, rm, stat } from 'node:fs/promises';
+import { createReadStream, createWriteStream, existsSync } from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
+import { basename, join } from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { homedir } from 'node:os';
 import process from 'node:process';
 import readline from 'node:readline/promises';
@@ -32,6 +35,17 @@ const OCI_IMAGE_REFERENCE_MIN_LENGTH = 8;
 const OCI_IMAGE_REFERENCE_MAX_LENGTH = 256;
 const KNOWN_FLAG_NAMES = new Set([
   'apiBase',
+  'access',
+  'accessKey',
+  'allowedIps',
+  'bucket',
+  'buckets',
+  'contentType',
+  'continuationToken',
+  'file',
+  'month',
+  'output',
+  'prefix',
   'oauth',
   'readOnly',
   'noBrowser',
@@ -231,6 +245,21 @@ Usage:
   zenifra valkey connection --project <id> [--json]
   zenifra valkey credentials rotate --project <id> [--idempotency-key <key>] [--wait] [--interval <seconds>] [--timeout <seconds>] [--json]
   zenifra valkey credentials status --project <id> --operation <id> [--json]
+  zenifra storage status [--json]
+  zenifra storage create [--name <name>] [--json]
+  zenifra storage buckets [--json]
+  zenifra storage buckets create --bucket <name> [--json]
+  zenifra storage buckets delete --bucket <name> --yes [--json]
+  zenifra storage files --bucket <name> [--prefix <folder/>] [--continuation-token <token>] [--limit <n>] [--json]
+  zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--json]
+  zenifra storage files download --bucket <name> --key <key> [--output <path>] [--yes] [--json]
+  zenifra storage files delete --bucket <name> --key <key> --yes [--json]
+  zenifra storage files share --bucket <name> --key <key> [--json]
+  zenifra storage files info --bucket <name> --key <key> [--json]
+  zenifra storage keys [--json]
+  zenifra storage keys create --name <name> [--buckets <a,b|*>] [--access <read|read_write|full>] [--allowed-ips <ip,cidr>] [--json]
+  zenifra storage keys revoke --access-key <id> --yes [--json]
+  zenifra storage usage [--month <YYYY-MM>] [--json]
   zenifra project info --project <id> [--json]
   zenifra project stop --project <id> [--json]
   zenifra project resume --project <id> [--json]
@@ -275,6 +304,9 @@ Environment:
   ZENIFRA_API_URL     Override API base URL.
   ZENIFRA_CONFIG_DIR  Override local profile directory.
   ZENIFRA_API_KEY     Use a global organization API key for automation.
+
+Aliases:
+  zenifra armazem ...  Same as "zenifra storage ...".
 
 Run "zenifra help <command>" or "zenifra <command> --help" for command-specific usage, examples, and output.
 `;
@@ -539,6 +571,160 @@ const HELP_SPECS = [
     flags: ['--project <id>     ID do projeto.', '--operation <id>   ID da operacao.', '--connection-file <path> Salva a conexao concluida em arquivo privado.', '--json             Imprime a resposta em JSON.'],
     examples: ['zenifra valkey credentials status --project proj_1 --operation rotation_123'],
     output: 'Operacao: rotation_123\nEstado: completed',
+  },
+  {
+    command: 'storage',
+    usage: 'zenifra storage\n  zenifra storage status [--json]\n  zenifra storage create [--name <name>] [--json]\n  zenifra storage buckets [--json]\n  zenifra storage buckets create --bucket <name> [--json]\n  zenifra storage buckets delete --bucket <name> --yes [--json]\n  zenifra storage files --bucket <name> [--prefix <folder/>] [--continuation-token <token>] [--limit <n>] [--json]\n  zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--json]\n  zenifra storage files download --bucket <name> --key <key> [--output <path>] [--yes] [--json]\n  zenifra storage files delete --bucket <name> --key <key> --yes [--json]\n  zenifra storage files share --bucket <name> --key <key> [--json]\n  zenifra storage files info --bucket <name> --key <key> [--json]\n  zenifra storage keys [--json]\n  zenifra storage keys create --name <name> [--buckets <a,b|*>] [--access <read|read_write|full>] [--allowed-ips <ip,cidr>] [--json]\n  zenifra storage keys revoke --access-key <id> --yes [--json]\n  zenifra storage usage [--month <YYYY-MM>] [--json]',
+    description: 'Gerencia o Armazem, o armazenamento de objetos compativel com S3 da organizacao: buckets, arquivos, chaves de acesso e consumo.',
+    examples: ['zenifra storage status', 'zenifra storage buckets create --bucket fotos', 'zenifra storage files upload --bucket fotos --file ./logo.png', 'zenifra armazem usage'],
+    output: 'Zenifra CLI - storage',
+    notes: [
+      'O alias "zenifra armazem" aceita os mesmos subcomandos.',
+      'O Armazem esta em beta para organizacoes convidadas. Para participar, peca pelo console, na pagina Armazem.',
+      'Endpoint S3: https://armazem.zenifra.com, regiao br-sp1. Os arquivos vao direto para o Armazem por links assinados, sem passar pela API.',
+    ],
+  },
+  {
+    command: 'storage status',
+    usage: 'zenifra storage status [--json]',
+    description: 'Mostra se o Armazem esta disponivel para a organizacao e os dados do Armazem criado.',
+    flags: ['--json  Imprime a resposta em JSON.'],
+    examples: ['zenifra storage status', 'zenifra armazem status --json'],
+    output: 'Campo     Valor\n--------  ----------------------------\nID        6650f1c2a1b2c3d4e5f60718\nNome      Armazem\nStatus    running\nRegiao    br-sp1\nEndpoint  https://armazem.zenifra.com',
+    jsonOutput: '{"available":true,"service":{"id":"6650f1c2a1b2c3d4e5f60718","name":"Armazem","status":"running","region":"br-sp1","endpoint":"https://armazem.zenifra.com"},"beta_request":null}',
+  },
+  {
+    command: 'storage create',
+    usage: 'zenifra storage create [--name <name>] [--json]',
+    description: 'Cria o Armazem da organizacao ou devolve o existente. Cada organizacao tem um unico Armazem.',
+    flags: ['--name <name>  Nome do Armazem, ate 60 caracteres. Padrao: Armazem.', '--json         Imprime a resposta em JSON.'],
+    examples: ['zenifra storage create', 'zenifra storage create --name "Arquivos da equipe"'],
+    output: 'Armazem pronto: 6650f1c2a1b2c3d4e5f60718\nEndpoint: https://armazem.zenifra.com (regiao br-sp1)',
+    jsonOutput: '{"id":"6650f1c2a1b2c3d4e5f60718","name":"Armazem","status":"running","region":"br-sp1","endpoint":"https://armazem.zenifra.com"}',
+    notes: ['Disponivel somente para organizacoes convidadas para o beta.'],
+  },
+  {
+    command: 'storage buckets',
+    usage: 'zenifra storage buckets [--json]\n  zenifra storage buckets create --bucket <name> [--json]\n  zenifra storage buckets delete --bucket <name> --yes [--json]',
+    description: 'Lista os buckets do Armazem com tamanho, quantidade de arquivos e datas.',
+    flags: ['--json  Imprime a resposta em JSON.'],
+    examples: ['zenifra storage buckets', 'zenifra storage buckets create --bucket fotos', 'zenifra storage buckets delete --bucket fotos --yes'],
+    output: 'Bucket  Tamanho  Arquivos  Criado em                 Atualizado em\nfotos   1.5 MB   12        2026-10-01T12:00:00.000Z  2026-10-20T08:00:00.000Z',
+    jsonOutput: '[{"name":"fotos","size_bytes":1572864,"objects":12,"created_at":"2026-10-01T12:00:00.000Z","last_updated_at":"2026-10-20T08:00:00.000Z"}]',
+  },
+  {
+    command: 'storage buckets create',
+    usage: 'zenifra storage buckets create --bucket <name> [--json]',
+    description: 'Cria um bucket no Armazem.',
+    flags: ['--bucket <name>  Nome do bucket: 3 a 63 caracteres, letras minusculas, numeros, ponto e hifen.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra storage buckets create --bucket fotos'],
+    output: 'Bucket criado: fotos',
+    jsonOutput: '{"name":"fotos"}',
+  },
+  {
+    command: 'storage buckets delete',
+    usage: 'zenifra storage buckets delete --bucket <name> --yes [--json]',
+    description: 'Remove um bucket vazio.',
+    flags: ['--bucket <name>  Nome do bucket.', '--yes            Confirma a remocao.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra storage buckets delete --bucket fotos --yes'],
+    output: 'Bucket removido: fotos',
+    jsonOutput: '{"name":"fotos","status":"deleted"}',
+    notes: ['Um bucket com arquivos so pode ser removido pelo console, com codigo de verificacao. Pelo CLI, apague os arquivos antes ou use o console.'],
+  },
+  {
+    command: 'storage files',
+    usage: 'zenifra storage files --bucket <name> [--prefix <folder/>] [--continuation-token <token>] [--limit <n>] [--json]\n  zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--json]\n  zenifra storage files download --bucket <name> --key <key> [--output <path>] [--yes] [--json]\n  zenifra storage files delete --bucket <name> --key <key> --yes [--json]\n  zenifra storage files share --bucket <name> --key <key> [--json]\n  zenifra storage files info --bucket <name> --key <key> [--json]',
+    description: 'Lista um nivel de pasta de um bucket: subpastas e arquivos.',
+    flags: ['--bucket <name>               Nome do bucket.', '--prefix <folder/>            Pasta a listar, com barra no final. Padrao: raiz do bucket.', '--continuation-token <token>  Continua a listagem da pagina anterior.', '--limit <n>                   Itens por pagina, de 1 a 1000. Padrao: 200.', '--json                        Imprime a resposta em JSON.'],
+    examples: ['zenifra storage files --bucket fotos', 'zenifra storage files --bucket fotos --prefix 2026/', 'zenifra storage files --bucket fotos --continuation-token <token>'],
+    output: 'Tipo     Nome      Tamanho  Enviado em\n-------  --------  -------  ------------------------\npasta    2026/     -        -\narquivo  logo.png  12 KB    2026-10-20T08:00:00.000Z',
+    jsonOutput: '{"bucket":"fotos","prefix":"","folders":[{"prefix":"2026/","name":"2026"}],"objects":[{"key":"logo.png","name":"logo.png","size_bytes":12288,"uploaded_at":"2026-10-20T08:00:00.000Z","etag":"9b2cf535f27731c974343645a3985328"}],"next_continuation_token":null}',
+    notes: ['Quando houver mais itens, o comando mostra o --continuation-token da proxima pagina.'],
+  },
+  {
+    command: 'storage files upload',
+    usage: 'zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--json]',
+    description: 'Envia um arquivo local para o bucket direto ao Armazem, em streaming, sem carregar o arquivo inteiro na memoria.',
+    flags: ['--bucket <name>        Nome do bucket.', '--file <path>          Arquivo local a enviar. Ate 20 GiB.', '--key <key>            Caminho no bucket. Padrao: nome do arquivo. Terminado em "/", o nome do arquivo e acrescentado.', '--content-type <type>  Tipo do conteudo. Padrao: deduzido da extensao ou application/octet-stream.', '--json                 Imprime a resposta em JSON.'],
+    examples: ['zenifra storage files upload --bucket fotos --file ./logo.png', 'zenifra storage files upload --bucket backups --file ./dump.sql.gz --key 2026/10/'],
+    output: 'Arquivo enviado: fotos/logo.png (12 KB)',
+    jsonOutput: '{"bucket":"fotos","key":"logo.png","size_bytes":12288,"content_type":"image/png"}',
+    notes: ['O link de envio vale 15 minutos para iniciar o envio e aceita exatamente o tamanho informado.'],
+  },
+  {
+    command: 'storage files download',
+    usage: 'zenifra storage files download --bucket <name> --key <key> [--output <path>] [--yes] [--json]',
+    description: 'Baixa um arquivo do bucket direto do Armazem, gravando em disco em streaming.',
+    flags: ['--bucket <name>  Nome do bucket.', '--key <key>      Caminho do arquivo no bucket.', '--output <path>  Arquivo de destino. Padrao: nome do arquivo no diretorio atual.', '--yes            Substitui o arquivo de destino se ele ja existir.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra storage files download --bucket fotos --key logo.png', 'zenifra storage files download --bucket backups --key 2026/10/dump.sql.gz --output /tmp/dump.sql.gz'],
+    output: 'Arquivo baixado: ./logo.png (12 KB)',
+    jsonOutput: '{"bucket":"fotos","key":"logo.png","output":"logo.png","size_bytes":12288}',
+  },
+  {
+    command: 'storage files delete',
+    usage: 'zenifra storage files delete --bucket <name> --key <key> --yes [--json]',
+    description: 'Apaga um arquivo do bucket.',
+    flags: ['--bucket <name>  Nome do bucket.', '--key <key>      Caminho do arquivo no bucket.', '--yes            Confirma a exclusao.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra storage files delete --bucket fotos --key logo.png --yes'],
+    output: 'Arquivo apagado: fotos/logo.png',
+    jsonOutput: '{"bucket":"fotos","key":"logo.png","deleted":true}',
+  },
+  {
+    command: 'storage files share',
+    usage: 'zenifra storage files share --bucket <name> --key <key> [--json]',
+    description: 'Gera um link de download do arquivo, valido por 7 dias, para copiar e compartilhar.',
+    flags: ['--bucket <name>  Nome do bucket.', '--key <key>      Caminho do arquivo no bucket.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra storage files share --bucket fotos --key logo.png'],
+    output: 'Link de compartilhamento (valido ate 2026-10-31T12:00:00.000Z):\nhttps://armazem.zenifra.com/fotos/logo.png?X-Amz-Expires=604800&...',
+    jsonOutput: '{"method":"GET","url":"https://armazem.zenifra.com/fotos/logo.png?X-Amz-Expires=604800","headers":{},"expires_at":"2026-10-31T12:00:00.000Z"}',
+    notes: ['Qualquer pessoa com o link consegue baixar o arquivo ate ele expirar.'],
+  },
+  {
+    command: 'storage files info',
+    usage: 'zenifra storage files info --bucket <name> --key <key> [--json]',
+    description: 'Mostra tamanho, tipo, data de envio, etag e metadados de um arquivo.',
+    flags: ['--bucket <name>  Nome do bucket.', '--key <key>      Caminho do arquivo no bucket.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra storage files info --bucket fotos --key logo.png'],
+    output: 'Campo       Valor\n----------  ------------------------\nArquivo     logo.png\nTamanho     12 KB\nTipo        image/png\nEnviado em  2026-10-20T08:00:00.000Z',
+    jsonOutput: '{"key":"logo.png","name":"logo.png","size_bytes":12288,"content_type":"image/png","uploaded_at":"2026-10-20T08:00:00.000Z","etag":"9b2cf535f27731c974343645a3985328","metadata":{}}',
+  },
+  {
+    command: 'storage keys',
+    usage: 'zenifra storage keys [--json]\n  zenifra storage keys create --name <name> [--buckets <a,b|*>] [--access <read|read_write|full>] [--allowed-ips <ip,cidr>] [--json]\n  zenifra storage keys revoke --access-key <id> --yes [--json]',
+    description: 'Lista as chaves de acesso S3 do Armazem, sem o segredo.',
+    flags: ['--json  Imprime a resposta em JSON.'],
+    examples: ['zenifra storage keys', 'zenifra storage keys create --name deploy --buckets fotos --access read_write', 'zenifra storage keys revoke --access-key ZNKEXAMPLE0123 --yes'],
+    output: 'ID              Nome    Buckets  Acesso      IPs permitidos  Criada em\nZNKEXAMPLE0123  deploy  fotos    read_write  qualquer        2026-10-20T08:00:00.000Z',
+    jsonOutput: '[{"access_key_id":"ZNKEXAMPLE0123","name":"deploy","created_at":"2026-10-20T08:00:00.000Z","allowed_ips":[],"buckets":["fotos"],"access":"read_write"}]',
+  },
+  {
+    command: 'storage keys create',
+    usage: 'zenifra storage keys create --name <name> [--buckets <a,b|*>] [--access <read|read_write|full>] [--allowed-ips <ip,cidr>] [--json]',
+    description: 'Cria uma chave de acesso S3. O segredo aparece somente nesta resposta.',
+    flags: ['--name <name>           Nome da chave, 1 a 64 caracteres.', '--buckets <a,b|*>       Buckets liberados, separados por virgula, ate 10. Padrao: * (todos).', '--access <level>        read, read_write ou full. Padrao: full.', '--allowed-ips <ip,cidr> IPs ou redes IPv4/IPv6 autorizados, separados por virgula, ate 20. Padrao: qualquer IP.', '--json                  Imprime a resposta em JSON, incluindo o segredo.'],
+    examples: ['zenifra storage keys create --name deploy', 'zenifra storage keys create --name leitura-site --buckets site,assets --access read --allowed-ips 203.0.113.7,198.51.100.0/24'],
+    output: 'Chave de acesso criada. Guarde o segredo agora: ele nao sera exibido novamente.\nID da chave  ZNKEXAMPLE0123\nSegredo      <segredo>\nEndpoint     https://armazem.zenifra.com\nRegiao       br-sp1',
+    jsonOutput: '{"access_key_id":"ZNKEXAMPLE0123","name":"deploy","created_at":"2026-10-20T08:00:00.000Z","allowed_ips":[],"buckets":["*"],"access":"full","secret_access_key":"<segredo>"}',
+    notes: ['O CLI nao grava o segredo em arquivo nem em log. Guarde em um cofre de segredos.', 'A chave so pode receber o acesso que voce mesmo tem nos buckets escolhidos.'],
+  },
+  {
+    command: 'storage keys revoke',
+    usage: 'zenifra storage keys revoke --access-key <id> --yes [--json]',
+    description: 'Revoga uma chave de acesso. Aplicacoes que usam a chave perdem o acesso.',
+    flags: ['--access-key <id>  ID da chave de acesso.', '--yes              Confirma a revogacao.', '--json             Imprime a resposta em JSON.'],
+    examples: ['zenifra storage keys revoke --access-key ZNKEXAMPLE0123 --yes'],
+    output: 'Chave revogada: ZNKEXAMPLE0123',
+    jsonOutput: '{"access_key_id":"ZNKEXAMPLE0123","revoked":true}',
+  },
+  {
+    command: 'storage usage',
+    usage: 'zenifra storage usage [--month <YYYY-MM>] [--json]',
+    description: 'Mostra o consumo do Armazem no mes atual ou em um dos 12 meses anteriores.',
+    flags: ['--month <YYYY-MM>  Mes fechado a consultar. Padrao: mes atual ate agora.', '--json             Imprime a resposta em JSON (valores em centavos).'],
+    examples: ['zenifra storage usage', 'zenifra storage usage --month 2026-09'],
+    output: 'Periodo: 2026-10-01T00:00:00.000Z ate 2026-10-24T12:00:00.000Z (em aberto)\nEstimado: R$ 1,25 | Ja debitado: R$ 0,90',
+    jsonOutput: '{"period_start":"2026-10-01T00:00:00.000Z","period_end":"2026-10-24T12:00:00.000Z","closed":false,"estimated_amount":125,"charged_amount":90,"currency":"brl","amounts":{"storage":100,"requests":20,"egress":5},"buckets":[]}',
+    notes: ['A franquia mensal inclui 5 GB de armazenamento e uma cota de requisicoes; o comando mostra quanto dela ja foi usado.'],
   },
   {
     command: 'projects',
@@ -1042,8 +1228,14 @@ function formatHelp(spec) {
   return `${sections.join('\n')}\n`;
 }
 
+function resolveCommandAliases(positionals) {
+  const index = positionals[0] === 'help' ? 1 : 0;
+  if (positionals[index] !== 'armazem') return positionals;
+  return positionals.map((value, position) => (position === index ? 'storage' : value));
+}
+
 function helpKeyFromPositionals(positionals) {
-  return positionals.filter((value) => value !== 'help').join(' ').trim();
+  return resolveCommandAliases(positionals).filter((value) => value !== 'help').join(' ').trim();
 }
 
 function commandHelp(positionals) {
@@ -1074,7 +1266,7 @@ function removedProjectsCreateMessage() {
 }
 
 function isNamespaceCommand(command) {
-  return ['auth', 'profile', 'project', 'org', 'valkey', 'git'].includes(command);
+  return ['auth', 'profile', 'project', 'org', 'valkey', 'git', 'storage'].includes(command);
 }
 
 function parseArgs(argv) {
@@ -1815,6 +2007,23 @@ const PUBLIC_ERROR_CODE_MESSAGES = {
   ORGANIZATION_BILLING_BLOCKED: 'A organizacao tem pagamentos pendentes. Regularize para aumentar o uso.',
   PROJECT_OPERATION_NOT_SUPPORTED: 'Esta acao nao esta disponivel para este tipo de projeto.',
   PROJECT_PLAN_ALREADY_SELECTED: 'O projeto ja usa este plano.',
+  OBJECT_STORAGE_NOT_AVAILABLE: 'O Armazem ainda nao esta disponivel para esta organizacao. Ele esta em beta para organizacoes convidadas: peca para participar pelo console, na pagina Armazem.',
+  OBJECT_STORAGE_NOT_FOUND: 'Armazem nao encontrado nesta organizacao. Veja "zenifra storage status".',
+  OBJECT_STORAGE_UNAVAILABLE: 'O Armazem esta temporariamente indisponivel. Tente novamente em instantes.',
+  OBJECT_STORAGE_CURRENCY_NOT_SUPPORTED: 'O Armazem esta disponivel somente para organizacoes cobradas em reais (BRL).',
+  OBJECT_STORAGE_READ_ONLY: 'A organizacao atingiu o limite de armazenamento e o Armazem esta somente leitura. Apague arquivos ou peca mais espaco por support@zenifra.com informando a organizacao, seu e-mail e o motivo.',
+  BUCKET_NAME_RESERVED: 'Este nome de bucket e reservado. Escolha outro nome.',
+  BUCKET_ALREADY_EXISTS: 'Ja existe um bucket com este nome. Escolha outro nome.',
+  BUCKET_LIMIT_REACHED: 'A organizacao atingiu o limite de buckets. Para pedir mais, envie para support@zenifra.com a organizacao, seu e-mail e o motivo; o pedido pode ser aprovado ou recusado.',
+  BUCKET_NOT_FOUND: 'Bucket nao encontrado neste Armazem.',
+  BUCKET_DELETION_VERIFICATION_REQUIRED: 'O bucket tem arquivos. A remocao de um bucket com arquivos precisa ser confirmada no console, na pagina Armazem, com codigo de verificacao. Pelo CLI, apague os arquivos antes.',
+  BUCKET_DELETION_REQUIRES_USER: 'O bucket tem arquivos. A remocao de um bucket com arquivos precisa ser confirmada por uma pessoa no console, na pagina Armazem.',
+  OBJECT_NOT_FOUND: 'Arquivo nao encontrado no bucket.',
+  OBJECT_TOO_LARGE: 'O arquivo passa do limite de 20 GiB por arquivo.',
+  ACCESS_KEY_LIMIT_REACHED: 'O Armazem atingiu o limite de chaves de acesso. Revogue uma chave antes de criar outra.',
+  ACCESS_KEY_NOT_FOUND: 'Chave de acesso nao encontrada.',
+  ACCESS_KEY_SCOPE_NOT_ALLOWED: 'A chave so pode receber o acesso que voce mesmo tem nos buckets escolhidos.',
+  USAGE_PERIOD_NOT_AVAILABLE: 'O consumo esta disponivel para o mes atual e para os 12 meses anteriores.',
 };
 
 async function request(session, flags, method, path, {
@@ -1890,6 +2099,9 @@ async function request(session, flags, method, path, {
         throw httpError(`${message}. Verifique se a API key esta ativa e se o IP atual esta permitido.`);
       }
       throw httpError(`${message}. Rode "zenifra auth login" para renovar sua sessao.`);
+    }
+    if (response.status === 403 && Object.hasOwn(PUBLIC_ERROR_CODE_MESSAGES, payload?.code)) {
+      throw httpError(PUBLIC_ERROR_CODE_MESSAGES[payload.code]);
     }
     if (response.status === 403) {
       throw httpError(message);
@@ -5809,6 +6021,424 @@ async function handleValkeyCredentialRotate(session, flags) {
   printValkeyRotation(accepted, { accepted: true });
 }
 
+const STORAGE_MAX_FILE_BYTES = 20 * 1024 ** 3;
+const STORAGE_ACCESS_LEVELS = ['read', 'read_write', 'full'];
+const STORAGE_CONTENT_TYPES = {
+  '.txt': 'text/plain',
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'text/javascript',
+  '.json': 'application/json',
+  '.csv': 'text/csv',
+  '.xml': 'application/xml',
+  '.pdf': 'application/pdf',
+  '.zip': 'application/zip',
+  '.gz': 'application/gzip',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.mp4': 'video/mp4',
+  '.mp3': 'audio/mpeg',
+};
+
+function requireStorageFlag(flags, name, commandKey) {
+  if (flags[name] === undefined || flags[name] === true || flags[name] === '') {
+    printCommandHelpAndFail(commandKey);
+    return null;
+  }
+  return String(flags[name]);
+}
+
+function requireStorageConfirmation(flags, action) {
+  if (flags.yes !== true) throw new CliError(`${action} exige --yes. Nenhuma solicitacao foi enviada.`);
+}
+
+function storageListFlag(value) {
+  return String(value).split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+async function getStorageState(session, flags, orgId) {
+  return unwrapData(await request(session, flags, 'GET', '/object-storage', { orgId }));
+}
+
+async function requireStorageService(session, flags) {
+  const orgId = await resolveOrgId(session, flags);
+  const state = await getStorageState(session, flags, orgId);
+  if (state?.service?.id) return { orgId, service: state.service };
+  if (state?.available) throw new CliError('A organizacao ainda nao criou o Armazem. Crie com "zenifra storage create".');
+  throw new CliError(PUBLIC_ERROR_CODE_MESSAGES.OBJECT_STORAGE_NOT_AVAILABLE);
+}
+
+function storageBucketPath(service, bucket, suffix = '') {
+  return `/object-storage/${encodeURIComponent(service.id)}/buckets/${encodeURIComponent(bucket)}${suffix}`;
+}
+
+function printFieldTable(rows) {
+  printTable(rows, [
+    { label: 'Campo', value: (row) => row.field },
+    { label: 'Valor', value: (row) => row.value ?? '-' },
+  ]);
+}
+
+function printStorageService(service) {
+  printFieldTable([
+    { field: 'ID', value: service.id },
+    { field: 'Nome', value: service.name },
+    { field: 'Status', value: service.status },
+    { field: 'Regiao', value: service.region },
+    { field: 'Endpoint', value: service.endpoint },
+    { field: 'Criado em', value: service.created_at },
+  ]);
+}
+
+async function handleStorageStatus(session, flags) {
+  const orgId = await resolveOrgId(session, flags);
+  const state = await getStorageState(session, flags, orgId);
+  if (flags.json) return printJson(state);
+  if (state?.service) return printStorageService(state.service);
+  if (state?.available) {
+    process.stdout.write('O Armazem esta disponivel para a organizacao, mas ainda nao foi criado. Crie com "zenifra storage create".\n');
+    return;
+  }
+  process.stdout.write(`${PUBLIC_ERROR_CODE_MESSAGES.OBJECT_STORAGE_NOT_AVAILABLE}\n`);
+  if (state?.beta_request?.requested_at) {
+    process.stdout.write(`Pedido de participacao enviado em ${state.beta_request.requested_at}.\n`);
+  }
+}
+
+async function handleStorageCreate(session, flags) {
+  const name = flags.name === undefined || flags.name === true ? 'Armazem' : String(flags.name).trim();
+  if (!name || name.length > 60) throw new CliError('--name deve ter entre 1 e 60 caracteres.');
+  const orgId = await resolveOrgId(session, flags);
+  const service = unwrapData(await request(session, flags, 'POST', '/object-storage', { orgId, body: { name } }));
+  if (flags.json) return printJson(service);
+  process.stdout.write(`Armazem pronto: ${service.id}\nEndpoint: ${service.endpoint} (regiao ${service.region})\n`);
+}
+
+async function handleStorageBuckets(session, flags) {
+  const { orgId, service } = await requireStorageService(session, flags);
+  const buckets = asArray(unwrapData(await request(session, flags, 'GET', `/object-storage/${encodeURIComponent(service.id)}/buckets`, { orgId })));
+  if (flags.json) return printJson(buckets);
+  printTable(buckets, [
+    { label: 'Bucket', value: (bucket) => bucket.name },
+    { label: 'Tamanho', value: (bucket) => formatValkeyBytes(bucket.size_bytes) },
+    { label: 'Arquivos', value: (bucket) => bucket.objects ?? '-' },
+    { label: 'Criado em', value: (bucket) => bucket.created_at || '-' },
+    { label: 'Atualizado em', value: (bucket) => bucket.last_updated_at || '-' },
+  ]);
+}
+
+async function handleStorageBucketCreate(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage buckets create');
+  if (!bucket) return;
+  const { orgId, service } = await requireStorageService(session, flags);
+  const data = unwrapData(await request(session, flags, 'POST', `/object-storage/${encodeURIComponent(service.id)}/buckets`, { orgId, body: { name: bucket } }));
+  if (flags.json) return printJson(data);
+  process.stdout.write(`Bucket criado: ${data?.name || bucket}\n`);
+}
+
+async function handleStorageBucketDelete(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage buckets delete');
+  if (!bucket) return;
+  requireStorageConfirmation(flags, 'A remocao do bucket');
+  const { orgId, service } = await requireStorageService(session, flags);
+  await request(session, flags, 'DELETE', storageBucketPath(service, bucket), { orgId });
+  if (flags.json) return printJson({ name: bucket, status: 'deleted' });
+  process.stdout.write(`Bucket removido: ${bucket}\n`);
+}
+
+async function handleStorageFiles(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage files');
+  if (!bucket) return;
+  if (flags.limit !== undefined) parseIntegerOption(flags.limit, '--limit', { min: 1, max: 1000 });
+  const { orgId, service } = await requireStorageService(session, flags);
+  const query = buildQuery(flags, ['prefix', 'continuationToken', 'limit']);
+  const data = unwrapData(await request(session, flags, 'GET', storageBucketPath(service, bucket, `/objects${query}`), { orgId }));
+  if (flags.json) return printJson(data);
+  const rows = [
+    ...asArray(data?.folders).map((folder) => ({ type: 'pasta', name: `${folder.name}/`, size: '-', date: '-' })),
+    ...asArray(data?.objects).map((object) => ({ type: 'arquivo', name: object.name || object.key, size: formatValkeyBytes(object.size_bytes), date: object.uploaded_at || '-' })),
+  ];
+  printTable(rows, [
+    { label: 'Tipo', value: (row) => row.type },
+    { label: 'Nome', value: (row) => row.name },
+    { label: 'Tamanho', value: (row) => row.size },
+    { label: 'Enviado em', value: (row) => row.date },
+  ]);
+  if (data?.next_continuation_token) {
+    const prefix = data.prefix ? ` --prefix ${JSON.stringify(data.prefix)}` : '';
+    process.stdout.write(`Ha mais itens. Proxima pagina: zenifra storage files --bucket ${bucket}${prefix} --continuation-token ${data.next_continuation_token}\n`);
+  }
+}
+
+function assertSignedUrlAllowed(session, flags, url) {
+  const target = new URL(url);
+  if (target.protocol === 'https:') return target;
+  if (target.protocol === 'http:' && new URL(apiBaseUrl(session, flags)).protocol === 'http:') return target;
+  throw new CliError('A API devolveu um link de transferencia invalido.');
+}
+
+function sendSignedRequest(session, flags, signed, { body, headers = {} } = {}) {
+  const target = assertSignedUrlAllowed(session, flags, signed.url);
+  const client = target.protocol === 'https:' ? https : http;
+  const timeoutMs = httpTimeoutMs();
+  return new Promise((resolvePromise, reject) => {
+    const req = client.request(target, {
+      method: signed.method,
+      headers: { ...(signed.headers || {}), ...headers },
+    }, resolvePromise);
+    req.setTimeout(timeoutMs, () => req.destroy(new CliError(`O Armazem nao respondeu em ate ${timeoutMs} ms.`)));
+    req.on('error', (error) => reject(error instanceof CliError ? error : new CliError(`Nao foi possivel conectar ao Armazem: ${error?.message || 'erro de rede'}.`)));
+    if (body) pipeline(body, req).catch(reject);
+    else req.end();
+  });
+}
+
+async function assertTransferSucceeded(response, action) {
+  if (response.statusCode >= 200 && response.statusCode < 300) return;
+  response.resume();
+  const hint = response.statusCode === 403 ? ' O link pode ter expirado ou o arquivo mudou durante a transferencia; tente novamente.' : '';
+  throw new CliError(`O Armazem recusou ${action} (HTTP ${response.statusCode}).${hint}`);
+}
+
+function storageUploadKey(flags, filePath) {
+  const fileName = basename(filePath);
+  if (flags.key === undefined || flags.key === true || flags.key === '') return fileName;
+  const key = String(flags.key);
+  return key.endsWith('/') ? `${key}${fileName}` : key;
+}
+
+function storageContentType(flags, key) {
+  if (flags.contentType !== undefined && flags.contentType !== true) return String(flags.contentType);
+  const extension = key.slice(key.lastIndexOf('.')).toLowerCase();
+  return key.includes('.') && Object.hasOwn(STORAGE_CONTENT_TYPES, extension) ? STORAGE_CONTENT_TYPES[extension] : 'application/octet-stream';
+}
+
+async function handleStorageFileUpload(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage files upload');
+  if (!bucket) return;
+  const filePath = requireStorageFlag(flags, 'file', 'storage files upload');
+  if (!filePath) return;
+  let fileStat;
+  try {
+    fileStat = await stat(filePath);
+  } catch {
+    throw new CliError(`Arquivo nao encontrado: ${filePath}.`);
+  }
+  if (!fileStat.isFile()) throw new CliError(`${filePath} nao e um arquivo.`);
+  if (fileStat.size > STORAGE_MAX_FILE_BYTES) throw new CliError(PUBLIC_ERROR_CODE_MESSAGES.OBJECT_TOO_LARGE);
+  const key = storageUploadKey(flags, filePath);
+  const contentType = storageContentType(flags, key);
+  const { orgId, service } = await requireStorageService(session, flags);
+  const signed = unwrapData(await request(session, flags, 'POST', storageBucketPath(service, bucket, '/write-url'), {
+    orgId,
+    body: { operation: 'upload', key, size: fileStat.size, content_type: contentType },
+  }));
+  const response = await sendSignedRequest(session, flags, signed, {
+    body: createReadStream(filePath),
+    headers: { 'content-length': String(fileStat.size) },
+  });
+  await assertTransferSucceeded(response, 'o envio');
+  response.resume();
+  const result = { bucket, key, size_bytes: fileStat.size, content_type: contentType };
+  if (flags.json) return printJson(result);
+  process.stdout.write(`Arquivo enviado: ${bucket}/${key} (${formatValkeyBytes(fileStat.size)})\n`);
+}
+
+async function handleStorageFileDownload(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage files download');
+  if (!bucket) return;
+  const key = requireStorageFlag(flags, 'key', 'storage files download');
+  if (!key) return;
+  const output = flags.output === undefined || flags.output === true ? basename(key) : String(flags.output);
+  if (!output) throw new CliError('Informe o destino com --output <path>.');
+  if (existsSync(output) && flags.yes !== true) {
+    throw new CliError(`${output} ja existe. Use --yes para substituir ou --output para outro destino.`);
+  }
+  const { orgId, service } = await requireStorageService(session, flags);
+  const signed = unwrapData(await request(session, flags, 'POST', storageBucketPath(service, bucket, '/read-url'), {
+    orgId,
+    body: { operation: 'download', key },
+  }));
+  const response = await sendSignedRequest(session, flags, signed);
+  await assertTransferSucceeded(response, 'o download');
+  try {
+    await pipeline(response, createWriteStream(output));
+  } catch (error) {
+    await rm(output, { force: true });
+    throw new CliError(`O download foi interrompido: ${error?.message || 'erro de rede'}.`);
+  }
+  const sizeBytes = (await stat(output)).size;
+  if (flags.json) return printJson({ bucket, key, output, size_bytes: sizeBytes });
+  process.stdout.write(`Arquivo baixado: ${output} (${formatValkeyBytes(sizeBytes)})\n`);
+}
+
+async function handleStorageFileDelete(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage files delete');
+  if (!bucket) return;
+  const key = requireStorageFlag(flags, 'key', 'storage files delete');
+  if (!key) return;
+  requireStorageConfirmation(flags, 'A exclusao do arquivo');
+  const { orgId, service } = await requireStorageService(session, flags);
+  const signed = unwrapData(await request(session, flags, 'POST', storageBucketPath(service, bucket, '/write-url'), {
+    orgId,
+    body: { operation: 'delete', key },
+  }));
+  const response = await sendSignedRequest(session, flags, signed);
+  await assertTransferSucceeded(response, 'a exclusao');
+  response.resume();
+  if (flags.json) return printJson({ bucket, key, deleted: true });
+  process.stdout.write(`Arquivo apagado: ${bucket}/${key}\n`);
+}
+
+async function handleStorageFileShare(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage files share');
+  if (!bucket) return;
+  const key = requireStorageFlag(flags, 'key', 'storage files share');
+  if (!key) return;
+  const { orgId, service } = await requireStorageService(session, flags);
+  const signed = unwrapData(await request(session, flags, 'POST', storageBucketPath(service, bucket, '/read-url'), {
+    orgId,
+    body: { operation: 'share', key },
+  }));
+  if (flags.json) return printJson(signed);
+  process.stdout.write(`Link de compartilhamento (valido ate ${signed.expires_at || '7 dias'}):\n${signed.url}\n`);
+}
+
+async function handleStorageFileInfo(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage files info');
+  if (!bucket) return;
+  const key = requireStorageFlag(flags, 'key', 'storage files info');
+  if (!key) return;
+  const { orgId, service } = await requireStorageService(session, flags);
+  const info = unwrapData(await request(session, flags, 'POST', storageBucketPath(service, bucket, '/object-info'), { orgId, body: { key } }));
+  if (flags.json) return printJson(info);
+  printFieldTable([
+    { field: 'Arquivo', value: info.key },
+    { field: 'Tamanho', value: formatValkeyBytes(info.size_bytes) },
+    { field: 'Tipo', value: info.content_type },
+    { field: 'Enviado em', value: info.uploaded_at },
+    { field: 'ETag', value: info.etag },
+    ...Object.entries(info.metadata || {}).map(([name, value]) => ({ field: `Metadado ${name}`, value })),
+  ]);
+}
+
+function storageKeyRows(keys) {
+  printTable(keys, [
+    { label: 'ID', value: (key) => key.access_key_id },
+    { label: 'Nome', value: (key) => key.name || '-' },
+    { label: 'Buckets', value: (key) => asArray(key.buckets).join(',') || '*' },
+    { label: 'Acesso', value: (key) => key.access || 'full' },
+    { label: 'IPs permitidos', value: (key) => asArray(key.allowed_ips).join(',') || 'qualquer' },
+    { label: 'Criada em', value: (key) => key.created_at || '-' },
+  ]);
+}
+
+async function handleStorageKeys(session, flags) {
+  const { orgId, service } = await requireStorageService(session, flags);
+  const keys = asArray(unwrapData(await request(session, flags, 'GET', `/object-storage/${encodeURIComponent(service.id)}/access-keys`, { orgId })));
+  if (flags.json) return printJson(keys);
+  storageKeyRows(keys);
+}
+
+function storageKeyCreateBody(flags) {
+  const name = String(flags.name).trim();
+  if (!name || name.length > 64) throw new CliError('--name deve ter entre 1 e 64 caracteres.');
+  const body = { name };
+  if (flags.buckets !== undefined || flags.access !== undefined) {
+    const buckets = flags.buckets === undefined || flags.buckets === true ? ['*'] : storageListFlag(flags.buckets);
+    const access = flags.access === undefined || flags.access === true ? 'full' : String(flags.access);
+    if (buckets.length === 0 || buckets.length > 10 || (buckets.includes('*') && buckets.length > 1)) {
+      throw new CliError('--buckets aceita * ou de 1 a 10 nomes de bucket separados por virgula.');
+    }
+    if (!STORAGE_ACCESS_LEVELS.includes(access)) throw new CliError(`--access deve ser um destes valores: ${STORAGE_ACCESS_LEVELS.join(', ')}.`);
+    body.scope = { buckets, access };
+  }
+  if (flags.allowedIps !== undefined && flags.allowedIps !== true) {
+    const allowedIps = storageListFlag(flags.allowedIps);
+    if (allowedIps.length > 20) throw new CliError('--allowed-ips aceita ate 20 IPs ou redes.');
+    body.allowed_ips = allowedIps;
+  }
+  return body;
+}
+
+async function handleStorageKeyCreate(session, flags) {
+  if (!requireStorageFlag(flags, 'name', 'storage keys create')) return;
+  const body = storageKeyCreateBody(flags);
+  const { orgId, service } = await requireStorageService(session, flags);
+  const key = unwrapData(await request(session, flags, 'POST', `/object-storage/${encodeURIComponent(service.id)}/access-keys`, { orgId, body }));
+  if (flags.json) return printJson(key);
+  process.stdout.write(`${tone('Chave de acesso criada. Guarde o segredo agora: ele nao sera exibido novamente.', 'yellow')}\n`);
+  printTable([
+    { field: 'ID da chave', value: key.access_key_id },
+    { field: 'Segredo', value: tone(key.secret_access_key, 'bold') },
+    { field: 'Endpoint', value: service.endpoint },
+    { field: 'Regiao', value: service.region },
+    { field: 'Buckets', value: asArray(key.buckets).join(',') || '*' },
+    { field: 'Acesso', value: key.access || 'full' },
+    { field: 'IPs permitidos', value: asArray(key.allowed_ips).join(',') || 'qualquer' },
+  ], [
+    { label: 'Campo', value: (row) => row.field },
+    { label: 'Valor', value: (row) => row.value ?? '-' },
+  ]);
+}
+
+async function handleStorageKeyRevoke(session, flags) {
+  const accessKeyId = requireStorageFlag(flags, 'accessKey', 'storage keys revoke');
+  if (!accessKeyId) return;
+  requireStorageConfirmation(flags, 'A revogacao da chave');
+  const { orgId, service } = await requireStorageService(session, flags);
+  await request(session, flags, 'DELETE', `/object-storage/${encodeURIComponent(service.id)}/access-keys/${encodeURIComponent(accessKeyId)}`, { orgId });
+  if (flags.json) return printJson({ access_key_id: accessKeyId, revoked: true });
+  process.stdout.write(`Chave revogada: ${accessKeyId}\n`);
+}
+
+function formatStorageAmount(value) {
+  return value === null || value === undefined ? '-' : formatJobBrlFromCents(value, 4);
+}
+
+function printStorageUsage(usage) {
+  const free = usage.free_requests || {};
+  process.stdout.write(`Periodo: ${usage.period_start || '-'} ate ${usage.period_end || '-'} (${usage.closed ? 'fechado' : 'em aberto'})\n`);
+  printFieldTable([
+    { field: 'Armazenamento', value: `${Number(usage.storage_gb_months ?? 0).toFixed(4)} GB-mes (franquia usada: ${Number(usage.free_storage_gb_months ?? 0).toFixed(4)} GB-mes)` },
+    { field: 'Gravacoes e listagens', value: `${usage.class_a_requests ?? 0} (franquia: ${free.class_a_used ?? 0} de ${free.class_a_limit ?? '-'})` },
+    { field: 'Leituras', value: `${usage.class_b_requests ?? 0} (franquia: ${free.class_b_used ?? 0} de ${free.class_b_limit ?? '-'})` },
+    { field: 'Saida', value: `${Number(usage.egress_gb ?? 0).toFixed(4)} GB` },
+    { field: 'Valor armazenamento', value: formatStorageAmount(usage.amounts?.storage) },
+    { field: 'Valor requisicoes', value: formatStorageAmount(usage.amounts?.requests) },
+    { field: 'Valor saida', value: formatStorageAmount(usage.amounts?.egress) },
+    { field: 'Franquia de armazenamento', value: formatStorageAmount(usage.free_storage_amount) },
+    { field: 'Estimado no periodo', value: formatStorageAmount(usage.estimated_amount) },
+    { field: 'Ja debitado', value: formatStorageAmount(usage.charged_amount) },
+  ]);
+  const buckets = asArray(usage.buckets);
+  if (buckets.length === 0) return;
+  process.stdout.write('\nPor bucket:\n');
+  printTable(buckets, [
+    { label: 'Bucket', value: (bucket) => bucket.name },
+    { label: 'Status', value: (bucket) => (bucket.status === 'deleted' ? `removido em ${bucket.deleted_at || '-'}` : 'ativo') },
+    { label: 'Tamanho atual', value: (bucket) => formatValkeyBytes(bucket.current_size_bytes) },
+    { label: 'Maximo', value: (bucket) => formatValkeyBytes(bucket.peak_size_bytes) },
+    { label: 'GB-mes', value: (bucket) => Number(bucket.storage_gb_months ?? 0).toFixed(4) },
+    { label: 'Valor', value: (bucket) => formatStorageAmount(bucket.storage_amount) },
+  ]);
+}
+
+async function handleStorageUsage(session, flags) {
+  if (flags.month !== undefined && !/^\d{4}-(0[1-9]|1[0-2])$/.test(String(flags.month))) {
+    throw new CliError('--month deve estar no formato AAAA-MM, por exemplo 2026-09.');
+  }
+  const { orgId, service } = await requireStorageService(session, flags);
+  const query = buildQuery(flags, ['month']);
+  const usage = unwrapData(await request(session, flags, 'GET', `/object-storage/${encodeURIComponent(service.id)}/usage${query}`, { orgId }));
+  if (flags.json) return printJson(usage);
+  printStorageUsage(usage);
+}
+
 function buildQuery(flags, allowedKeys) {
   const params = new URLSearchParams();
   for (const key of allowedKeys) {
@@ -6019,7 +6649,9 @@ async function handleDeployWatch(session, flags) {
 }
 
 async function main() {
-  const { positional, flags } = parseArgs(process.argv.slice(2));
+  const parsed = parseArgs(process.argv.slice(2));
+  const { flags } = parsed;
+  const positional = resolveCommandAliases(parsed.positional);
   validateKnownFlags(flags);
   const [command, subcommand] = positional;
   const session = await readSession();
@@ -6082,6 +6714,21 @@ async function main() {
     if (command === 'valkey' && subcommand === 'connection') return handleValkeyConnection(session, flags);
     if (command === 'valkey' && subcommand === 'credentials' && positional[2] === 'rotate') return handleValkeyCredentialRotate(session, flags);
     if (command === 'valkey' && subcommand === 'credentials' && positional[2] === 'status') return handleValkeyCredentialStatus(session, flags);
+    if (command === 'storage' && subcommand === 'status') return handleStorageStatus(session, flags);
+    if (command === 'storage' && subcommand === 'create') return handleStorageCreate(session, flags);
+    if (command === 'storage' && subcommand === 'buckets' && positional[2] === 'create') return handleStorageBucketCreate(session, flags);
+    if (command === 'storage' && subcommand === 'buckets' && positional[2] === 'delete') return handleStorageBucketDelete(session, flags);
+    if (command === 'storage' && subcommand === 'buckets' && positional.length === 2) return handleStorageBuckets(session, flags);
+    if (command === 'storage' && subcommand === 'files' && positional[2] === 'upload') return handleStorageFileUpload(session, flags);
+    if (command === 'storage' && subcommand === 'files' && positional[2] === 'download') return handleStorageFileDownload(session, flags);
+    if (command === 'storage' && subcommand === 'files' && positional[2] === 'delete') return handleStorageFileDelete(session, flags);
+    if (command === 'storage' && subcommand === 'files' && positional[2] === 'share') return handleStorageFileShare(session, flags);
+    if (command === 'storage' && subcommand === 'files' && positional[2] === 'info') return handleStorageFileInfo(session, flags);
+    if (command === 'storage' && subcommand === 'files' && positional.length === 2) return handleStorageFiles(session, flags);
+    if (command === 'storage' && subcommand === 'keys' && positional[2] === 'create') return handleStorageKeyCreate(session, flags);
+    if (command === 'storage' && subcommand === 'keys' && positional[2] === 'revoke') return handleStorageKeyRevoke(session, flags);
+    if (command === 'storage' && subcommand === 'keys' && positional.length === 2) return handleStorageKeys(session, flags);
+    if (command === 'storage' && subcommand === 'usage') return handleStorageUsage(session, flags);
     if (command === 'project' && subcommand === 'healthcheck' && positional.length === 2) {
       process.stdout.write(commandHelp(['project', 'healthcheck']));
       return;
