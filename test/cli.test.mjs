@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, truncate, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -5946,5 +5946,572 @@ test('project run scalar logs use the same human terminal sanitization as log en
     assert.equal(human.code, 0, human.stderr);
     assert.equal(human.stdout, 'scalar\tlinehiddenclear\n');
     assert.equal(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/u.test(human.stdout.replaceAll('\n', '').replaceAll('\t', '')), false);
+  });
+});
+
+const STORAGE_SERVICE = {
+  id: '6650f1c2a1b2c3d4e5f60718',
+  name: 'Armazem',
+  status: 'running',
+  region: 'br-sp1',
+  endpoint: 'https://armazem.zenifra.com',
+  created_at: '2026-10-01T12:00:00.000Z',
+};
+const STORAGE_BASE = `/v1/object-storage/${STORAGE_SERVICE.id}`;
+
+function storageStateResponse(res, state = {}) {
+  jsonResponse(res, 200, { status: 'success', data: { available: true, service: STORAGE_SERVICE, beta_request: null, ...state } });
+}
+
+function signedUrl(req, path) {
+  return `http://${req.headers.host}${path}?X-Amz-Signature=abc123`;
+}
+
+async function readBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
+test('storage help covers every subcommand and the armazem alias', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  const commands = [
+    ['storage'],
+    ['storage', 'status'],
+    ['storage', 'create'],
+    ['storage', 'buckets'],
+    ['storage', 'buckets', 'create'],
+    ['storage', 'buckets', 'delete'],
+    ['storage', 'files'],
+    ['storage', 'files', 'upload'],
+    ['storage', 'files', 'download'],
+    ['storage', 'files', 'delete'],
+    ['storage', 'files', 'share'],
+    ['storage', 'files', 'info'],
+    ['storage', 'keys'],
+    ['storage', 'keys', 'create'],
+    ['storage', 'keys', 'revoke'],
+    ['storage', 'usage'],
+  ];
+  try {
+    for (const command of commands) {
+      const result = await runCli([...command, '--help'], { configDir });
+      assert.equal(result.code, 0, `${command.join(' ')}\n${result.stderr}`);
+      assert.match(result.stdout, new RegExp(`zenifra ${command.join(' ')}`));
+      assert.match(result.stdout, /Examples:/);
+    }
+
+    for (const args of [['armazem'], ['help', 'armazem'], ['armazem', '--help']]) {
+      const result = await runCli(args, { configDir });
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stdout, /Zenifra CLI - storage/);
+      assert.match(result.stdout, /zenifra storage files upload/);
+      assert.match(result.stdout, /beta para organizacoes convidadas/);
+    }
+
+    const index = await runCli(['--help'], { configDir });
+    assert.match(index.stdout, /zenifra storage status/);
+    assert.match(index.stdout, /zenifra armazem/);
+
+    for (const args of [
+      ['storage', 'buckets', 'create'],
+      ['storage', 'buckets', 'delete'],
+      ['storage', 'files'],
+      ['storage', 'files', 'upload', '--bucket', 'fotos'],
+      ['storage', 'files', 'download', '--bucket', 'fotos'],
+      ['storage', 'files', 'delete', '--bucket', 'fotos'],
+      ['storage', 'files', 'share'],
+      ['storage', 'files', 'info'],
+      ['storage', 'keys', 'create'],
+      ['storage', 'keys', 'revoke'],
+    ]) {
+      const result = await runCli(args, { configDir });
+      assert.equal(result.code, 1, args.join(' '));
+      assert.match(result.stdout, /Usage:/);
+      assert.equal(result.stderr, '');
+    }
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('storage status explains the beta, missing service and existing service', async () => {
+  let state = { available: false, service: null, beta_request: null };
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.url, '/v1/object-storage');
+    jsonResponse(res, 200, { status: 'success', data: state });
+  }, async ({ apiBase, configDir }) => {
+    let result = await runCli(['storage', 'status'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /beta para organizacoes convidadas/);
+    assert.match(result.stdout, /console, na pagina Armazem/);
+
+    state = { available: false, service: null, beta_request: { requested_at: '2026-10-20T10:00:00.000Z' } };
+    result = await runCli(['armazem', 'status'], { apiBase, configDir });
+    assert.match(result.stdout, /Pedido de participacao enviado em 2026-10-20T10:00:00.000Z/);
+
+    state = { available: true, service: null, beta_request: null };
+    result = await runCli(['storage', 'status'], { apiBase, configDir });
+    assert.match(result.stdout, /zenifra storage create/);
+
+    state = { available: true, service: STORAGE_SERVICE, beta_request: null };
+    result = await runCli(['storage', 'status'], { apiBase, configDir });
+    assert.match(result.stdout, /6650f1c2a1b2c3d4e5f60718/);
+    assert.match(result.stdout, /https:\/\/armazem\.zenifra\.com/);
+    assert.match(result.stdout, /br-sp1/);
+
+    result = await runCli(['storage', 'status', '--json'], { apiBase, configDir });
+    assert.deepEqual(JSON.parse(result.stdout), state);
+  });
+});
+
+test('storage create sends the name and explains when the organization is not invited', async () => {
+  const bodies = [];
+  let invited = true;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/object-storage');
+    bodies.push(await readJson(req));
+    if (!invited) {
+      jsonResponse(res, 403, { status: 'failed', code: 'OBJECT_STORAGE_NOT_AVAILABLE', message: 'Object storage is not available for this organization yet' });
+      return;
+    }
+    jsonResponse(res, 201, { status: 'success', data: STORAGE_SERVICE });
+  }, async ({ apiBase, configDir }) => {
+    let result = await runCli(['storage', 'create'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Armazem pronto: 6650f1c2a1b2c3d4e5f60718/);
+
+    result = await runCli(['storage', 'create', '--name', 'Arquivos da equipe', '--json'], { apiBase, configDir });
+    assert.equal(JSON.parse(result.stdout).id, STORAGE_SERVICE.id);
+    assert.deepEqual(bodies, [{ name: 'Armazem' }, { name: 'Arquivos da equipe' }]);
+
+    invited = false;
+    result = await runCli(['storage', 'create'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /beta para organizacoes convidadas/);
+    assert.match(result.stderr, /console, na pagina Armazem/);
+    assert.doesNotMatch(result.stderr, /not available/);
+  });
+});
+
+test('storage commands ask to create the service before using it', async () => {
+  await withCliServer(async (req, res) => {
+    jsonResponse(res, 200, { status: 'success', data: { available: true, service: null, beta_request: null } });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['storage', 'buckets'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /zenifra storage create/);
+  });
+});
+
+test('storage buckets list, create and delete with clear errors', async () => {
+  const calls = [];
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.method === 'GET' && req.url === '/v1/object-storage') return storageStateResponse(res);
+    calls.push(`${req.method} ${req.url}`);
+    if (req.method === 'GET' && req.url === `${STORAGE_BASE}/buckets`) {
+      jsonResponse(res, 200, { status: 'success', data: [{ name: 'fotos', size_bytes: 1572864, objects: 12, created_at: '2026-10-01T12:00:00.000Z', last_updated_at: '2026-10-20T08:00:00.000Z' }] });
+      return;
+    }
+    if (req.method === 'POST' && req.url === `${STORAGE_BASE}/buckets`) {
+      const body = await readJson(req);
+      if (body.name === 'repetido') {
+        jsonResponse(res, 409, { status: 'failed', code: 'BUCKET_ALREADY_EXISTS', message: 'This bucket name is already in use' });
+        return;
+      }
+      jsonResponse(res, 201, { status: 'success', data: { name: body.name } });
+      return;
+    }
+    if (req.method === 'DELETE' && req.url === `${STORAGE_BASE}/buckets/vazio`) {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    if (req.method === 'DELETE' && req.url === `${STORAGE_BASE}/buckets/cheio`) {
+      jsonResponse(res, 428, { status: 'failed', code: 'BUCKET_DELETION_VERIFICATION_REQUIRED', message: 'Confirm the deletion with a verification code', data: { challenge_type: 'totp_app' } });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    let result = await runCli(['storage', 'buckets'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /fotos\s+1\.5 MB\s+12/);
+
+    result = await runCli(['storage', 'buckets', 'create', '--bucket', 'novo'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Bucket criado: novo/);
+
+    result = await runCli(['storage', 'buckets', 'create', '--bucket', 'repetido'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Ja existe um bucket com este nome/);
+
+    result = await runCli(['storage', 'buckets', 'delete', '--bucket', 'vazio'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /exige --yes/);
+
+    result = await runCli(['storage', 'buckets', 'delete', '--bucket', 'vazio', '--yes'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Bucket removido: vazio/);
+
+    result = await runCli(['storage', 'buckets', 'delete', '--bucket', 'cheio', '--yes'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /precisa ser confirmada no console/);
+
+    assert.deepEqual(calls, [
+      `GET ${STORAGE_BASE}/buckets`,
+      `POST ${STORAGE_BASE}/buckets`,
+      `POST ${STORAGE_BASE}/buckets`,
+      `DELETE ${STORAGE_BASE}/buckets/vazio`,
+      `DELETE ${STORAGE_BASE}/buckets/cheio`,
+    ]);
+  });
+});
+
+test('storage files lists one folder level and shows the next page token', async () => {
+  const urls = [];
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.url === '/v1/object-storage') return storageStateResponse(res);
+    urls.push(req.url);
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        bucket: 'fotos',
+        prefix: '2026/',
+        folders: [{ prefix: '2026/10/', name: '10' }],
+        objects: [{ key: '2026/logo.png', name: 'logo.png', size_bytes: 12288, uploaded_at: '2026-10-20T08:00:00.000Z', etag: 'abc' }],
+        next_continuation_token: 'token-2',
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['storage', 'files', '--bucket', 'fotos', '--prefix', '2026/', '--limit', '2'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /pasta\s+10\//);
+    assert.match(result.stdout, /arquivo\s+logo\.png\s+12 KB/);
+    assert.match(result.stdout, /--continuation-token token-2/);
+
+    const next = await runCli(['storage', 'files', '--bucket', 'fotos', '--prefix', '2026/', '--continuation-token', 'token-2', '--json'], { apiBase, configDir });
+    assert.equal(JSON.parse(next.stdout).next_continuation_token, 'token-2');
+
+    const invalid = await runCli(['storage', 'files', '--bucket', 'fotos', '--limit', '5000'], { apiBase, configDir });
+    assert.equal(invalid.code, 1);
+    assert.match(invalid.stderr, /--limit/);
+
+    assert.deepEqual(urls, [
+      `${STORAGE_BASE}/buckets/fotos/objects?prefix=2026%2F&limit=2`,
+      `${STORAGE_BASE}/buckets/fotos/objects?prefix=2026%2F&continuation_token=token-2`,
+    ]);
+  });
+});
+
+test('storage files upload signs the exact size and streams the file with the signed headers', async () => {
+  const content = Buffer.alloc(256 * 1024 + 7, 'z');
+  let signBody;
+  let upload;
+  await withCliServer(async (req, res) => {
+    if (req.url.startsWith('/signed/')) {
+      upload = { method: req.method, url: req.url, headers: req.headers, body: await readBody(req) };
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+    assertApiKeyAuth(req);
+    if (req.url === '/v1/object-storage') return storageStateResponse(res);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, `${STORAGE_BASE}/buckets/fotos/write-url`);
+    signBody = await readJson(req);
+    jsonResponse(res, 201, {
+      status: 'success',
+      data: { method: 'PUT', url: signedUrl(req, '/signed/fotos/2026/logo.png'), headers: { 'content-type': signBody.content_type }, expires_at: '2026-10-24T12:15:00.000Z' },
+    });
+  }, async ({ apiBase, configDir }) => {
+    const filePath = join(configDir, 'logo.png');
+    await writeFile(filePath, content);
+
+    const result = await runCli(['storage', 'files', 'upload', '--bucket', 'fotos', '--file', filePath, '--key', '2026/'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Arquivo enviado: fotos\/2026\/logo\.png/);
+    assert.deepEqual(signBody, { operation: 'upload', key: '2026/logo.png', size: content.length, content_type: 'image/png' });
+    assert.equal(upload.method, 'PUT');
+    assert.equal(upload.url, '/signed/fotos/2026/logo.png?X-Amz-Signature=abc123');
+    assert.equal(upload.headers['content-type'], 'image/png');
+    assert.equal(upload.headers['content-length'], String(content.length));
+    assert.equal(upload.headers['transfer-encoding'], undefined);
+    assert.equal(upload.headers.authorization, undefined);
+    assert.equal(upload.headers['x-organization-id'], undefined);
+    assert.ok(upload.body.equals(content));
+
+    const json = await runCli(['storage', 'files', 'upload', '--bucket', 'fotos', '--file', filePath, '--key', 'x/dados.bin', '--content-type', 'application/x-custom', '--json'], { apiBase, configDir });
+    assert.equal(json.code, 0, json.stderr);
+    assert.deepEqual(JSON.parse(json.stdout), { bucket: 'fotos', key: 'x/dados.bin', size_bytes: content.length, content_type: 'application/x-custom' });
+    assert.equal(signBody.content_type, 'application/x-custom');
+  });
+});
+
+test('storage files upload refuses files over 20 GiB and reports storage refusals', async () => {
+  let signRequests = 0;
+  await withCliServer(async (req, res) => {
+    if (req.url.startsWith('/signed/')) {
+      await readBody(req);
+      res.writeHead(403, { 'content-type': 'application/xml' });
+      res.end('<Error><Code>SignatureDoesNotMatch</Code></Error>');
+      return;
+    }
+    if (req.url === '/v1/object-storage') return storageStateResponse(res);
+    signRequests += 1;
+    const body = await readJson(req);
+    if (body.key === 'readonly.txt') {
+      jsonResponse(res, 409, { status: 'failed', code: 'OBJECT_STORAGE_READ_ONLY', message: 'This organization reached its maximum storage.' });
+      return;
+    }
+    jsonResponse(res, 201, { status: 'success', data: { method: 'PUT', url: signedUrl(req, '/signed/a.txt'), headers: { 'content-type': 'text/plain' } } });
+  }, async ({ apiBase, configDir }) => {
+    const huge = join(configDir, 'huge.bin');
+    await writeFile(huge, '');
+    await truncate(huge, 20 * 1024 ** 3 + 1);
+    let result = await runCli(['storage', 'files', 'upload', '--bucket', 'fotos', '--file', huge], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /20 GiB/);
+    assert.equal(signRequests, 0);
+
+    result = await runCli(['storage', 'files', 'upload', '--bucket', 'fotos', '--file', join(configDir, 'nao-existe.txt')], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Arquivo nao encontrado/);
+
+    const small = join(configDir, 'a.txt');
+    await writeFile(small, 'ola');
+    result = await runCli(['storage', 'files', 'upload', '--bucket', 'fotos', '--file', small], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /recusou o envio \(HTTP 403\)/);
+    assert.doesNotMatch(result.stderr, /SignatureDoesNotMatch/);
+
+    result = await runCli(['storage', 'files', 'upload', '--bucket', 'fotos', '--file', small, '--key', 'readonly.txt'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /somente leitura/);
+  });
+});
+
+test('storage files download streams to disk and does not overwrite without --yes', async () => {
+  const content = Buffer.alloc(128 * 1024, 'd');
+  let readBodyRequest;
+  await withCliServer(async (req, res) => {
+    if (req.url.startsWith('/signed/')) {
+      assert.equal(req.method, 'GET');
+      assert.equal(req.headers.authorization, undefined);
+      res.writeHead(200, { 'content-type': 'application/octet-stream' });
+      res.end(content);
+      return;
+    }
+    if (req.url === '/v1/object-storage') return storageStateResponse(res);
+    assert.equal(req.url, `${STORAGE_BASE}/buckets/fotos/read-url`);
+    readBodyRequest = await readJson(req);
+    if (readBodyRequest.key === 'sumiu.txt') {
+      jsonResponse(res, 404, { status: 'failed', code: 'OBJECT_NOT_FOUND', message: 'File not found' });
+      return;
+    }
+    jsonResponse(res, 201, { status: 'success', data: { method: 'GET', url: signedUrl(req, '/signed/fotos/2026/dump.bin'), headers: {} } });
+  }, async ({ apiBase, configDir }) => {
+    const output = join(configDir, 'dump.bin');
+    let result = await runCli(['storage', 'files', 'download', '--bucket', 'fotos', '--key', '2026/dump.bin', '--output', output], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(readBodyRequest, { operation: 'download', key: '2026/dump.bin' });
+    assert.ok((await readFile(output)).equals(content));
+    assert.match(result.stdout, /Arquivo baixado/);
+
+    result = await runCli(['storage', 'files', 'download', '--bucket', 'fotos', '--key', '2026/dump.bin', '--output', output], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /ja existe/);
+
+    result = await runCli(['storage', 'files', 'download', '--bucket', 'fotos', '--key', '2026/dump.bin', '--output', output, '--yes', '--json'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).size_bytes, content.length);
+
+    result = await runCli(['storage', 'files', 'download', '--bucket', 'fotos', '--key', 'sumiu.txt', '--output', join(configDir, 'sumiu.txt')], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Arquivo nao encontrado no bucket/);
+  });
+});
+
+test('storage files delete, share and info use the signed links and object details', async () => {
+  const bodies = [];
+  let deleted;
+  await withCliServer(async (req, res) => {
+    if (req.url.startsWith('/signed/')) {
+      deleted = { method: req.method, url: req.url };
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    if (req.url === '/v1/object-storage') return storageStateResponse(res);
+    const body = await readJson(req);
+    bodies.push({ url: req.url, body });
+    if (req.url.endsWith('/write-url')) {
+      jsonResponse(res, 201, { status: 'success', data: { method: 'DELETE', url: signedUrl(req, '/signed/fotos/logo.png'), headers: {} } });
+      return;
+    }
+    if (req.url.endsWith('/read-url')) {
+      jsonResponse(res, 201, { status: 'success', data: { method: 'GET', url: 'https://armazem.zenifra.com/fotos/logo.png?X-Amz-Expires=604800', headers: {}, expires_at: '2026-10-31T12:00:00.000Z' } });
+      return;
+    }
+    jsonResponse(res, 200, { status: 'success', data: { key: 'logo.png', name: 'logo.png', size_bytes: 12288, content_type: 'image/png', uploaded_at: '2026-10-20T08:00:00.000Z', etag: 'abc', metadata: { origem: 'site' } } });
+  }, async ({ apiBase, configDir }) => {
+    let result = await runCli(['storage', 'files', 'delete', '--bucket', 'fotos', '--key', 'logo.png'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /exige --yes/);
+    assert.equal(bodies.length, 0);
+
+    result = await runCli(['storage', 'files', 'delete', '--bucket', 'fotos', '--key', 'logo.png', '--yes'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Arquivo apagado: fotos\/logo\.png/);
+    assert.deepEqual(deleted, { method: 'DELETE', url: '/signed/fotos/logo.png?X-Amz-Signature=abc123' });
+
+    result = await runCli(['storage', 'files', 'share', '--bucket', 'fotos', '--key', 'logo.png'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /valido ate 2026-10-31T12:00:00.000Z/);
+    assert.match(result.stdout, /https:\/\/armazem\.zenifra\.com\/fotos\/logo\.png/);
+
+    result = await runCli(['storage', 'files', 'info', '--bucket', 'fotos', '--key', 'logo.png'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /image\/png/);
+    assert.match(result.stdout, /12 KB/);
+    assert.match(result.stdout, /Metadado origem\s+site/);
+
+    assert.deepEqual(bodies, [
+      { url: `${STORAGE_BASE}/buckets/fotos/write-url`, body: { operation: 'delete', key: 'logo.png' } },
+      { url: `${STORAGE_BASE}/buckets/fotos/read-url`, body: { operation: 'share', key: 'logo.png' } },
+      { url: `${STORAGE_BASE}/buckets/fotos/object-info`, body: { key: 'logo.png' } },
+    ]);
+  });
+});
+
+test('storage keys list, create with scope and show the secret once, and revoke', async () => {
+  const bodies = [];
+  const calls = [];
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.url === '/v1/object-storage') return storageStateResponse(res);
+    calls.push(`${req.method} ${req.url}`);
+    if (req.method === 'GET') {
+      jsonResponse(res, 200, { status: 'success', data: [{ access_key_id: 'ZNKEXAMPLE0123', name: 'deploy', created_at: '2026-10-20T08:00:00.000Z', allowed_ips: ['203.0.113.7/32'], buckets: ['fotos'], access: 'read_write' }] });
+      return;
+    }
+    if (req.method === 'POST') {
+      const body = await readJson(req);
+      bodies.push(body);
+      if (body.name === 'demais') {
+        jsonResponse(res, 403, { status: 'failed', code: 'ACCESS_KEY_SCOPE_NOT_ALLOWED', message: 'A key can only get the access you have yourself' });
+        return;
+      }
+      jsonResponse(res, 201, { status: 'success', data: { access_key_id: 'ZNKNEW0001', name: body.name, created_at: '2026-10-24T08:00:00.000Z', allowed_ips: body.allowed_ips || [], buckets: body.scope?.buckets || ['*'], access: body.scope?.access || 'full', secret_access_key: 'segredo-unico-123' } });
+      return;
+    }
+    if (req.url.endsWith('/sumiu')) {
+      jsonResponse(res, 404, { status: 'failed', code: 'ACCESS_KEY_NOT_FOUND', message: 'Access key not found' });
+      return;
+    }
+    res.writeHead(204);
+    res.end();
+  }, async ({ apiBase, configDir }) => {
+    let result = await runCli(['storage', 'keys'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /ZNKEXAMPLE0123\s+deploy\s+fotos\s+read_write\s+203\.0\.113\.7\/32/);
+    assert.doesNotMatch(result.stdout, /secret/i);
+
+    result = await runCli(['storage', 'keys', 'create', '--name', 'site', '--buckets', 'site,assets', '--access', 'read', '--allowed-ips', '203.0.113.7,198.51.100.0/24'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Guarde o segredo agora: ele nao sera exibido novamente/);
+    assert.match(result.stdout, /segredo-unico-123/);
+    assert.match(result.stdout, /https:\/\/armazem\.zenifra\.com/);
+    assert.match(result.stdout, /br-sp1/);
+
+    result = await runCli(['storage', 'keys', 'create', '--name', 'tudo', '--json'], { apiBase, configDir });
+    assert.equal(JSON.parse(result.stdout).secret_access_key, 'segredo-unico-123');
+
+    result = await runCli(['storage', 'keys', 'create', '--name', 'ruim', '--access', 'admin'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /read, read_write, full/);
+
+    result = await runCli(['storage', 'keys', 'create', '--name', 'demais', '--access', 'full'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /acesso que voce mesmo tem/);
+
+    assert.deepEqual(bodies, [
+      { name: 'site', scope: { buckets: ['site', 'assets'], access: 'read' }, allowed_ips: ['203.0.113.7', '198.51.100.0/24'] },
+      { name: 'tudo' },
+      { name: 'demais', scope: { buckets: ['*'], access: 'full' } },
+    ]);
+
+    result = await runCli(['storage', 'keys', 'revoke', '--access-key', 'ZNKEXAMPLE0123'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /exige --yes/);
+
+    result = await runCli(['storage', 'keys', 'revoke', '--access-key', 'ZNKEXAMPLE0123', '--yes'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Chave revogada: ZNKEXAMPLE0123/);
+
+    result = await runCli(['storage', 'keys', 'revoke', '--access-key', 'sumiu', '--yes'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Chave de acesso nao encontrada/);
+
+    assert.ok(calls.includes(`DELETE ${STORAGE_BASE}/access-keys/ZNKEXAMPLE0123`));
+    const files = await readFile(join(configDir, 'profiles.json'), 'utf8').catch(() => '');
+    assert.doesNotMatch(files, /segredo-unico-123/);
+  });
+});
+
+test('storage usage formats cents as reais and validates the month', async () => {
+  const urls = [];
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.url === '/v1/object-storage') return storageStateResponse(res);
+    urls.push(req.url);
+    if (req.url.includes('2020-01')) {
+      jsonResponse(res, 400, { status: 'failed', code: 'USAGE_PERIOD_NOT_AVAILABLE', message: 'Usage is available for the current month and the 12 months before it' });
+      return;
+    }
+    jsonResponse(res, 200, {
+      status: 'success',
+      data: {
+        period_start: '2026-09-01T00:00:00.000Z',
+        period_end: '2026-10-01T00:00:00.000Z',
+        closed: true,
+        storage_gb_months: 12.5,
+        class_a_requests: 60000,
+        class_b_requests: 1000,
+        egress_gb: 2,
+        estimated_amount: 1250,
+        charged_amount: 990,
+        free_storage_gb_months: 5,
+        free_storage_amount: 50,
+        free_requests: { class_a_used: 50000, class_a_limit: 50000, class_b_used: 1000, class_b_limit: 500000 },
+        amounts: { storage: 1000, requests: 200, egress: 50 },
+        currency: 'brl',
+        buckets: [{ name: 'fotos', status: 'active', deleted_at: null, current_size_bytes: 1048576, peak_size_bytes: 2097152, storage_gb_months: 12.5, storage_amount: 1000 }],
+      },
+    });
+  }, async ({ apiBase, configDir }) => {
+    let result = await runCli(['storage', 'usage', '--month', '2026-09'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /\(fechado\)/);
+    assert.match(result.stdout, /Estimado no periodo\s+R\$\s12,50/);
+    assert.match(result.stdout, /Ja debitado\s+R\$\s9,90/);
+    assert.match(result.stdout, /Valor armazenamento\s+R\$\s10,00/);
+    assert.match(result.stdout, /50000 de 50000/);
+    assert.match(result.stdout, /fotos\s+ativo\s+1 MB\s+2 MB/);
+
+    result = await runCli(['storage', 'usage', '--month', '2026-9'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /AAAA-MM/);
+
+    result = await runCli(['storage', 'usage', '--month', '2020-01'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /12 meses anteriores/);
+
+    assert.deepEqual(urls, [`${STORAGE_BASE}/usage?month=2026-09`, `${STORAGE_BASE}/usage?month=2020-01`]);
   });
 });
