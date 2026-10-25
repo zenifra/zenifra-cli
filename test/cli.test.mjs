@@ -675,7 +675,7 @@ test('plans help works without authentication', async () => {
     for (const args of [['plans', '--help'], ['help', 'plans']]) {
       const result = await runCli(args, { configDir, envApiKey: null });
       assert.equal(result.code, 0, `${args.join(' ')}\n${result.stderr}`);
-      assert.match(result.stdout, /Usage:\n  zenifra plans \[--type <all\|http\|database\|storage\|valkey\|job>] \[--json]/);
+      assert.match(result.stdout, /Usage:\n  zenifra plans \[--type <all\|http\|database\|storage\|key-value\|cache\|queue\|job>] \[--json]/);
       assert.match(result.stdout, /Examples:/);
       assert.doesNotMatch(result.stdout, /Voce precisa autenticar primeiro/);
     }
@@ -914,7 +914,7 @@ test('plans fails clearly on invalid type', async () => {
 
     assert.equal(result.code, 1);
     assert.match(result.stderr, /Tipo de catalogo invalido/);
-    assert.match(result.stderr, /all, http, database, storage, valkey/);
+    assert.match(result.stderr, /all, http, database, storage, key-value, cache, queue/);
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }
@@ -1781,7 +1781,7 @@ test('project metrics reports unavailable native Valkey snapshots without invent
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /Disponibilidade\s+unavailable/);
     assert.match(result.stdout, /CPU\s+0/);
-    assert.match(result.stdout, /Metricas Valkey\s+indisponivel/);
+    assert.match(result.stdout, /Metricas do banco\s+indisponivel/);
     assert.doesNotMatch(result.stdout, /Memoria usada|Clientes conectados|Hit ratio/);
   });
 });
@@ -4311,14 +4311,22 @@ test('projects create --help fails with a migration message', async () => {
   }
 });
 
-test('valkey lifecycle commands expose specific help without authentication', async () => {
+function answerDatabaseProjectType(req, res) {
+  const types = { proj_valkey: 'valkey', proj_pg: 'postgresql', proj_http: 'http' };
+  const match = /^\/v1\/project\/(proj_[a-z]+)$/.exec(req.url);
+  if (req.method !== 'GET' || !match || !types[match[1]]) return false;
+  jsonResponse(res, 200, { status: 'success', data: { id: match[1], name: 'banco', status: 'running', type_project: types[match[1]] } });
+  return true;
+}
+
+test('database commands expose specific help without authentication', async () => {
   const commands = [
-    ['valkey'],
-    ['valkey', 'status'],
-    ['valkey', 'connection'],
-    ['valkey', 'credentials'],
-    ['valkey', 'credentials', 'rotate'],
-    ['valkey', 'credentials', 'status'],
+    ['database'],
+    ['database', 'status'],
+    ['database', 'connection'],
+    ['database', 'credentials'],
+    ['database', 'credentials', 'rotate'],
+    ['database', 'credentials', 'status'],
   ];
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
 
@@ -4334,12 +4342,12 @@ test('valkey lifecycle commands expose specific help without authentication', as
   }
 });
 
-test('valkey lifecycle commands show help instead of making requests when arguments are missing', async () => {
+test('database commands show help instead of making requests when arguments are missing', async () => {
   const commands = [
-    ['valkey', 'status'],
-    ['valkey', 'connection'],
-    ['valkey', 'credentials', 'rotate'],
-    ['valkey', 'credentials', 'status'],
+    ['database', 'status'],
+    ['database', 'connection'],
+    ['database', 'credentials', 'rotate'],
+    ['database', 'credentials', 'status'],
   ];
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
 
@@ -4347,7 +4355,7 @@ test('valkey lifecycle commands show help instead of making requests when argume
     for (const command of commands) {
       const result = await runCli(command, { configDir, envApiKey: apiKey });
       assert.equal(result.code, 1, `${command.join(' ')}\n${result.stderr}`);
-      assert.match(result.stdout, /Zenifra CLI - valkey/);
+      assert.match(result.stdout, /Zenifra CLI - database/);
       assert.match(result.stdout, /Usage:/);
       assert.equal(result.stderr, '');
     }
@@ -4356,9 +4364,10 @@ test('valkey lifecycle commands show help instead of making requests when argume
   }
 });
 
-test('valkey status and connection preserve public response fields and masking', async () => {
+test('database status and connection for Key Value preserve public response fields and masking', async () => {
   await withCliServer(async (req, res) => {
     assertApiKeyAuth(req);
+    if (answerDatabaseProjectType(req, res)) return;
     if (req.method === 'GET' && req.url === '/v1/managed-services/proj_valkey/status') {
       jsonResponse(res, 200, {
         status: 'success',
@@ -4389,13 +4398,13 @@ test('valkey status and connection preserve public response fields and masking',
     }
     jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
   }, async ({ apiBase, configDir }) => {
-    const status = await runCli(['valkey', 'status', '--project', 'proj_valkey'], { apiBase, configDir });
+    const status = await runCli(['database', 'status', '--project', 'proj_valkey'], { apiBase, configDir });
     assert.equal(status.code, 0, status.stderr);
     assert.match(status.stdout, /running/);
-    assert.match(status.stdout, /cache/);
+    assert.match(status.stdout, /Cache/);
     assert.match(status.stdout, /9\.1\.1/);
 
-    const connection = await runCli(['valkey', 'connection', '--project', 'proj_valkey', '--json'], { apiBase, configDir });
+    const connection = await runCli(['database', 'connection', '--project', 'proj_valkey', '--json'], { apiBase, configDir });
     assert.equal(connection.code, 0, connection.stderr);
     const payload = JSON.parse(connection.stdout);
     assert.equal(payload.connection_string, 'valkeys://default:********@valkey.example.com:6380/0');
@@ -4403,11 +4412,12 @@ test('valkey status and connection preserve public response fields and masking',
   });
 });
 
-test('valkey credential rotation sends idempotency key and returns the accepted operation', async () => {
+test('database credential rotation for Key Value sends idempotency key and returns the accepted operation', async () => {
   let receivedKey;
   let receivedBody;
   await withCliServer(async (req, res) => {
     assertApiKeyAuth(req);
+    if (answerDatabaseProjectType(req, res)) return;
     assert.equal(req.method, 'PATCH');
     assert.equal(req.url, '/v1/managed-services/proj_valkey/credentials');
     receivedKey = req.headers['idempotency-key'];
@@ -4415,7 +4425,7 @@ test('valkey credential rotation sends idempotency key and returns the accepted 
     jsonResponse(res, 202, { status: 'accepted', data: { operation_id: 'rotation_123', state: 'accepted' } });
   }, async ({ apiBase, configDir }) => {
     const result = await runCli([
-      'valkey', 'credentials', 'rotate',
+      'database', 'credentials', 'rotate',
       '--project', 'proj_valkey',
       '--idempotency-key', 'valkey-rotation-key-001',
     ], { apiBase, configDir });
@@ -4428,9 +4438,10 @@ test('valkey credential rotation sends idempotency key and returns the accepted 
   });
 });
 
-test('valkey credential status returns the new connection only after completion', async () => {
+test('database credential status for Key Value returns the new connection only after completion', async () => {
   await withCliServer(async (req, res) => {
     assertApiKeyAuth(req);
+    if (answerDatabaseProjectType(req, res)) return;
     assert.equal(req.method, 'GET');
     assert.equal(req.url, '/v1/managed-services/proj_valkey/credential-rotations/rotation_123');
     jsonResponse(res, 200, {
@@ -4448,7 +4459,7 @@ test('valkey credential status returns the new connection only after completion'
     });
   }, async ({ apiBase, configDir }) => {
     const result = await runCli([
-      'valkey', 'credentials', 'status',
+      'database', 'credentials', 'status',
       '--project', 'proj_valkey',
       '--operation', 'rotation_123',
       '--json',
@@ -4461,10 +4472,11 @@ test('valkey credential status returns the new connection only after completion'
   });
 });
 
-test('valkey credential rotation waits through accepted and running states', async () => {
+test('database credential rotation for Key Value waits through accepted and running states', async () => {
   let statusCalls = 0;
   await withCliServer(async (req, res) => {
     assertApiKeyAuth(req);
+    if (answerDatabaseProjectType(req, res)) return;
     if (req.method === 'PATCH' && req.url === '/v1/managed-services/proj_valkey/credentials') {
       jsonResponse(res, 202, { status: 'accepted', data: { operation_id: 'rotation_wait', state: 'accepted' } });
       return;
@@ -4488,7 +4500,7 @@ test('valkey credential rotation waits through accepted and running states', asy
     jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
   }, async ({ apiBase, configDir }) => {
     const result = await runCli([
-      'valkey', 'credentials', 'rotate',
+      'database', 'credentials', 'rotate',
       '--project', 'proj_valkey',
       '--idempotency-key', 'valkey-rotation-wait-001',
       '--wait',
@@ -6513,5 +6525,148 @@ test('storage usage formats cents as reais and validates the month', async () =>
     assert.match(result.stderr, /12 meses anteriores/);
 
     assert.deepEqual(urls, [`${STORAGE_BASE}/usage?month=2026-09`, `${STORAGE_BASE}/usage?month=2020-01`]);
+  });
+});
+
+test('database commands read PostgreSQL status and masked connection from the database routes', async () => {
+  const urls = [];
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (answerDatabaseProjectType(req, res)) return;
+    urls.push(`${req.method} ${req.url}`);
+    if (req.url === '/v1/project/proj_pg/database/status') {
+      jsonResponse(res, 200, { status: 'success', data: { project_id: 'proj_pg', name: 'banco', plan: 'db-basic', status: 'running', exposure: 'public', postgres: { status: 'running', instances: 2, readyInstances: 2, storage_gb: 10, vcpu: 1, memory_mb: 1024 } } });
+      return;
+    }
+    jsonResponse(res, 200, { status: 'success', data: { host: 'db.example.test', port: 5432, database: 'app', username: 'app', connectionString: 'postgresql://app:********@db.example.test:5432/app', exposure: 'public' } });
+  }, async ({ apiBase, configDir }) => {
+    const status = await runCli(['database', 'status', '--project', 'proj_pg'], { apiBase, configDir });
+    assert.equal(status.code, 0, status.stderr);
+    assert.match(status.stdout, /Tipo\s+PostgreSQL/);
+    assert.match(status.stdout, /Instancias\s+2 de 2 prontas/);
+    assert.match(status.stdout, /Armazenamento\s+10 GB/);
+
+    const connection = await runCli(['database', 'connection', '--project', 'proj_pg'], { apiBase, configDir });
+    assert.equal(connection.code, 0, connection.stderr);
+    assert.match(connection.stdout, /postgresql:\/\/app:\*{8}@db\.example\.test:5432\/app/);
+
+    const json = await runCli(['database', 'connection', '--project', 'proj_pg', '--json'], { apiBase, configDir });
+    assert.equal(JSON.parse(json.stdout).username, 'app');
+
+    assert.deepEqual(urls, [
+      'GET /v1/project/proj_pg/database/status',
+      'GET /v1/project/proj_pg/database/connection',
+      'GET /v1/project/proj_pg/database/connection',
+    ]);
+  });
+});
+
+test('database credentials rotate renews a PostgreSQL password synchronously without persisting it', async () => {
+  let patches = 0;
+  let conflict = false;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (answerDatabaseProjectType(req, res)) return;
+    if (req.method === 'PATCH' && req.url === '/v1/project/proj_pg/database/password') {
+      patches += 1;
+      assert.deepEqual(await readJson(req), {});
+      if (conflict) {
+        jsonResponse(res, 409, { status: 'failed', code: 'DATABASE_CREDENTIAL_ROTATION_IN_PROGRESS', message: 'Database credentials are already being updated.' });
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ status: 'success', data: { password: 'n3w/p@ss', linked_applications: [{ id: 'app_1', name: 'api-web' }] } }));
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/project/proj_pg/database/connection') {
+      jsonResponse(res, 200, { status: 'success', data: { host: 'db.example.test', port: 5432, username: 'app', connectionString: 'postgresql://app:********@db.example.test:5432/app' } });
+      return;
+    }
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    let result = await runCli(['database', 'credentials', 'rotate', '--project', 'proj_pg'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Guarde a nova senha agora: ela nao sera exibida novamente/);
+    assert.match(result.stdout, /Senha: n3w\/p@ss/);
+    assert.match(result.stdout, /aplicacoes conectadas: api-web/);
+
+    const connectionFile = join(configDir, 'db.env');
+    result = await runCli(['database', 'credentials', 'rotate', '--project', 'proj_pg', '--connection-file', connectionFile, '--json'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { project_id: 'proj_pg', connection_saved: true, connection_file: connectionFile, linked_applications: [{ id: 'app_1', name: 'api-web' }] });
+    assert.doesNotMatch(result.stdout, /n3w/);
+    assert.equal(await readFile(connectionFile, 'utf8'), 'postgresql://app:n3w%2Fp%40ss@db.example.test:5432/app');
+    assert.equal((await stat(connectionFile)).mode & 0o777, 0o600);
+
+    const profiles = await readFile(join(configDir, 'profiles.json'), 'utf8').catch(() => '');
+    assert.doesNotMatch(profiles, /n3w/);
+
+    result = await runCli(['database', 'credentials', 'status', '--project', 'proj_pg', '--operation', 'op_1'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /PostgreSQL e imediata/);
+
+    conflict = true;
+    result = await runCli(['database', 'credentials', 'rotate', '--project', 'proj_pg'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /ja esta sendo renovada/);
+    assert.equal(patches, 3);
+  });
+});
+
+test('database commands refuse projects that are not databases', async () => {
+  const urls = [];
+  await withCliServer(async (req, res) => {
+    urls.push(req.url);
+    if (answerDatabaseProjectType(req, res)) return;
+    jsonResponse(res, 404, { status: 'failed', message: `unexpected ${req.method} ${req.url}` });
+  }, async ({ apiBase, configDir }) => {
+    for (const args of [['database', 'status'], ['database', 'connection'], ['database', 'credentials', 'rotate']]) {
+      const result = await runCli([...args, '--project', 'proj_http'], { apiBase, configDir });
+      assert.equal(result.code, 1, args.join(' '));
+      assert.match(result.stderr, /nao e um banco gerenciado/);
+    }
+    assert.deepEqual(urls, ['/v1/project/proj_http', '/v1/project/proj_http', '/v1/project/proj_http']);
+  });
+});
+
+test('the old valkey group still works as a hidden alias with a deprecation notice', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const index = await runCli(['--help'], { configDir });
+    assert.match(index.stdout, /zenifra database status --project <id>/);
+    assert.doesNotMatch(index.stdout, /zenifra valkey/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (answerDatabaseProjectType(req, res)) return;
+    assert.equal(req.url, '/v1/managed-services/proj_valkey/status');
+    jsonResponse(res, 200, { status: 'success', data: { status: 'running', profile: 'queue', version: '9.1.1', persistence: true, instances: 3 } });
+  }, async ({ apiBase, configDir: serverConfigDir }) => {
+    const result = await runCli(['valkey', 'status', '--project', 'proj_valkey'], { apiBase, configDir: serverConfigDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stderr, /Use "zenifra database"/);
+    assert.match(result.stdout, /Queue/);
+  });
+});
+
+test('projects accepts key-value, cache and queue as filters', async () => {
+  const urls = [];
+  await withCliServer(async (req, res) => {
+    urls.push(req.url);
+    jsonResponse(res, 200, { status: 'success', data: { projects: [], pagination: { page: 1, pages: 1, total: 0 } } });
+  }, async ({ apiBase, configDir }) => {
+    for (const type of ['key-value', 'cache', 'queue', 'valkey']) {
+      const result = await runCli(['projects', '--type', type], { apiBase, configDir });
+      assert.equal(result.code, 0, result.stderr);
+    }
+    assert.deepEqual(urls, [
+      '/v1/project?type=valkey&profile=key_value&page=1&limit=15',
+      '/v1/project?type=valkey&profile=cache&page=1&limit=15',
+      '/v1/project?type=valkey&profile=queue&page=1&limit=15',
+      '/v1/project?type=valkey&page=1&limit=15',
+    ]);
   });
 });

@@ -4,8 +4,8 @@ import test from 'node:test';
 
 import {
   normalizeCustomDomains,
-  validateValkeyConnection,
-  writeValkeyConnectionFile,
+  validateConnection,
+  writeConnectionFile,
 } from '../bin/lib/public-ux.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,19 +19,19 @@ test('normalizes custom domains and rejects duplicates with the primary domain',
   assert.throws(() => normalizeCustomDomains(['a.example.test', 'A.EXAMPLE.TEST.']), /duplicate/i);
 });
 
-test('preserves the backend Valkey connection exactly and rejects masked credentials', () => {
-  assert.equal(validateValkeyConnection('valkeys://default:secret@example.test:30000/0'), 'valkeys://default:secret@example.test:30000/0');
-  assert.equal(validateValkeyConnection('rediss://default:secret@example.test:30000/0'), 'rediss://default:secret@example.test:30000/0');
-  assert.equal(validateValkeyConnection('valkeys://default:secret@example.test:30000/0  '), 'valkeys://default:secret@example.test:30000/0  ');
-  assert.throws(() => validateValkeyConnection('valkeys://default:********@example.test:30000/0'), /masked/i);
+test('preserves the backend database connection exactly and rejects masked credentials', () => {
+  assert.equal(validateConnection('valkeys://default:secret@example.test:30000/0'), 'valkeys://default:secret@example.test:30000/0');
+  assert.equal(validateConnection('rediss://default:secret@example.test:30000/0'), 'rediss://default:secret@example.test:30000/0');
+  assert.equal(validateConnection('valkeys://default:secret@example.test:30000/0  '), 'valkeys://default:secret@example.test:30000/0  ');
+  assert.throws(() => validateConnection('valkeys://default:********@example.test:30000/0'), /masked/i);
 });
 
-test('writes the exact backend Valkey connection with private permissions', async () => {
+test('writes the exact backend database connection with private permissions', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zenifra-public-ux-'));
   const path = join(directory, 'connection.txt');
   try {
     const connection = 'valkeys://default:file-secret@example.test:30000/0  ';
-    await writeValkeyConnectionFile(path, connection);
+    await writeConnectionFile(path, connection);
     assert.equal(await readFile(path, 'utf8'), connection);
     assert.equal((await stat(path)).mode & 0o777, 0o600);
   } finally {
