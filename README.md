@@ -82,6 +82,16 @@ zenifra valkey status --project <project-id>
 zenifra valkey connection --project <project-id>
 zenifra valkey credentials rotate --project <project-id> --wait
 zenifra valkey credentials status --project <project-id> --operation <operation-id>
+zenifra storage status
+zenifra storage create
+zenifra storage buckets
+zenifra storage buckets create --bucket fotos
+zenifra storage files --bucket fotos --prefix 2026/
+zenifra storage files upload --bucket fotos --file ./logo.png
+zenifra storage files download --bucket fotos --key logo.png
+zenifra storage files share --bucket fotos --key logo.png
+zenifra storage keys create --name deploy --buckets fotos --access read_write
+zenifra storage usage
 zenifra project url --project <project-id>
 zenifra project logs --project <project-id> --instance <instance-id>
 zenifra project runs --project <project-id> --page 1 --limit 20
@@ -116,6 +126,39 @@ zenifra deployments --project <project-id>
 zenifra deploy --project <project-id> --branch main
 zenifra deploy watch --project <project-id> --build <build-id>
 ```
+
+## Armazem (armazenamento de objetos)
+
+O Armazem e o armazenamento de objetos compativel com S3 da Zenifra (endpoint `https://armazem.zenifra.com`, regiao `br-sp1`). Cada organizacao tem um Armazem, com buckets, arquivos e chaves de acesso. O grupo `zenifra storage` tem o alias `zenifra armazem`.
+
+O Armazem esta em beta para organizacoes convidadas. Se `zenifra storage status` disser que ele ainda nao esta disponivel, peca para participar pelo console, na pagina Armazem.
+
+```bash
+zenifra storage status
+zenifra storage create
+zenifra storage buckets
+zenifra storage buckets create --bucket fotos
+zenifra storage buckets delete --bucket fotos --yes
+zenifra storage files --bucket fotos --prefix 2026/
+zenifra storage files --bucket fotos --prefix 2026/ --continuation-token <token>
+zenifra storage files upload --bucket fotos --file ./logo.png --key 2026/
+zenifra storage files download --bucket fotos --key 2026/logo.png --output ./logo.png
+zenifra storage files info --bucket fotos --key 2026/logo.png
+zenifra storage files share --bucket fotos --key 2026/logo.png
+zenifra storage files delete --bucket fotos --key 2026/logo.png --yes
+zenifra storage keys
+zenifra storage keys create --name deploy --buckets fotos --access read_write --allowed-ips 203.0.113.7
+zenifra storage keys revoke --access-key <access-key-id> --yes
+zenifra storage usage
+zenifra storage usage --month 2026-09
+```
+
+- Envio e download vao direto para o Armazem por links assinados, em streaming, sem passar pela API e sem carregar o arquivo inteiro na memoria. Cada arquivo pode ter ate 20 GiB.
+- `files` lista um nivel de pasta por vez; use `--prefix pasta/` para entrar em uma pasta e o `--continuation-token` mostrado para a proxima pagina.
+- `files share` gera um link de download valido por 7 dias. Qualquer pessoa com o link consegue baixar o arquivo.
+- `buckets delete` remove somente bucket vazio. Um bucket com arquivos so pode ser removido pelo console, com codigo de verificacao.
+- `keys create` mostra o segredo da chave uma unica vez. O CLI nao grava o segredo em arquivo nem em log: guarde-o em um cofre de segredos. `--access` aceita `read`, `read_write` ou `full`; sem `--buckets`, a chave vale para todos os buckets.
+- `usage` mostra o consumo do mes atual ou de um dos 12 meses anteriores, em reais; no `--json`, os valores vem em centavos.
 
 ## Metricas de projetos Valkey
 
