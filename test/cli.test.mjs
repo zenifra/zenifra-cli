@@ -3822,7 +3822,7 @@ test('create project launches the wizard for an http OCI project', async () => {
     assert.equal(body.config.subdomain, undefined);
     assert.match(result.stdout, /Wizard interativo/);
     assert.match(result.stdout, /\[1\/\d+\] Nome do projeto\*/);
-    assert.match(result.stdout, /\[3\/\d+\] Tipo do projeto\* \[1=http 2=postgresql 3=mariadb 4=valkey\]/);
+    assert.match(result.stdout, /\[3\/\d+\] Tipo do projeto\* \[1=http 2=postgresql 3=mariadb 4=key-value 5=cache 6=queue\]/);
     assert.doesNotMatch(result.stdout, /^Obrigatorio:/m);
     assert.doesNotMatch(result.stdout, /custom domains/i);
     assert.doesNotMatch(result.stdout, /Subdomain personalizado/i);
@@ -4531,33 +4531,33 @@ test('auth api-key stores the local profile store with owner-only permissions', 
 test('create project wizard supports Key Value, Cache and Queue without invalid storage fields', async () => {
   const cases = [
     {
-      name: 'valkey-key-value',
+      name: 'key-value',
       expected: {
         type_project: 'valkey',
         profile: 'key_value',
         version: '9.1.1',
         storage: { persistent: true, capacity: 1 },
       },
-      stdin: ['valkey-key-value', '', '4', '1', '1', '1', '1', 'n', 's'],
+      stdin: ['key-value', '', '4', '1', '1', '1', 'n', 's'],
     },
     {
-      name: 'valkey-cache',
+      name: 'cache',
       expected: {
         type_project: 'valkey',
         profile: 'cache',
         version: '9.1.1',
       },
-      stdin: ['valkey-cache', '', '4', '2', '1', '1', 'n', 's'],
+      stdin: ['cache', '', '5', '1', '1', 'n', 's'],
     },
     {
-      name: 'valkey-queue',
+      name: 'queue',
       expected: {
         type_project: 'valkey',
         profile: 'queue',
         version: '9.1.1',
         storage: { persistent: true, capacity: 1 },
       },
-      stdin: ['valkey-queue', '', '4', '3', '1', '1', '1', 'n', 's'],
+      stdin: ['queue', '', '6', '1', '1', '1', 'n', 's'],
     },
   ];
 
@@ -4577,8 +4577,9 @@ test('create project wizard supports Key Value, Cache and Queue without invalid 
 
       assert.equal(result.code, 0, `${item.name}\n${result.stdout}\n${result.stderr}`);
       assert.deepEqual(body.config, item.expected);
-      assert.match(result.stdout, /Valkey|Key Value|Cache|Queue/);
-      if (item.name === 'valkey-cache') assert.doesNotMatch(result.stdout, /Capacidade de storage/i);
+      assert.match(result.stdout, /Key Value|Cache|Queue/);
+      assert.doesNotMatch(result.stdout, /valkey/i);
+      if (item.name === 'cache') assert.doesNotMatch(result.stdout, /Capacidade de storage/i);
     });
   }
 });
@@ -6575,7 +6576,7 @@ test('database credentials rotate renews a PostgreSQL password synchronously wit
         return;
       }
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-      res.end(JSON.stringify({ status: 'success', data: { password: 'n3w/p@ss', linked_applications: [{ id: 'app_1', name: 'api-web' }] } }));
+      res.end(JSON.stringify({ status: 'success', data: { password: 'n3w/p@ss', linked_applications: [{ project_id: 'app_1', variable_names: ['DATABASE_URL', 'DB_PASSWORD'], via: ['connection'] }] } }));
       return;
     }
     if (req.method === 'GET' && req.url === '/v1/project/proj_pg/database/connection') {
@@ -6588,12 +6589,13 @@ test('database credentials rotate renews a PostgreSQL password synchronously wit
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /Guarde a nova senha agora: ela nao sera exibida novamente/);
     assert.match(result.stdout, /Senha: n3w\/p@ss/);
-    assert.match(result.stdout, /aplicacoes conectadas: api-web/);
+    assert.match(result.stdout, /Atualize a nova senha nas aplicacoes conectadas/);
+    assert.match(result.stdout, /app_1\s+DATABASE_URL, DB_PASSWORD/);
 
     const connectionFile = join(configDir, 'db.env');
     result = await runCli(['database', 'credentials', 'rotate', '--project', 'proj_pg', '--connection-file', connectionFile, '--json'], { apiBase, configDir });
     assert.equal(result.code, 0, result.stderr);
-    assert.deepEqual(JSON.parse(result.stdout), { project_id: 'proj_pg', connection_saved: true, connection_file: connectionFile, linked_applications: [{ id: 'app_1', name: 'api-web' }] });
+    assert.deepEqual(JSON.parse(result.stdout), { project_id: 'proj_pg', connection_saved: true, connection_file: connectionFile, linked_applications: [{ project_id: 'app_1', variable_names: ['DATABASE_URL', 'DB_PASSWORD'], via: ['connection'] }] });
     assert.doesNotMatch(result.stdout, /n3w/);
     assert.equal(await readFile(connectionFile, 'utf8'), 'postgresql://app:n3w%2Fp%40ss@db.example.test:5432/app');
     assert.equal((await stat(connectionFile)).mode & 0o777, 0o600);

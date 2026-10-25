@@ -20,7 +20,7 @@ const DOCS_RUNTIME_URL = `${DOCS_BASE_URL}/docs/runtime`;
 const DOCS_CREATE_HTTP_URL = `${DOCS_BASE_URL}/docs/how-use-zenifra/http/how-to-create-a-http-project-at-zenifra-via-console`;
 const DOCS_CREATE_POSTGRESQL_URL = `${DOCS_BASE_URL}/docs/how-use-zenifra/database/how-to-create-a-postgresql-project-at-zenifra-via-console`;
 const DOCS_CREATE_MARIADB_URL = `${DOCS_BASE_URL}/docs/how-use-zenifra/database/how-to-create-a-mariadb-project-at-zenifra-via-console`;
-const DOCS_CREATE_VALKEY_URL = `${DOCS_BASE_URL}/docs/managed-services/valkey`;
+const DOCS_CREATE_MANAGED_DATABASE_URL = `${DOCS_BASE_URL}/docs/managed-services/valkey`;
 const DOCS_CONFIGURATION_URL = `${DOCS_BASE_URL}/docs/configuration`;
 const DOCS_DATABASE_CONFIGURATION_URL = `${DOCS_BASE_URL}/docs/database/configuration/configuration`;
 const DOCS_PAYMENTS_URL = `${DOCS_BASE_URL}/docs/payments/payments`;
@@ -191,8 +191,8 @@ const WIZARD_DATABASE_PLAN_OPTIONS = [
 ];
 const WIZARD_PAYMENT_MODE_OPTIONS = ['hourly', 'monthly', 'yearly'];
 const WIZARD_JOB_PLAN_OPTIONS = [...WIZARD_HTTP_PLAN_OPTIONS.filter((plan) => plan !== 'free').map((plan) => `job-${plan}`), 'job-starter'];
-const WIZARD_TYPE_PROJECT_OPTIONS = ['http', 'postgresql', 'mariadb', 'valkey'];
-const WIZARD_VALKEY_PROFILE_OPTIONS = ['key_value', 'cache', 'queue'];
+const WIZARD_TYPE_PROJECT_OPTIONS = ['http', 'postgresql', 'mariadb', 'key-value', 'cache', 'queue'];
+const WIZARD_MANAGED_DATABASE_PROFILES = { 'key-value': 'key_value', cache: 'cache', queue: 'queue' };
 const WIZARD_HTTP_EXPOSURE_OPTIONS = ['public', 'private'];
 let promptInterface;
 let pipedInputPromise;
@@ -1678,7 +1678,7 @@ function estimateWizardTotal(state = {}) {
   }
 
   if (typeProject === 'valkey') {
-    total += 3;
+    total += 2;
     return total;
   }
 
@@ -1720,14 +1720,14 @@ function printWizardFieldHelp({ label, required = false, examples = [], docs, al
   if (docs) process.stdout.write(`  docs: ${docs}\n`);
 }
 
-function buildWizardPromptLine({ ui, label, required = false, examples = [], options = [], kind = 'text', fixedValue = null }) {
+function buildWizardPromptLine({ ui, label, required = false, examples = [], options = [], kind = 'text', fixedValue = null, inlineLimit }) {
   const step = nextWizardStep(ui);
   const stepText = toneDim(`[${step}/${ui.total}]`);
   const requiredText = required ? tone('*', 'yellow') : '';
   let suffix = '';
 
   if (kind === 'boolean') suffix = toneDim('[s/n]');
-  else if (kind === 'select') suffix = toneDim(`[${formatInlineOptions(options)}]`);
+  else if (kind === 'select') suffix = toneDim(`[${formatInlineOptions(options, inlineLimit)}]`);
   else if (fixedValue !== null) suffix = toneDim(`[fixo=${fixedValue}]`);
   else if (examples.length) suffix = toneDim(`(ex: ${examples[0]})`);
 
@@ -1839,7 +1839,7 @@ async function promptWizardBoolean({ label, docs, examples = ['sim', 'nao'] }) {
   }
 }
 
-async function promptWizardSelect({ label, options, docs, examples = [], extraValues = [] }) {
+async function promptWizardSelect({ label, options, docs, examples = [], extraValues = [], inlineLimit }) {
   while (true) {
     const allowedValues = [...options.map((option) => option.value), ...extraValues];
     const answer = await prompt(buildWizardPromptLine({
@@ -1849,6 +1849,7 @@ async function promptWizardSelect({ label, options, docs, examples = [], extraVa
       examples,
       kind: 'select',
       options,
+      inlineLimit,
     }));
     if (isHelpRequest(answer)) {
       printWizardFieldHelp({ label, required: true, examples, docs, allowedValues, options });
@@ -2549,7 +2550,7 @@ function formatPercent(value) {
   return `${Number((Number(value) * 100).toFixed(2))}%`;
 }
 
-function valkeyMetricRows(metrics) {
+function managedDatabaseMetricRows(metrics) {
   const native = metrics?.valkey;
   const rows = [
     { field: 'Instancia', value: metrics?.instance || '-' },
@@ -2618,8 +2619,8 @@ function valkeyMetricRows(metrics) {
   return rows;
 }
 
-function printValkeyMetrics(metrics) {
-  printTable(valkeyMetricRows(metrics), [
+function printManagedDatabaseMetrics(metrics) {
+  printTable(managedDatabaseMetricRows(metrics), [
     { label: 'Campo', value: (row) => row.field },
     { label: 'Valor', value: (row) => row.value },
   ]);
@@ -2778,7 +2779,7 @@ function publicProjectsData(data) {
 
 function printProject(project) {
   const managedService = project.managed_service;
-  const isValkey = project.type_project === 'valkey' || managedService?.engine === 'valkey';
+  const isManagedDatabase = project.type_project === 'valkey' || managedService?.engine === 'valkey';
   const isJob = isJobProject(project);
   const rows = [
     { label: 'ID', value: projectIdOf(project) || '-' },
@@ -2794,7 +2795,7 @@ function printProject(project) {
       { label: 'Agendamento', value: schedule.cron || '-' },
       { label: 'Armazenamento', value: project.storage?.persistent === true || project.config?.storage?.persistent === true ? 'persistente' : 'efemero' },
     );
-  } else if (isValkey) {
+  } else if (isManagedDatabase) {
     rows.push(
       { label: 'Perfil', value: managedService?.profile || '-' },
       { label: 'Versao', value: managedService?.version || '-' },
@@ -3254,7 +3255,7 @@ async function handleOrgSet(session, flags) {
 
 async function handleProjects(session, flags) {
   const orgId = await resolveOrgId(session, flags);
-  const profile = flags.type === true || flags.type === undefined ? undefined : normalizeValkeyProfile(flags.type);
+  const profile = flags.type === true || flags.type === undefined ? undefined : normalizeManagedDatabaseProfile(flags.type);
   const managedProfile = Object.hasOwn(MANAGED_PROFILE_LABELS, profile);
   const projectFlags = {
     type: managedProfile ? 'valkey' : flags.type,
@@ -3404,7 +3405,7 @@ function normalizeTypeProject(value) {
   return aliases.get(raw) || raw;
 }
 
-function normalizeValkeyProfile(value) {
+function normalizeManagedDatabaseProfile(value) {
   const raw = normalizeFreeText(value);
   const aliases = new Map([
     ['key_value', 'key_value'],
@@ -3532,9 +3533,9 @@ function normalizePlansCatalogType(value) {
   if (['database', 'db', 'postgresql', 'mariadb'].includes(normalized)) return 'database';
   if (normalized === 'valkey') return 'valkey';
   if (normalized === 'job' || normalized === 'jobs' || normalized === 'scheduled job' || normalized === 'scheduled jobs') return 'job';
-  if (normalized === 'key-value' || normalized === 'key value' || normalized === 'key_value') return 'valkey-key_value';
-  if (normalized === 'cache') return 'valkey-cache';
-  if (normalized === 'queue') return 'valkey-queue';
+  if (normalized === 'key-value' || normalized === 'key value' || normalized === 'key_value') return 'profile-key_value';
+  if (normalized === 'cache') return 'profile-cache';
+  if (normalized === 'queue') return 'profile-queue';
   if (normalized === 'storage') return 'storage';
   return null;
 }
@@ -3590,7 +3591,7 @@ const MANAGED_PROFILE_LABELS = {
   queue: 'Queue',
 };
 
-function requireValkeyCatalog(value) {
+function requireManagedDatabaseCatalog(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || value.engine !== 'valkey'
     || typeof value.version !== 'string'
@@ -3613,12 +3614,12 @@ function requireValkeyCatalog(value) {
   return value;
 }
 
-function valkeyProfileFilter(type) {
-  if (!type.startsWith('valkey-')) return null;
-  return type.slice('valkey-'.length);
+function managedDatabaseProfileFilter(type) {
+  if (!type.startsWith('profile-')) return null;
+  return type.slice('profile-'.length);
 }
 
-function filterValkeyCatalog(catalog, profile) {
+function filterManagedDatabaseCatalog(catalog, profile) {
   if (!profile) return catalog;
   return {
     ...catalog,
@@ -3672,19 +3673,19 @@ async function fetchPlansCatalogs(session, flags, type) {
     };
   }
 
-  if (type === 'valkey' || type.startsWith('valkey-')) {
-    const catalog = requireValkeyCatalog(
+  if (type === 'valkey' || type.startsWith('profile-')) {
+    const catalog = requireManagedDatabaseCatalog(
       unwrapData(await request(session, flags, 'GET', '/managed-services/catalog', { tokenRequired: false })),
     );
     return {
       http: [],
       database: [],
       storage: [],
-      valkey: filterValkeyCatalog(catalog, valkeyProfileFilter(type)),
+      valkey: filterManagedDatabaseCatalog(catalog, managedDatabaseProfileFilter(type)),
     };
   }
 
-  const [httpPayload, databasePayload, storagePayload, jobPayload, valkeyPayload] = await Promise.all([
+  const [httpPayload, databasePayload, storagePayload, jobPayload, managedDatabasePayload] = await Promise.all([
     request(session, flags, 'GET', '/project/plans', { tokenRequired: false }),
     request(session, flags, 'GET', '/project/database/plans', { tokenRequired: false }),
     request(session, flags, 'GET', '/project/storage/plans', { tokenRequired: false }),
@@ -3697,11 +3698,11 @@ async function fetchPlansCatalogs(session, flags, type) {
     database: requireWizardCatalogArray(unwrapData(databasePayload), 'os planos de banco'),
     storage: requireWizardCatalogArray(unwrapData(storagePayload), 'os planos de storage'),
     job: requireJobPlans(unwrapData(jobPayload)),
-    valkey: requireValkeyCatalog(unwrapData(valkeyPayload)),
+    valkey: requireManagedDatabaseCatalog(unwrapData(managedDatabasePayload)),
   };
 }
 
-function printValkeyCatalog(catalog, profileFilter) {
+function printManagedDatabaseCatalog(catalog, profileFilter) {
   const profiles = profileFilter ? [profileFilter] : Object.keys(MANAGED_PROFILE_LABELS);
   profiles.forEach((profile, index) => {
     if (index > 0) process.stdout.write('\n');
@@ -3791,9 +3792,9 @@ function printPlansCatalogs(payload, type) {
     return;
   }
 
-  if (type === 'all' || type === 'valkey' || type.startsWith('valkey-')) {
+  if (type === 'all' || type === 'valkey' || type.startsWith('profile-')) {
     if (type === 'all') process.stdout.write('\n');
-    printValkeyCatalog(payload.valkey, valkeyProfileFilter(type));
+    printManagedDatabaseCatalog(payload.valkey, managedDatabaseProfileFilter(type));
   }
 }
 
@@ -3927,21 +3928,21 @@ function validateCreateAutoscaling(config, plan, typeProject) {
   return { ...config, autoscaling: nextAutoscaling };
 }
 
-function validateValkeyConfig(config, plan, catalog) {
-  const valkeyCatalog = requireValkeyCatalog(catalog);
-  const profile = normalizeValkeyProfile(config?.profile);
-  const profileDefinition = valkeyCatalog.profiles.find((entry) => entry.id === profile);
+function validateManagedDatabaseConfig(config, plan, catalog) {
+  const managedDatabaseCatalog = requireManagedDatabaseCatalog(catalog);
+  const profile = normalizeManagedDatabaseProfile(config?.profile);
+  const profileDefinition = managedDatabaseCatalog.profiles.find((entry) => entry.id === profile);
   if (!profileDefinition) {
     throw new CliError('config.profile invalido. Use key_value, cache ou queue.');
   }
 
-  const planDefinition = valkeyCatalog.plans.find((entry) => entry.id === plan && entry.profile === profile);
+  const planDefinition = managedDatabaseCatalog.plans.find((entry) => entry.id === plan && entry.profile === profile);
   if (!planDefinition) {
     throw new CliError(`Plano ${plan} nao pode ser usado com o perfil ${profile}. Consulte "zenifra plans --type key-value", "--type cache" ou "--type queue".`);
   }
 
-  if (config.version !== valkeyCatalog.version) {
-    throw new CliError(`config.version invalida: use ${valkeyCatalog.version}, conforme o catalogo de Key Value, Cache e Queue.`);
+  if (config.version !== managedDatabaseCatalog.version) {
+    throw new CliError(`config.version invalida: use ${managedDatabaseCatalog.version}, conforme o catalogo de Key Value, Cache e Queue.`);
   }
 
   const forbiddenFields = ['instances', 'envs', 'image', 'github', 'port', 'exposure', 'autoscaling'];
@@ -3966,7 +3967,7 @@ function validateValkeyConfig(config, plan, catalog) {
     ...config,
     type_project: 'valkey',
     profile,
-    version: valkeyCatalog.version,
+    version: managedDatabaseCatalog.version,
   };
 }
 
@@ -4021,7 +4022,7 @@ function validateGithubVersionDeployConfig(github) {
   }
 }
 
-function validateCreateInput({ plan, paymentMode, config, valkeyCatalog }) {
+function validateCreateInput({ plan, paymentMode, config, managedDatabaseCatalog }) {
   const nextTypeProject = normalizeTypeProject(config?.type_project);
   const nextPlan = normalizePlan(plan);
   const nextPaymentMode = normalizePaymentMode(paymentMode);
@@ -4062,7 +4063,7 @@ function validateCreateInput({ plan, paymentMode, config, valkeyCatalog }) {
     return {
       plan: nextPlan,
       paymentMode: nextPaymentMode,
-      config: validateValkeyConfig(nextConfig, nextPlan, valkeyCatalog),
+      config: validateManagedDatabaseConfig(nextConfig, nextPlan, managedDatabaseCatalog),
     };
   }
 
@@ -4115,7 +4116,7 @@ function printWizardSummary(payload) {
     '',
     tone('Resumo da criacao', 'green'),
     projectSummary,
-    `  tipo: ${masked.config.type_project}`,
+    `  tipo: ${masked.config.type_project === 'valkey' ? MANAGED_PROFILE_LABELS[masked.config.profile] || masked.config.profile : masked.config.type_project}`,
   ];
 
   if (masked.description) lines.push(`  descricao: ${masked.description}`);
@@ -4143,7 +4144,7 @@ function printWizardSummary(payload) {
   }
 
   if (masked.config.type_project === 'valkey') {
-    lines.push(`  Banco: perfil ${masked.config.profile} | versao ${masked.config.version}${masked.config.storage ? ` | storage ${masked.config.storage.capacity}Gi persistente` : ' | sem storage persistente'}`);
+    lines.push(`  Banco: ${MANAGED_PROFILE_LABELS[masked.config.profile] || masked.config.profile} | versao ${masked.config.version}${masked.config.storage ? ` | storage ${masked.config.storage.capacity}Gi persistente` : ' | sem storage persistente'}`);
   }
 
   process.stdout.write(`${lines.join('\n')}\n`);
@@ -4572,7 +4573,7 @@ async function buildMariadbConfig() {
   };
 }
 
-async function buildValkeyConfig({ profile, plan, catalog }) {
+async function buildManagedDatabaseConfig({ profile, plan, catalog }) {
   const planDefinition = catalog.plans.find((entry) => entry.id === plan && entry.profile === profile);
   const profileDefinition = catalog.profiles.find((entry) => entry.id === profile);
   if (!planDefinition || !profileDefinition) {
@@ -4585,7 +4586,7 @@ async function buildValkeyConfig({ profile, plan, catalog }) {
       persistent: true,
       capacity: await promptWizardNumber({
         label: `Capacidade de armazenamento persistente (Gi, inclui ${planDefinition.included_storage_gb ?? 0} Gi)`,
-        docs: DOCS_CREATE_VALKEY_URL,
+        docs: DOCS_CREATE_MANAGED_DATABASE_URL,
         examples: [String(Math.max(1, planDefinition.included_storage_gb ?? 1)), '10', '20'],
         min: 1,
         max: 250,
@@ -4595,12 +4596,12 @@ async function buildValkeyConfig({ profile, plan, catalog }) {
 
   const whitelist = await promptWizardPairs({
     introLabel: 'Deseja configurar acesso de rede para este projeto?',
-    docs: DOCS_CREATE_VALKEY_URL,
+    docs: DOCS_CREATE_MANAGED_DATABASE_URL,
     examples: ['sim', 'nao'],
-    stateKey: 'valkeyNetworkAccess',
+    stateKey: 'managedDatabaseNetworkAccess',
     itemLabels: [
-      { key: 'cidr', label: 'CIDR permitido', required: true, examples: ['203.0.113.0/24'], docs: DOCS_CREATE_VALKEY_URL },
-      { key: 'description', label: 'Descricao do acesso', required: true, examples: ['Aplicacao'], docs: DOCS_CREATE_VALKEY_URL },
+      { key: 'cidr', label: 'CIDR permitido', required: true, examples: ['203.0.113.0/24'], docs: DOCS_CREATE_MANAGED_DATABASE_URL },
+      { key: 'description', label: 'Descricao do acesso', required: true, examples: ['Aplicacao'], docs: DOCS_CREATE_MANAGED_DATABASE_URL },
     ],
   });
 
@@ -4608,11 +4609,11 @@ async function buildValkeyConfig({ profile, plan, catalog }) {
   if (whitelist.length > 0) {
     blacklist = await promptWizardPairs({
       introLabel: 'Deseja adicionar bloqueios de rede?',
-      docs: DOCS_CREATE_VALKEY_URL,
+      docs: DOCS_CREATE_MANAGED_DATABASE_URL,
       examples: ['sim', 'nao'],
       itemLabels: [
-        { key: 'cidr', label: 'CIDR bloqueado', required: true, examples: ['198.51.100.0/24'], docs: DOCS_CREATE_VALKEY_URL },
-        { key: 'description', label: 'Descricao do bloqueio', required: true, examples: ['Bloqueio'], docs: DOCS_CREATE_VALKEY_URL },
+        { key: 'cidr', label: 'CIDR bloqueado', required: true, examples: ['198.51.100.0/24'], docs: DOCS_CREATE_MANAGED_DATABASE_URL },
+        { key: 'description', label: 'Descricao do bloqueio', required: true, examples: ['Bloqueio'], docs: DOCS_CREATE_MANAGED_DATABASE_URL },
       ],
     });
   }
@@ -4715,35 +4716,29 @@ async function runProjectCreateWizard(session, flags) {
     examples: ['API publica da empresa'],
     docs: DOCS_CONFIGURATION_URL,
   });
-  const typeProject = await promptWizardSelect({
+  const selectedType = await promptWizardSelect({
     label: 'Tipo do projeto',
     docs: DOCS_CONFIGURATION_URL,
     examples: WIZARD_TYPE_PROJECT_OPTIONS,
     options: WIZARD_TYPE_PROJECT_OPTIONS.map((value) => ({ value })),
     extraValues: ['job'],
+    inlineLimit: WIZARD_TYPE_PROJECT_OPTIONS.length,
   });
+  const profile = WIZARD_MANAGED_DATABASE_PROFILES[selectedType];
+  const typeProject = profile ? 'valkey' : selectedType;
   ui.state.typeProject = typeProject;
-  const valkeyCatalog = typeProject === 'valkey'
-    ? requireValkeyCatalog(unwrapData(await request(session, flags, 'GET', '/managed-services/catalog')))
+  const managedDatabaseCatalog = typeProject === 'valkey'
+    ? requireManagedDatabaseCatalog(unwrapData(await request(session, flags, 'GET', '/managed-services/catalog')))
     : undefined;
   const jobPlans = typeProject === 'job'
     ? requireJobPlans(unwrapData(await request(session, flags, 'GET', '/project/job/plans')))
     : undefined;
-  const profile = typeProject === 'valkey'
-    ? await promptWizardSelect({
-      label: 'Perfil do banco (Key Value, Cache ou Queue)',
-      docs: DOCS_CREATE_VALKEY_URL,
-      examples: WIZARD_VALKEY_PROFILE_OPTIONS,
-      options: WIZARD_VALKEY_PROFILE_OPTIONS.map((value) => ({ value })),
-    })
-    : undefined;
-  ui.state.valkeyProfile = profile;
   const planOptions = typeProject === 'http'
     ? sortWizardOptions(catalogs.httpPlans
       .map((plan) => plan?.plan)
       .filter((plan) => WIZARD_HTTP_PLAN_OPTIONS.includes(plan) && Number(catalogs.availableInstances?.[plan] || 0) > 0), WIZARD_HTTP_PLAN_OPTIONS)
     : typeProject === 'valkey'
-      ? valkeyCatalog.plans
+      ? managedDatabaseCatalog.plans
         .filter((planDefinition) => planDefinition.profile === profile)
         .map((planDefinition) => planDefinition.id)
       : typeProject === 'job'
@@ -4755,7 +4750,7 @@ async function runProjectCreateWizard(session, flags) {
     label: 'Plano',
     docs: typeProject === 'http'
       ? DOCS_CREATE_HTTP_URL
-      : typeProject === 'valkey' ? DOCS_CREATE_VALKEY_URL
+      : typeProject === 'valkey' ? DOCS_CREATE_MANAGED_DATABASE_URL
         : typeProject === 'job' ? DOCS_CONFIGURATION_URL : DOCS_DATABASE_CONFIGURATION_URL,
     examples: [planOptions[0], planOptions.at(-1)],
     options: planOptions.map((value) => ({ value })),
@@ -4783,7 +4778,7 @@ async function runProjectCreateWizard(session, flags) {
   } else if (typeProject === 'postgresql') {
     config = await buildPostgresqlConfig({ plan, databasePlans: catalogs.databasePlans });
   } else if (typeProject === 'valkey') {
-    config = await buildValkeyConfig({ profile, plan, catalog: valkeyCatalog });
+    config = await buildManagedDatabaseConfig({ profile, plan, catalog: managedDatabaseCatalog });
   } else if (typeProject === 'job') {
     config = await buildJobConfig();
   } else {
@@ -4803,7 +4798,7 @@ async function runProjectCreateWizard(session, flags) {
     label: 'Confirmar criacao do projeto',
     docs: typeProject === 'http'
       ? DOCS_CREATE_HTTP_URL
-      : typeProject === 'valkey' ? DOCS_CREATE_VALKEY_URL : DOCS_DATABASE_CONFIGURATION_URL,
+      : typeProject === 'valkey' ? DOCS_CREATE_MANAGED_DATABASE_URL : DOCS_DATABASE_CONFIGURATION_URL,
     examples: ['sim', 'nao'],
   });
   if (!confirmed) return null;
@@ -4831,10 +4826,10 @@ async function handleProjectCreate(session, flags) {
   const paymentMode = typeProject === 'job'
     ? flags.paymentMode || 'per_minute'
     : wizardPayload?.payment_mode || flags.paymentMode || await prompt('Modo de pagamento');
-  const valkeyCatalog = typeProject === 'valkey'
-    ? requireValkeyCatalog(unwrapData(await request(session, flags, 'GET', '/managed-services/catalog')))
+  const managedDatabaseCatalog = typeProject === 'valkey'
+    ? requireManagedDatabaseCatalog(unwrapData(await request(session, flags, 'GET', '/managed-services/catalog')))
     : undefined;
-  const validated = validateCreateInput({ plan, paymentMode, config, valkeyCatalog });
+  const validated = validateCreateInput({ plan, paymentMode, config, managedDatabaseCatalog });
 
   if (validated.config.source !== undefined || validated.config.build !== undefined) {
     if (!await supportsNeutralGitRoutes(session, flags, orgId)) {
@@ -4869,7 +4864,7 @@ async function handleProjectCreate(session, flags) {
   if (validated.config.type_project === 'valkey') {
     const service = project.managed_service || {};
     rows.push(
-      { field: 'Perfil', value: service.profile || validated.config.profile },
+      { field: 'Perfil', value: MANAGED_PROFILE_LABELS[service.profile || validated.config.profile] || service.profile || validated.config.profile },
       { field: 'Host', value: service.host || '-' },
       { field: 'Porta', value: service.port ?? '-' },
       { field: 'TLS', value: service.tls === true ? 'sim' : 'nao' },
@@ -5357,7 +5352,7 @@ async function handleProjectMetrics(session, flags) {
 
   if (flags.json) return printJson(metrics);
   if (metrics?.type === 'valkey') {
-    return printValkeyMetrics(metrics);
+    return printManagedDatabaseMetrics(metrics);
   }
   if (Array.isArray(metrics)) {
     return printTable(metrics, [
@@ -6064,13 +6059,20 @@ function connectionWithPassword(connectionString, password) {
   return match ? `${match[1]}${encodeURIComponent(password)}${match[2]}` : null;
 }
 
+function printLinkedApplications(linkedApplications) {
+  const linked = asArray(linkedApplications);
+  if (linked.length === 0) return;
+  process.stdout.write('Atualize a nova senha nas aplicacoes conectadas:\n');
+  printTable(linked, [
+    { label: 'Projeto', value: (app) => app.project_id || '-' },
+    { label: 'Variaveis', value: (app) => asArray(app.variable_names).join(', ') || '-' },
+  ]);
+}
+
 function printDatabasePassword(data) {
   process.stdout.write(`${tone('Credencial renovada. Guarde a nova senha agora: ela nao sera exibida novamente.', 'yellow')}\n`);
   process.stdout.write(`Senha: ${tone(data.password, 'bold')}\n`);
-  const linked = asArray(data.linked_applications);
-  if (linked.length > 0) {
-    process.stdout.write(`Atualize a senha nas aplicacoes conectadas: ${linked.map((app) => app.name || app.project_id || app.id).join(', ')}.\n`);
-  }
+  printLinkedApplications(data.linked_applications);
 }
 
 async function rotateDatabasePassword(session, flags, { projectId, orgId }) {
@@ -6089,6 +6091,7 @@ async function rotateDatabasePassword(session, flags, { projectId, orgId }) {
   await writeConnectionFile(String(flags.connectionFile), connectionString);
   if (flags.json) return printJson({ project_id: projectId, connection_saved: true, connection_file: String(flags.connectionFile), linked_applications: data.linked_applications ?? [] });
   process.stdout.write(`Credencial renovada e conexao salva em ${flags.connectionFile}.\n`);
+  printLinkedApplications(data.linked_applications);
 }
 
 async function handleDatabaseCredentialRotate(session, flags) {
