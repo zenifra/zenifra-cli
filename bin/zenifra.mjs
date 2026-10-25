@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 
 import { randomUUID } from 'node:crypto';
-import { readFile, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFile, rm, stat } from 'node:fs/promises';
+import { createReadStream, createWriteStream, existsSync } from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
+import { basename, join } from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { homedir } from 'node:os';
 import process from 'node:process';
 import readline from 'node:readline/promises';
 import { oauthLogin, openBrowser, validateOAuthProfile, refreshOAuth, revokeOAuth } from './lib/oauth.mjs';
 import { withProfileLock, atomicPrivateWrite } from './lib/profile-store.mjs';
-import { normalizeCustomDomains, writeValkeyConnectionFile } from './lib/public-ux.mjs';
+import { normalizeCustomDomains, writeConnectionFile } from './lib/public-ux.mjs';
 
 const DEFAULT_API_BASE_URL = 'https://api.zenifra.com/v1';
 const DOCS_BASE_URL = 'https://docs.zenifra.com/pt';
@@ -17,7 +20,7 @@ const DOCS_RUNTIME_URL = `${DOCS_BASE_URL}/docs/runtime`;
 const DOCS_CREATE_HTTP_URL = `${DOCS_BASE_URL}/docs/how-use-zenifra/http/how-to-create-a-http-project-at-zenifra-via-console`;
 const DOCS_CREATE_POSTGRESQL_URL = `${DOCS_BASE_URL}/docs/how-use-zenifra/database/how-to-create-a-postgresql-project-at-zenifra-via-console`;
 const DOCS_CREATE_MARIADB_URL = `${DOCS_BASE_URL}/docs/how-use-zenifra/database/how-to-create-a-mariadb-project-at-zenifra-via-console`;
-const DOCS_CREATE_VALKEY_URL = `${DOCS_BASE_URL}/docs/managed-services/valkey`;
+const DOCS_CREATE_MANAGED_DATABASE_URL = `${DOCS_BASE_URL}/docs/managed-services/valkey`;
 const DOCS_CONFIGURATION_URL = `${DOCS_BASE_URL}/docs/configuration`;
 const DOCS_DATABASE_CONFIGURATION_URL = `${DOCS_BASE_URL}/docs/database/configuration/configuration`;
 const DOCS_PAYMENTS_URL = `${DOCS_BASE_URL}/docs/payments/payments`;
@@ -32,6 +35,17 @@ const OCI_IMAGE_REFERENCE_MIN_LENGTH = 8;
 const OCI_IMAGE_REFERENCE_MAX_LENGTH = 256;
 const KNOWN_FLAG_NAMES = new Set([
   'apiBase',
+  'access',
+  'accessKey',
+  'allowedIps',
+  'bucket',
+  'buckets',
+  'contentType',
+  'continuationToken',
+  'file',
+  'month',
+  'output',
+  'prefix',
   'oauth',
   'readOnly',
   'noBrowser',
@@ -177,8 +191,8 @@ const WIZARD_DATABASE_PLAN_OPTIONS = [
 ];
 const WIZARD_PAYMENT_MODE_OPTIONS = ['hourly', 'monthly', 'yearly'];
 const WIZARD_JOB_PLAN_OPTIONS = [...WIZARD_HTTP_PLAN_OPTIONS.filter((plan) => plan !== 'free').map((plan) => `job-${plan}`), 'job-starter'];
-const WIZARD_TYPE_PROJECT_OPTIONS = ['http', 'postgresql', 'mariadb', 'valkey'];
-const WIZARD_VALKEY_PROFILE_OPTIONS = ['key_value', 'cache', 'queue'];
+const WIZARD_TYPE_PROJECT_OPTIONS = ['http', 'postgresql', 'mariadb', 'key-value', 'cache', 'queue'];
+const WIZARD_MANAGED_DATABASE_PROFILES = { 'key-value': 'key_value', cache: 'cache', queue: 'queue' };
 const WIZARD_HTTP_EXPOSURE_OPTIONS = ['public', 'private'];
 let promptInterface;
 let pipedInputPromise;
@@ -218,7 +232,7 @@ Usage:
   zenifra whoami [--json]
   zenifra orgs [--json]
   zenifra org set [--org <id>]
-  zenifra plans [--type <all|http|database|storage|valkey|job>] [--json]
+  zenifra plans [--type <all|http|database|analytics|jobs|queue|cache|storage>] [--json]
   zenifra git providers [--json]
   zenifra git runtimes [--json]
   zenifra git connections [--json]
@@ -226,11 +240,26 @@ Usage:
   zenifra git branches --connection <id> --repository <opaque-id> [--json]
   zenifra create project
   zenifra create project --name <name> --plan <plan> [--payment-mode <mode>] --config <json|@file> [--description <text>] [--org <id>] [--json]
-  zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|valkey|job>] [--page <n>] [--limit <n>]
-  zenifra valkey status --project <id> [--json]
-  zenifra valkey connection --project <id> [--json]
-  zenifra valkey credentials rotate --project <id> [--idempotency-key <key>] [--wait] [--interval <seconds>] [--timeout <seconds>] [--json]
-  zenifra valkey credentials status --project <id> --operation <id> [--json]
+  zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|clickhouse|key-value|cache|queue|job>] [--page <n>] [--limit <n>]
+  zenifra database status --project <id> [--json]
+  zenifra database connection --project <id> [--json]
+  zenifra database credentials rotate --project <id> [--wait] [--idempotency-key <key>] [--interval <seconds>] [--timeout <seconds>] [--connection-file <path>] [--json]
+  zenifra database credentials status --project <id> --operation <id> [--connection-file <path>] [--json]
+  zenifra storage status [--json]
+  zenifra storage create [--name <name>] [--json]
+  zenifra storage buckets [--json]
+  zenifra storage buckets create --bucket <name> [--json]
+  zenifra storage buckets delete --bucket <name> --yes [--json]
+  zenifra storage files --bucket <name> [--prefix <folder/>] [--continuation-token <token>] [--limit <n>] [--json]
+  zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--json]
+  zenifra storage files download --bucket <name> --key <key> [--output <path>] [--yes] [--json]
+  zenifra storage files delete --bucket <name> --key <key> --yes [--json]
+  zenifra storage files share --bucket <name> --key <key> [--json]
+  zenifra storage files info --bucket <name> --key <key> [--json]
+  zenifra storage keys [--json]
+  zenifra storage keys create --name <name> [--buckets <a,b|*>] [--access <read|read_write|full>] [--allowed-ips <ip,cidr>] [--json]
+  zenifra storage keys revoke --access-key <id> --yes [--json]
+  zenifra storage usage [--month <YYYY-MM>] [--json]
   zenifra project info --project <id> [--json]
   zenifra project stop --project <id> [--json]
   zenifra project resume --project <id> [--json]
@@ -275,6 +304,9 @@ Environment:
   ZENIFRA_API_URL     Override API base URL.
   ZENIFRA_CONFIG_DIR  Override local profile directory.
   ZENIFRA_API_KEY     Use a global organization API key for automation.
+
+Aliases:
+  zenifra armazem ...  Same as "zenifra storage ...".
 
 Run "zenifra help <command>" or "zenifra <command> --help" for command-specific usage, examples, and output.
 `;
@@ -422,10 +454,10 @@ const HELP_SPECS = [
   },
   {
     command: 'plans',
-    usage: 'zenifra plans [--type <all|http|database|storage|valkey|job>] [--json]',
-    description: 'Lista os catalogos publicos de preco de planos HTTP, banco, armazenamento, Valkey e Jobs agendados.',
-    flags: ['--type <type>  Filtra o catalogo: all, http, database, storage, valkey, job, key-value, cache ou queue.', '--json         Imprime a resposta em JSON.'],
-    examples: ['zenifra plans', 'zenifra plans --type http', 'zenifra plans --type valkey --json', 'zenifra plans --type job --json'],
+    usage: 'zenifra plans [--type <all|http|database|analytics|jobs|queue|cache|storage>] [--json]',
+    description: 'Lista os catalogos publicos de preco de planos HTTP, banco, armazenamento, Key Value, Cache, Queue e Jobs agendados.',
+    flags: ['--type <type>  Filtra o catalogo: all, http, database (PostgreSQL, MariaDB e Key Value), analytics, jobs, queue, cache ou storage.', '--json         Imprime a resposta em JSON.'],
+    examples: ['zenifra plans', 'zenifra plans --type http', 'zenifra plans --type database', 'zenifra plans --type analytics', 'zenifra plans --type jobs --json'],
     output: 'HTTP\nPlano  Hora     Mes      Ano      Recursos\nfree   R$ 0,00  R$ 0,00  R$ 0,00  1 GB Armazenamento Efemero',
     jsonOutput: '{"http":[{"plan":"free","prices":{"hourly":0,"monthly":0,"yearly":0},"features":["1 GB Armazenamento Efemero"]}],"database":[],"storage":[]}',
   },
@@ -492,57 +524,212 @@ const HELP_SPECS = [
     jsonOutput: '{"status":"success","data":[{"name":"main","commit_sha":"<commit-sha>"}]}',
   },
   {
-    command: 'valkey',
-    usage: 'zenifra valkey\n  zenifra valkey status --project <id> [--json]\n  zenifra valkey connection --project <id> [--json]\n  zenifra valkey credentials rotate --project <id> [--idempotency-key <key>] [--wait] [--interval <seconds>] [--timeout <seconds>] [--json]\n  zenifra valkey credentials status --project <id> --operation <id> [--json]',
-    description: 'Consulta projetos Valkey e gerencia suas conexoes e credenciais.',
-    examples: ['zenifra valkey status --project proj_1', 'zenifra valkey connection --project proj_1', 'zenifra valkey credentials rotate --project proj_1 --wait'],
-    output: 'Zenifra CLI - valkey',
-    notes: ['A string de conexao completa aparece somente quando uma criacao ou rotacao a disponibiliza.'],
+    command: 'database',
+    usage: 'zenifra database\n  zenifra database status --project <id> [--json]\n  zenifra database connection --project <id> [--json]\n  zenifra database credentials rotate --project <id> [--wait] [--idempotency-key <key>] [--interval <seconds>] [--timeout <seconds>] [--connection-file <path>] [--json]\n  zenifra database credentials status --project <id> --operation <id> [--connection-file <path>] [--json]',
+    description: 'Consulta bancos gerenciados (PostgreSQL, MariaDB, ClickHouse, Key Value, Cache e Queue) e gerencia suas conexoes e credenciais.',
+    examples: ['zenifra database status --project proj_1', 'zenifra database connection --project proj_1', 'zenifra database credentials rotate --project proj_1 --wait'],
+    output: 'Zenifra CLI - database',
+    notes: ['O comando identifica o tipo do banco pelo projeto. Projetos HTTP e Jobs nao sao bancos.', 'A credencial completa aparece somente na criacao ou em uma renovacao.'],
   },
   {
-    command: 'valkey status',
-    usage: 'zenifra valkey status --project <id> [--json]',
-    description: 'Mostra estado, perfil, versao e persistencia de um projeto Valkey.',
+    command: 'database status',
+    usage: 'zenifra database status --project <id> [--json]',
+    description: 'Mostra o estado do banco: status, plano, instancias e capacidade; para Key Value, Cache e Queue, tambem perfil, versao e persistencia.',
     flags: ['--project <id>  ID do projeto.', '--json          Imprime a resposta em JSON.'],
-    examples: ['zenifra valkey status --project proj_1'],
-    output: 'Status     Perfil  Versao  Persistente  Instancias\nrunning    cache   9.1.1   nao           1',
+    examples: ['zenifra database status --project proj_1'],
+    output: 'Campo       Valor\n----------  ----------\nTipo        PostgreSQL\nStatus      running\nPlano       db-basic\nInstancias  2 de 2 prontas',
   },
   {
-    command: 'valkey connection',
-    usage: 'zenifra valkey connection --project <id> [--json]',
-    description: 'Mostra os dados de conexao de um projeto Valkey sem revelar a credencial.',
+    command: 'database connection',
+    usage: 'zenifra database connection --project <id> [--json]',
+    description: 'Mostra os dados de conexao do banco sem revelar a credencial.',
     flags: ['--project <id>  ID do projeto.', '--json          Imprime a resposta em JSON.'],
-    examples: ['zenifra valkey connection --project proj_1'],
-    output: 'Host                 Porta  TLS  Conexao\nvalkey.example.com   6380   sim  valkeys://default:********@valkey.example.com:6380/0',
-    notes: ['Use a credencial recebida na criacao ou em uma rotacao concluida.'],
+    examples: ['zenifra database connection --project proj_1'],
+    output: 'Campo    Valor\n-------  ---------------------------------------------------\nHost     db.example.test\nPorta    5432\nUsuario  app\nConexao  postgresql://app:********@db.example.test:5432/app',
+    notes: ['Use a credencial recebida na criacao ou em uma renovacao concluida.'],
   },
   {
-    command: 'valkey credentials',
-    usage: 'zenifra valkey credentials\n  zenifra valkey credentials rotate --project <id> [--idempotency-key <key>] [--wait] [--interval <seconds>] [--timeout <seconds>] [--json]\n  zenifra valkey credentials status --project <id> --operation <id> [--json]',
-    description: 'Agrupa comandos de renovacao e acompanhamento de credenciais Valkey.',
-    examples: ['zenifra valkey credentials rotate --project proj_1', 'zenifra valkey credentials status --project proj_1 --operation operation_1'],
-    output: 'Zenifra CLI - valkey credentials',
+    command: 'database credentials',
+    usage: 'zenifra database credentials\n  zenifra database credentials rotate --project <id> [--wait] [--idempotency-key <key>] [--interval <seconds>] [--timeout <seconds>] [--connection-file <path>] [--json]\n  zenifra database credentials status --project <id> --operation <id> [--connection-file <path>] [--json]',
+    description: 'Agrupa comandos de renovacao e acompanhamento de credenciais de bancos.',
+    examples: ['zenifra database credentials rotate --project proj_1', 'zenifra database credentials status --project proj_1 --operation operation_1'],
+    output: 'Zenifra CLI - database credentials',
   },
   {
-    command: 'valkey credentials rotate',
-    usage: 'zenifra valkey credentials rotate --project <id> [--idempotency-key <key>] [--wait] [--interval <seconds>] [--timeout <seconds>] [--connection-file <path>] [--json]',
-    description: 'Solicita a renovacao da credencial e retorna uma operacao acompanhavel.',
-    flags: ['--project <id>          ID do projeto.', '--idempotency-key <key> Chave para repetir a mesma solicitacao.', '--wait                  Aguarda a conclusao.', '--interval <seconds>    Intervalo do polling. Padrao: 2.', '--timeout <seconds>     Timeout total. Padrao: 900.', '--connection-file <path> Salva a conexao concluida em arquivo privado.', '--json                  Imprime a resposta em JSON.'],
-    examples: ['zenifra valkey credentials rotate --project proj_1', 'zenifra valkey credentials rotate --project proj_1 --wait --timeout 120'],
-    output: 'Operacao aceita: rotation_123\nEstado: accepted',
-    notes: ['Salve a nova string de conexao quando a operacao atingir completed.'],
+    command: 'database credentials rotate',
+    usage: 'zenifra database credentials rotate --project <id> [--wait] [--idempotency-key <key>] [--interval <seconds>] [--timeout <seconds>] [--connection-file <path>] [--json]',
+    description: 'Renova a credencial do banco. PostgreSQL, MariaDB e ClickHouse renovam na hora e mostram a nova senha uma unica vez; Key Value, Cache e Queue retornam uma operacao acompanhavel.',
+    flags: ['--project <id>           ID do projeto.', '--wait                   Key Value, Cache e Queue: aguarda a conclusao.', '--idempotency-key <key>  Key Value, Cache e Queue: chave para repetir a mesma solicitacao.', '--interval <seconds>     Intervalo do polling com --wait. Padrao: 2.', '--timeout <seconds>      Timeout total com --wait. Padrao: 900.', '--connection-file <path> Salva a conexao com a nova credencial em arquivo privado (modo 600).', '--json                   Imprime a resposta em JSON.'],
+    examples: ['zenifra database credentials rotate --project proj_1', 'zenifra database credentials rotate --project proj_1 --connection-file ./db.env', 'zenifra database credentials rotate --project proj_1 --wait --timeout 120'],
+    output: 'Credencial renovada. Guarde a nova senha agora: ela nao sera exibida novamente.\nSenha: <nova-senha>',
+    notes: ['Aplicacoes que usam a senha antiga precisam receber a nova.', 'O CLI nao grava a senha no perfil nem em log.'],
   },
   {
-    command: 'valkey credentials status',
-    usage: 'zenifra valkey credentials status --project <id> --operation <id> [--connection-file <path>] [--json]',
-    description: 'Consulta o estado de uma renovacao de credencial Valkey.',
-    flags: ['--project <id>     ID do projeto.', '--operation <id>   ID da operacao.', '--connection-file <path> Salva a conexao concluida em arquivo privado.', '--json             Imprime a resposta em JSON.'],
-    examples: ['zenifra valkey credentials status --project proj_1 --operation rotation_123'],
+    command: 'database credentials status',
+    usage: 'zenifra database credentials status --project <id> --operation <id> [--connection-file <path>] [--json]',
+    description: 'Consulta o estado de uma renovacao de credencial de Key Value, Cache ou Queue.',
+    flags: ['--project <id>           ID do projeto.', '--operation <id>         ID da operacao.', '--connection-file <path> Salva a conexao concluida em arquivo privado.', '--json                   Imprime a resposta em JSON.'],
+    examples: ['zenifra database credentials status --project proj_1 --operation rotation_123'],
     output: 'Operacao: rotation_123\nEstado: completed',
+    notes: ['PostgreSQL, MariaDB e ClickHouse renovam a credencial na hora, sem operacao para acompanhar.'],
+  },
+  {
+    command: 'storage',
+    usage: 'zenifra storage\n  zenifra storage status [--json]\n  zenifra storage create [--name <name>] [--json]\n  zenifra storage buckets [--json]\n  zenifra storage buckets create --bucket <name> [--json]\n  zenifra storage buckets delete --bucket <name> --yes [--json]\n  zenifra storage files --bucket <name> [--prefix <folder/>] [--continuation-token <token>] [--limit <n>] [--json]\n  zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--json]\n  zenifra storage files download --bucket <name> --key <key> [--output <path>] [--yes] [--json]\n  zenifra storage files delete --bucket <name> --key <key> --yes [--json]\n  zenifra storage files share --bucket <name> --key <key> [--json]\n  zenifra storage files info --bucket <name> --key <key> [--json]\n  zenifra storage keys [--json]\n  zenifra storage keys create --name <name> [--buckets <a,b|*>] [--access <read|read_write|full>] [--allowed-ips <ip,cidr>] [--json]\n  zenifra storage keys revoke --access-key <id> --yes [--json]\n  zenifra storage usage [--month <YYYY-MM>] [--json]',
+    description: 'Gerencia o Armazem, o armazenamento de objetos compativel com S3 da organizacao: buckets, arquivos, chaves de acesso e consumo.',
+    examples: ['zenifra storage status', 'zenifra storage buckets create --bucket fotos', 'zenifra storage files upload --bucket fotos --file ./logo.png', 'zenifra armazem usage'],
+    output: 'Zenifra CLI - storage',
+    notes: [
+      'O alias "zenifra armazem" aceita os mesmos subcomandos.',
+      'O Armazem esta em beta para organizacoes convidadas. Para participar, peca pelo console, na pagina Armazem.',
+      'Endpoint S3: https://armazem.zenifra.com, regiao br-sp1. Os arquivos vao direto para o Armazem por links assinados, sem passar pela API.',
+    ],
+  },
+  {
+    command: 'storage status',
+    usage: 'zenifra storage status [--json]',
+    description: 'Mostra se o Armazem esta disponivel para a organizacao e os dados do Armazem criado.',
+    flags: ['--json  Imprime a resposta em JSON.'],
+    examples: ['zenifra storage status', 'zenifra armazem status --json'],
+    output: 'Campo     Valor\n--------  ----------------------------\nID        6650f1c2a1b2c3d4e5f60718\nNome      Armazem\nStatus    running\nRegiao    br-sp1\nEndpoint  https://armazem.zenifra.com',
+    jsonOutput: '{"available":true,"service":{"id":"6650f1c2a1b2c3d4e5f60718","name":"Armazem","status":"running","region":"br-sp1","endpoint":"https://armazem.zenifra.com"},"beta_request":null}',
+  },
+  {
+    command: 'storage create',
+    usage: 'zenifra storage create [--name <name>] [--json]',
+    description: 'Cria o Armazem da organizacao ou devolve o existente. Cada organizacao tem um unico Armazem.',
+    flags: ['--name <name>  Nome do Armazem, ate 60 caracteres. Padrao: Armazem.', '--json         Imprime a resposta em JSON.'],
+    examples: ['zenifra storage create', 'zenifra storage create --name "Arquivos da equipe"'],
+    output: 'Armazem pronto: 6650f1c2a1b2c3d4e5f60718\nEndpoint: https://armazem.zenifra.com (regiao br-sp1)',
+    jsonOutput: '{"id":"6650f1c2a1b2c3d4e5f60718","name":"Armazem","status":"running","region":"br-sp1","endpoint":"https://armazem.zenifra.com"}',
+    notes: ['Disponivel somente para organizacoes convidadas para o beta.'],
+  },
+  {
+    command: 'storage buckets',
+    usage: 'zenifra storage buckets [--json]\n  zenifra storage buckets create --bucket <name> [--json]\n  zenifra storage buckets delete --bucket <name> --yes [--json]',
+    description: 'Lista os buckets do Armazem com tamanho, quantidade de arquivos e datas.',
+    flags: ['--json  Imprime a resposta em JSON.'],
+    examples: ['zenifra storage buckets', 'zenifra storage buckets create --bucket fotos', 'zenifra storage buckets delete --bucket fotos --yes'],
+    output: 'Bucket  Tamanho  Arquivos  Criado em                 Atualizado em\nfotos   1.5 MB   12        2026-10-01T12:00:00.000Z  2026-10-20T08:00:00.000Z',
+    jsonOutput: '[{"name":"fotos","size_bytes":1572864,"objects":12,"created_at":"2026-10-01T12:00:00.000Z","last_updated_at":"2026-10-20T08:00:00.000Z"}]',
+  },
+  {
+    command: 'storage buckets create',
+    usage: 'zenifra storage buckets create --bucket <name> [--json]',
+    description: 'Cria um bucket no Armazem.',
+    flags: ['--bucket <name>  Nome do bucket: 3 a 63 caracteres, letras minusculas, numeros, ponto e hifen.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra storage buckets create --bucket fotos'],
+    output: 'Bucket criado: fotos',
+    jsonOutput: '{"name":"fotos"}',
+  },
+  {
+    command: 'storage buckets delete',
+    usage: 'zenifra storage buckets delete --bucket <name> --yes [--json]',
+    description: 'Remove um bucket vazio.',
+    flags: ['--bucket <name>  Nome do bucket.', '--yes            Confirma a remocao.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra storage buckets delete --bucket fotos --yes'],
+    output: 'Bucket removido: fotos',
+    jsonOutput: '{"name":"fotos","status":"deleted"}',
+    notes: ['Um bucket com arquivos so pode ser removido pelo console, com codigo de verificacao. Pelo CLI, apague os arquivos antes ou use o console.'],
+  },
+  {
+    command: 'storage files',
+    usage: 'zenifra storage files --bucket <name> [--prefix <folder/>] [--continuation-token <token>] [--limit <n>] [--json]\n  zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--json]\n  zenifra storage files download --bucket <name> --key <key> [--output <path>] [--yes] [--json]\n  zenifra storage files delete --bucket <name> --key <key> --yes [--json]\n  zenifra storage files share --bucket <name> --key <key> [--json]\n  zenifra storage files info --bucket <name> --key <key> [--json]',
+    description: 'Lista um nivel de pasta de um bucket: subpastas e arquivos.',
+    flags: ['--bucket <name>               Nome do bucket.', '--prefix <folder/>            Pasta a listar, com barra no final. Padrao: raiz do bucket.', '--continuation-token <token>  Continua a listagem da pagina anterior.', '--limit <n>                   Itens por pagina, de 1 a 1000. Padrao: 200.', '--json                        Imprime a resposta em JSON.'],
+    examples: ['zenifra storage files --bucket fotos', 'zenifra storage files --bucket fotos --prefix 2026/', 'zenifra storage files --bucket fotos --continuation-token <token>'],
+    output: 'Tipo     Nome      Tamanho  Enviado em\n-------  --------  -------  ------------------------\npasta    2026/     -        -\narquivo  logo.png  12 KB    2026-10-20T08:00:00.000Z',
+    jsonOutput: '{"bucket":"fotos","prefix":"","folders":[{"prefix":"2026/","name":"2026"}],"objects":[{"key":"logo.png","name":"logo.png","size_bytes":12288,"uploaded_at":"2026-10-20T08:00:00.000Z","etag":"9b2cf535f27731c974343645a3985328"}],"next_continuation_token":null}',
+    notes: ['Quando houver mais itens, o comando mostra o --continuation-token da proxima pagina.'],
+  },
+  {
+    command: 'storage files upload',
+    usage: 'zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--json]',
+    description: 'Envia um arquivo local para o bucket direto ao Armazem, em streaming, sem carregar o arquivo inteiro na memoria.',
+    flags: ['--bucket <name>        Nome do bucket.', '--file <path>          Arquivo local a enviar. Ate 20 GiB.', '--key <key>            Caminho no bucket. Padrao: nome do arquivo. Terminado em "/", o nome do arquivo e acrescentado.', '--content-type <type>  Tipo do conteudo. Padrao: deduzido da extensao ou application/octet-stream.', '--json                 Imprime a resposta em JSON.'],
+    examples: ['zenifra storage files upload --bucket fotos --file ./logo.png', 'zenifra storage files upload --bucket backups --file ./dump.sql.gz --key 2026/10/'],
+    output: 'Arquivo enviado: fotos/logo.png (12 KB)',
+    jsonOutput: '{"bucket":"fotos","key":"logo.png","size_bytes":12288,"content_type":"image/png"}',
+    notes: ['O link de envio vale 15 minutos para iniciar o envio e aceita exatamente o tamanho informado.'],
+  },
+  {
+    command: 'storage files download',
+    usage: 'zenifra storage files download --bucket <name> --key <key> [--output <path>] [--yes] [--json]',
+    description: 'Baixa um arquivo do bucket direto do Armazem, gravando em disco em streaming.',
+    flags: ['--bucket <name>  Nome do bucket.', '--key <key>      Caminho do arquivo no bucket.', '--output <path>  Arquivo de destino. Padrao: nome do arquivo no diretorio atual.', '--yes            Substitui o arquivo de destino se ele ja existir.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra storage files download --bucket fotos --key logo.png', 'zenifra storage files download --bucket backups --key 2026/10/dump.sql.gz --output /tmp/dump.sql.gz'],
+    output: 'Arquivo baixado: ./logo.png (12 KB)',
+    jsonOutput: '{"bucket":"fotos","key":"logo.png","output":"logo.png","size_bytes":12288}',
+  },
+  {
+    command: 'storage files delete',
+    usage: 'zenifra storage files delete --bucket <name> --key <key> --yes [--json]',
+    description: 'Apaga um arquivo do bucket.',
+    flags: ['--bucket <name>  Nome do bucket.', '--key <key>      Caminho do arquivo no bucket.', '--yes            Confirma a exclusao.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra storage files delete --bucket fotos --key logo.png --yes'],
+    output: 'Arquivo apagado: fotos/logo.png',
+    jsonOutput: '{"bucket":"fotos","key":"logo.png","deleted":true}',
+  },
+  {
+    command: 'storage files share',
+    usage: 'zenifra storage files share --bucket <name> --key <key> [--json]',
+    description: 'Gera um link de download do arquivo, valido por 7 dias, para copiar e compartilhar.',
+    flags: ['--bucket <name>  Nome do bucket.', '--key <key>      Caminho do arquivo no bucket.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra storage files share --bucket fotos --key logo.png'],
+    output: 'Link de compartilhamento (valido ate 2026-10-31T12:00:00.000Z):\nhttps://armazem.zenifra.com/fotos/logo.png?X-Amz-Expires=604800&...',
+    jsonOutput: '{"method":"GET","url":"https://armazem.zenifra.com/fotos/logo.png?X-Amz-Expires=604800","headers":{},"expires_at":"2026-10-31T12:00:00.000Z"}',
+    notes: ['Qualquer pessoa com o link consegue baixar o arquivo ate ele expirar.'],
+  },
+  {
+    command: 'storage files info',
+    usage: 'zenifra storage files info --bucket <name> --key <key> [--json]',
+    description: 'Mostra tamanho, tipo, data de envio, etag e metadados de um arquivo.',
+    flags: ['--bucket <name>  Nome do bucket.', '--key <key>      Caminho do arquivo no bucket.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra storage files info --bucket fotos --key logo.png'],
+    output: 'Campo       Valor\n----------  ------------------------\nArquivo     logo.png\nTamanho     12 KB\nTipo        image/png\nEnviado em  2026-10-20T08:00:00.000Z',
+    jsonOutput: '{"key":"logo.png","name":"logo.png","size_bytes":12288,"content_type":"image/png","uploaded_at":"2026-10-20T08:00:00.000Z","etag":"9b2cf535f27731c974343645a3985328","metadata":{}}',
+  },
+  {
+    command: 'storage keys',
+    usage: 'zenifra storage keys [--json]\n  zenifra storage keys create --name <name> [--buckets <a,b|*>] [--access <read|read_write|full>] [--allowed-ips <ip,cidr>] [--json]\n  zenifra storage keys revoke --access-key <id> --yes [--json]',
+    description: 'Lista as chaves de acesso S3 do Armazem, sem o segredo.',
+    flags: ['--json  Imprime a resposta em JSON.'],
+    examples: ['zenifra storage keys', 'zenifra storage keys create --name deploy --buckets fotos --access read_write', 'zenifra storage keys revoke --access-key ZNKEXAMPLE0123 --yes'],
+    output: 'ID              Nome    Buckets  Acesso      IPs permitidos  Criada em\nZNKEXAMPLE0123  deploy  fotos    read_write  qualquer        2026-10-20T08:00:00.000Z',
+    jsonOutput: '[{"access_key_id":"ZNKEXAMPLE0123","name":"deploy","created_at":"2026-10-20T08:00:00.000Z","allowed_ips":[],"buckets":["fotos"],"access":"read_write"}]',
+  },
+  {
+    command: 'storage keys create',
+    usage: 'zenifra storage keys create --name <name> [--buckets <a,b|*>] [--access <read|read_write|full>] [--allowed-ips <ip,cidr>] [--json]',
+    description: 'Cria uma chave de acesso S3. O segredo aparece somente nesta resposta.',
+    flags: ['--name <name>           Nome da chave, 1 a 64 caracteres.', '--buckets <a,b|*>       Buckets liberados, separados por virgula, ate 10. Padrao: * (todos).', '--access <level>        read, read_write ou full. Padrao: full.', '--allowed-ips <ip,cidr> IPs ou redes IPv4/IPv6 autorizados, separados por virgula, ate 20. Padrao: qualquer IP.', '--json                  Imprime a resposta em JSON, incluindo o segredo.'],
+    examples: ['zenifra storage keys create --name deploy', 'zenifra storage keys create --name leitura-site --buckets site,assets --access read --allowed-ips 203.0.113.7,198.51.100.0/24'],
+    output: 'Chave de acesso criada. Guarde o segredo agora: ele nao sera exibido novamente.\nID da chave  ZNKEXAMPLE0123\nSegredo      <segredo>\nEndpoint     https://armazem.zenifra.com\nRegiao       br-sp1',
+    jsonOutput: '{"access_key_id":"ZNKEXAMPLE0123","name":"deploy","created_at":"2026-10-20T08:00:00.000Z","allowed_ips":[],"buckets":["*"],"access":"full","secret_access_key":"<segredo>"}',
+    notes: ['O CLI nao grava o segredo em arquivo nem em log. Guarde em um cofre de segredos.', 'A chave so pode receber o acesso que voce mesmo tem nos buckets escolhidos.'],
+  },
+  {
+    command: 'storage keys revoke',
+    usage: 'zenifra storage keys revoke --access-key <id> --yes [--json]',
+    description: 'Revoga uma chave de acesso. Aplicacoes que usam a chave perdem o acesso.',
+    flags: ['--access-key <id>  ID da chave de acesso.', '--yes              Confirma a revogacao.', '--json             Imprime a resposta em JSON.'],
+    examples: ['zenifra storage keys revoke --access-key ZNKEXAMPLE0123 --yes'],
+    output: 'Chave revogada: ZNKEXAMPLE0123',
+    jsonOutput: '{"access_key_id":"ZNKEXAMPLE0123","revoked":true}',
+  },
+  {
+    command: 'storage usage',
+    usage: 'zenifra storage usage [--month <YYYY-MM>] [--json]',
+    description: 'Mostra o consumo do Armazem no mes atual ou em um dos 12 meses anteriores.',
+    flags: ['--month <YYYY-MM>  Mes fechado a consultar. Padrao: mes atual ate agora.', '--json             Imprime a resposta em JSON (valores em centavos).'],
+    examples: ['zenifra storage usage', 'zenifra storage usage --month 2026-09'],
+    output: 'Periodo: 2026-10-01T00:00:00.000Z ate 2026-10-24T12:00:00.000Z (em aberto)\nEstimado: R$ 1,25 | Ja debitado: R$ 0,90',
+    jsonOutput: '{"period_start":"2026-10-01T00:00:00.000Z","period_end":"2026-10-24T12:00:00.000Z","closed":false,"estimated_amount":125,"charged_amount":90,"currency":"brl","amounts":{"storage":100,"requests":20,"egress":5},"buckets":[]}',
+    notes: ['A franquia mensal inclui 5 GB de armazenamento e uma cota de requisicoes; o comando mostra quanto dela ja foi usado.'],
   },
   {
     command: 'projects',
-    usage: 'zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|valkey|job>] [--page <n>] [--limit <n>]',
+    usage: 'zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|clickhouse|key-value|cache|queue|job>] [--page <n>] [--limit <n>]',
     description: 'Lista projetos da organizacao ativa ou da API key.',
     flags: ['--json       Imprime a resposta em JSON.', '--org <id>   Usa uma organizacao especifica com sessao de usuario.', '--type <type> Filtra por tipo de projeto.', '--page <n>   Pagina. Padrao: 1.', '--limit <n>  Itens por pagina. Padrao: 15.'],
     examples: ['zenifra projects --type http --page 1 --limit 15', 'zenifra projects --json'],
@@ -742,13 +929,13 @@ const HELP_SPECS = [
   {
     command: 'project metrics',
     usage: 'zenifra project metrics --project <id> [--instance <id>] [--json]',
-    description: 'Mostra metricas de recursos do projeto e, para Valkey, o snapshot nativo da instancia.',
+    description: 'Mostra metricas de recursos do projeto e, para Key Value, Cache e Queue, o snapshot do banco.',
     flags: ['--project <id>   ID do projeto.', '--instance <id>  Filtra uma instancia.', '--json           Imprime a resposta em JSON sem formatacao adicional.'],
     examples: ['zenifra project metrics --project 507f1f77bcf86cd799439012 --instance web-1', 'zenifra project metrics --project 507f1f77bcf86cd799439012 --instance instance-1'],
     output: 'Campo       Valor\n----------  ----------------\nPerfil      cache\nDisponibilidade  available\nMemoria usada    100 MB',
     jsonOutput: '{"instance":"instance-1","type":"valkey","availability":"available","valkey":{"schema_version":1,"profile":"cache","memory":{"used_bytes":104857600}}}',
     notes: [
-      'Para projetos Valkey, a saida legivel inclui recursos, capacidade, clientes, atividade, ciclo de vida de chaves, perfil e confiabilidade.',
+      'Para Key Value, Cache e Queue, a saida legivel inclui recursos, capacidade, clientes, atividade, ciclo de vida de chaves, perfil e confiabilidade.',
       'Valores ausentes sao exibidos como indisponivel; zero continua sendo um valor valido.',
       'Use "zenifra project metrics capabilities --project <id>" para consultar o acesso e os grupos de metricas disponiveis.',
     ],
@@ -1042,8 +1229,16 @@ function formatHelp(spec) {
   return `${sections.join('\n')}\n`;
 }
 
+const COMMAND_ALIASES = { armazem: 'storage', valkey: 'database' };
+
+function resolveCommandAliases(positionals) {
+  const index = positionals[0] === 'help' ? 1 : 0;
+  if (!Object.hasOwn(COMMAND_ALIASES, positionals[index])) return positionals;
+  return positionals.map((value, position) => (position === index ? COMMAND_ALIASES[value] : value));
+}
+
 function helpKeyFromPositionals(positionals) {
-  return positionals.filter((value) => value !== 'help').join(' ').trim();
+  return resolveCommandAliases(positionals).filter((value) => value !== 'help').join(' ').trim();
 }
 
 function commandHelp(positionals) {
@@ -1074,7 +1269,7 @@ function removedProjectsCreateMessage() {
 }
 
 function isNamespaceCommand(command) {
-  return ['auth', 'profile', 'project', 'org', 'valkey', 'git'].includes(command);
+  return ['auth', 'profile', 'project', 'org', 'database', 'git', 'storage'].includes(command);
 }
 
 function parseArgs(argv) {
@@ -1483,7 +1678,7 @@ function estimateWizardTotal(state = {}) {
   }
 
   if (typeProject === 'valkey') {
-    total += 3;
+    total += 2;
     return total;
   }
 
@@ -1525,14 +1720,14 @@ function printWizardFieldHelp({ label, required = false, examples = [], docs, al
   if (docs) process.stdout.write(`  docs: ${docs}\n`);
 }
 
-function buildWizardPromptLine({ ui, label, required = false, examples = [], options = [], kind = 'text', fixedValue = null }) {
+function buildWizardPromptLine({ ui, label, required = false, examples = [], options = [], kind = 'text', fixedValue = null, inlineLimit }) {
   const step = nextWizardStep(ui);
   const stepText = toneDim(`[${step}/${ui.total}]`);
   const requiredText = required ? tone('*', 'yellow') : '';
   let suffix = '';
 
   if (kind === 'boolean') suffix = toneDim('[s/n]');
-  else if (kind === 'select') suffix = toneDim(`[${formatInlineOptions(options)}]`);
+  else if (kind === 'select') suffix = toneDim(`[${formatInlineOptions(options, inlineLimit)}]`);
   else if (fixedValue !== null) suffix = toneDim(`[fixo=${fixedValue}]`);
   else if (examples.length) suffix = toneDim(`(ex: ${examples[0]})`);
 
@@ -1644,7 +1839,7 @@ async function promptWizardBoolean({ label, docs, examples = ['sim', 'nao'] }) {
   }
 }
 
-async function promptWizardSelect({ label, options, docs, examples = [], extraValues = [] }) {
+async function promptWizardSelect({ label, options, docs, examples = [], extraValues = [], inlineLimit }) {
   while (true) {
     const allowedValues = [...options.map((option) => option.value), ...extraValues];
     const answer = await prompt(buildWizardPromptLine({
@@ -1654,6 +1849,7 @@ async function promptWizardSelect({ label, options, docs, examples = [], extraVa
       examples,
       kind: 'select',
       options,
+      inlineLimit,
     }));
     if (isHelpRequest(answer)) {
       printWizardFieldHelp({ label, required: true, examples, docs, allowedValues, options });
@@ -1815,6 +2011,25 @@ const PUBLIC_ERROR_CODE_MESSAGES = {
   ORGANIZATION_BILLING_BLOCKED: 'A organizacao tem pagamentos pendentes. Regularize para aumentar o uso.',
   PROJECT_OPERATION_NOT_SUPPORTED: 'Esta acao nao esta disponivel para este tipo de projeto.',
   PROJECT_PLAN_ALREADY_SELECTED: 'O projeto ja usa este plano.',
+  DATABASE_CREDENTIAL_ROTATION_IN_PROGRESS: 'A credencial deste banco ja esta sendo renovada. Aguarde alguns instantes e confira com "zenifra database status".',
+  DATABASE_CREDENTIAL_ROTATION_FAILED: 'Nao foi possivel renovar a credencial do banco. Tente novamente em instantes.',
+  OBJECT_STORAGE_NOT_AVAILABLE: 'O Armazem ainda nao esta disponivel para esta organizacao. Ele esta em beta para organizacoes convidadas: peca para participar pelo console, na pagina Armazem.',
+  OBJECT_STORAGE_NOT_FOUND: 'Armazem nao encontrado nesta organizacao. Veja "zenifra storage status".',
+  OBJECT_STORAGE_UNAVAILABLE: 'O Armazem esta temporariamente indisponivel. Tente novamente em instantes.',
+  OBJECT_STORAGE_CURRENCY_NOT_SUPPORTED: 'O Armazem esta disponivel somente para organizacoes cobradas em reais (BRL).',
+  OBJECT_STORAGE_READ_ONLY: 'A organizacao atingiu o limite de armazenamento e o Armazem esta somente leitura. Apague arquivos ou peca mais espaco por support@zenifra.com informando a organizacao, seu e-mail e o motivo.',
+  BUCKET_NAME_RESERVED: 'Este nome de bucket e reservado. Escolha outro nome.',
+  BUCKET_ALREADY_EXISTS: 'Ja existe um bucket com este nome. Escolha outro nome.',
+  BUCKET_LIMIT_REACHED: 'A organizacao atingiu o limite de buckets. Para pedir mais, envie para support@zenifra.com a organizacao, seu e-mail e o motivo; o pedido pode ser aprovado ou recusado.',
+  BUCKET_NOT_FOUND: 'Bucket nao encontrado neste Armazem.',
+  BUCKET_DELETION_VERIFICATION_REQUIRED: 'O bucket tem arquivos. A remocao de um bucket com arquivos precisa ser confirmada no console, na pagina Armazem, com codigo de verificacao. Pelo CLI, apague os arquivos antes.',
+  BUCKET_DELETION_REQUIRES_USER: 'O bucket tem arquivos. A remocao de um bucket com arquivos precisa ser confirmada por uma pessoa no console, na pagina Armazem.',
+  OBJECT_NOT_FOUND: 'Arquivo nao encontrado no bucket.',
+  OBJECT_TOO_LARGE: 'O arquivo passa do limite de 20 GiB por arquivo.',
+  ACCESS_KEY_LIMIT_REACHED: 'O Armazem atingiu o limite de chaves de acesso. Revogue uma chave antes de criar outra.',
+  ACCESS_KEY_NOT_FOUND: 'Chave de acesso nao encontrada.',
+  ACCESS_KEY_SCOPE_NOT_ALLOWED: 'A chave so pode receber o acesso que voce mesmo tem nos buckets escolhidos.',
+  USAGE_PERIOD_NOT_AVAILABLE: 'O consumo esta disponivel para o mes atual e para os 12 meses anteriores.',
 };
 
 async function request(session, flags, method, path, {
@@ -1890,6 +2105,9 @@ async function request(session, flags, method, path, {
         throw httpError(`${message}. Verifique se a API key esta ativa e se o IP atual esta permitido.`);
       }
       throw httpError(`${message}. Rode "zenifra auth login" para renovar sua sessao.`);
+    }
+    if (response.status === 403 && Object.hasOwn(PUBLIC_ERROR_CODE_MESSAGES, payload?.code)) {
+      throw httpError(PUBLIC_ERROR_CODE_MESSAGES[payload.code]);
     }
     if (response.status === 403) {
       throw httpError(message);
@@ -2305,12 +2523,12 @@ function printTable(rows, columns) {
   }
 }
 
-function formatValkeyNumber(value) {
+function formatMetricNumber(value) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return 'indisponivel';
   return String(value);
 }
 
-function formatValkeyBytes(value, suffix = '') {
+function formatBytes(value, suffix = '') {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return 'indisponivel';
 
   const numericValue = Number(value);
@@ -2327,54 +2545,54 @@ function formatValkeyBytes(value, suffix = '') {
   return `${formattedValue} ${units[unitIndex]}${suffix}`;
 }
 
-function formatValkeyPercent(value) {
+function formatPercent(value) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return 'indisponivel';
   return `${Number((Number(value) * 100).toFixed(2))}%`;
 }
 
-function valkeyMetricRows(metrics) {
+function managedDatabaseMetricRows(metrics) {
   const native = metrics?.valkey;
   const rows = [
     { field: 'Instancia', value: metrics?.instance || '-' },
     { field: 'Disponibilidade', value: metrics?.availability || 'indisponivel' },
     { field: 'Observado em', value: metrics?.observed_at || 'indisponivel' },
-    { field: 'CPU', value: formatValkeyNumber(metrics?.cpu) },
-    { field: 'Memoria', value: formatValkeyBytes(metrics?.memory) },
+    { field: 'CPU', value: formatMetricNumber(metrics?.cpu) },
+    { field: 'Memoria', value: formatBytes(metrics?.memory) },
   ];
 
   if (!native) {
-    rows.push({ field: 'Metricas Valkey', value: 'indisponivel' });
+    rows.push({ field: 'Metricas do banco', value: 'indisponivel' });
     return rows;
   }
 
   rows.push(
     { field: 'Perfil', value: native.profile || '-' },
-    { field: 'Memoria usada', value: formatValkeyBytes(native.memory?.used_bytes) },
-    { field: 'Pico de memoria', value: formatValkeyBytes(native.memory?.peak_bytes) },
-    { field: 'Limite de memoria', value: formatValkeyBytes(native.memory?.limit_bytes) },
-    { field: 'Fragmentacao', value: formatValkeyNumber(native.memory?.fragmentation_ratio) },
-    { field: 'Clientes conectados', value: formatValkeyNumber(native.clients?.connected) },
-    { field: 'Clientes bloqueados', value: formatValkeyNumber(native.clients?.blocked) },
-    { field: 'Operacoes por segundo', value: formatValkeyNumber(native.activity?.operations_per_second) },
-    { field: 'Entrada', value: formatValkeyBytes(native.activity?.input_bytes_per_second, '/s') },
-    { field: 'Saida', value: formatValkeyBytes(native.activity?.output_bytes_per_second, '/s') },
-    { field: 'Chaves expiradas', value: formatValkeyNumber(native.keys?.expired_total) },
-    { field: 'Chaves removidas', value: formatValkeyNumber(native.keys?.evicted_total) },
-    { field: 'Uptime', value: `${formatValkeyNumber(native.uptime_seconds)} s` },
+    { field: 'Memoria usada', value: formatBytes(native.memory?.used_bytes) },
+    { field: 'Pico de memoria', value: formatBytes(native.memory?.peak_bytes) },
+    { field: 'Limite de memoria', value: formatBytes(native.memory?.limit_bytes) },
+    { field: 'Fragmentacao', value: formatMetricNumber(native.memory?.fragmentation_ratio) },
+    { field: 'Clientes conectados', value: formatMetricNumber(native.clients?.connected) },
+    { field: 'Clientes bloqueados', value: formatMetricNumber(native.clients?.blocked) },
+    { field: 'Operacoes por segundo', value: formatMetricNumber(native.activity?.operations_per_second) },
+    { field: 'Entrada', value: formatBytes(native.activity?.input_bytes_per_second, '/s') },
+    { field: 'Saida', value: formatBytes(native.activity?.output_bytes_per_second, '/s') },
+    { field: 'Chaves expiradas', value: formatMetricNumber(native.keys?.expired_total) },
+    { field: 'Chaves removidas', value: formatMetricNumber(native.keys?.evicted_total) },
+    { field: 'Uptime', value: `${formatMetricNumber(native.uptime_seconds)} s` },
   );
 
   if (native.cache) {
     rows.push(
-      { field: 'Cache hits', value: formatValkeyNumber(native.cache.hits_total) },
-      { field: 'Cache misses', value: formatValkeyNumber(native.cache.misses_total) },
-      { field: 'Hit ratio', value: formatValkeyPercent(native.cache.hit_ratio) },
+      { field: 'Cache hits', value: formatMetricNumber(native.cache.hits_total) },
+      { field: 'Cache misses', value: formatMetricNumber(native.cache.misses_total) },
+      { field: 'Hit ratio', value: formatPercent(native.cache.hit_ratio) },
     );
   }
 
   if (native.key_value) {
     rows.push(
-      { field: 'Total de chaves', value: formatValkeyNumber(native.key_value.keys_total) },
-      { field: 'Chaves com expiracao', value: formatValkeyNumber(native.key_value.keys_with_expiration) },
+      { field: 'Total de chaves', value: formatMetricNumber(native.key_value.keys_total) },
+      { field: 'Chaves com expiracao', value: formatMetricNumber(native.key_value.keys_with_expiration) },
     );
   }
 
@@ -2384,8 +2602,8 @@ function valkeyMetricRows(metrics) {
     if (replication) {
       rows.push(
         { field: 'Replicacao', value: replication.status || 'indisponivel' },
-        { field: 'Repl. disponiveis', value: formatValkeyNumber(replication.replicas_available) },
-        { field: 'Repl. esperadas', value: formatValkeyNumber(replication.replicas_expected) },
+        { field: 'Repl. disponiveis', value: formatMetricNumber(replication.replicas_available) },
+        { field: 'Repl. esperadas', value: formatMetricNumber(replication.replicas_expected) },
         { field: 'Lag', value: replication.lag_seconds === null || replication.lag_seconds === undefined ? 'indisponivel' : `${replication.lag_seconds} s` },
       );
     }
@@ -2401,8 +2619,8 @@ function valkeyMetricRows(metrics) {
   return rows;
 }
 
-function printValkeyMetrics(metrics) {
-  printTable(valkeyMetricRows(metrics), [
+function printManagedDatabaseMetrics(metrics) {
+  printTable(managedDatabaseMetricRows(metrics), [
     { label: 'Campo', value: (row) => row.field },
     { label: 'Valor', value: (row) => row.value },
   ]);
@@ -2561,7 +2779,7 @@ function publicProjectsData(data) {
 
 function printProject(project) {
   const managedService = project.managed_service;
-  const isValkey = project.type_project === 'valkey' || managedService?.engine === 'valkey';
+  const isManagedDatabase = project.type_project === 'valkey' || managedService?.engine === 'valkey';
   const isJob = isJobProject(project);
   const rows = [
     { label: 'ID', value: projectIdOf(project) || '-' },
@@ -2577,7 +2795,7 @@ function printProject(project) {
       { label: 'Agendamento', value: schedule.cron || '-' },
       { label: 'Armazenamento', value: project.storage?.persistent === true || project.config?.storage?.persistent === true ? 'persistente' : 'efemero' },
     );
-  } else if (isValkey) {
+  } else if (isManagedDatabase) {
     rows.push(
       { label: 'Perfil', value: managedService?.profile || '-' },
       { label: 'Versao', value: managedService?.version || '-' },
@@ -3037,12 +3255,15 @@ async function handleOrgSet(session, flags) {
 
 async function handleProjects(session, flags) {
   const orgId = await resolveOrgId(session, flags);
+  const profile = flags.type === true || flags.type === undefined ? undefined : normalizeManagedDatabaseProfile(flags.type);
+  const managedProfile = Object.hasOwn(MANAGED_PROFILE_LABELS, profile);
   const projectFlags = {
-    ...flags,
+    type: managedProfile ? 'valkey' : flags.type,
+    profile: managedProfile ? profile : undefined,
     page: flags.page ?? 1,
     limit: flags.limit ?? 15,
   };
-  const query = buildQuery(projectFlags, ['type', 'page', 'limit']);
+  const query = buildQuery(projectFlags, ['type', 'profile', 'page', 'limit']);
   const data = unwrapData(await request(session, flags, 'GET', `/project${query}`, { orgId }));
   const publicData = publicProjectsData(data);
   const projects = asArray(publicData);
@@ -3184,7 +3405,7 @@ function normalizeTypeProject(value) {
   return aliases.get(raw) || raw;
 }
 
-function normalizeValkeyProfile(value) {
+function normalizeManagedDatabaseProfile(value) {
   const raw = normalizeFreeText(value);
   const aliases = new Map([
     ['key_value', 'key_value'],
@@ -3309,12 +3530,13 @@ function normalizePlansCatalogType(value) {
   const normalized = normalizeFreeText(value || 'all');
   if (!normalized || normalized === 'all') return 'all';
   if (normalized === 'http') return 'http';
-  if (['database', 'db', 'postgresql', 'mariadb'].includes(normalized)) return 'database';
+  if (['database', 'databases', 'db', 'postgresql', 'mariadb'].includes(normalized)) return 'database';
+  if (normalized === 'analytics' || normalized === 'clickhouse') return 'analytics';
   if (normalized === 'valkey') return 'valkey';
   if (normalized === 'job' || normalized === 'jobs' || normalized === 'scheduled job' || normalized === 'scheduled jobs') return 'job';
-  if (normalized === 'key-value' || normalized === 'key value' || normalized === 'key_value') return 'valkey-key_value';
-  if (normalized === 'cache') return 'valkey-cache';
-  if (normalized === 'queue') return 'valkey-queue';
+  if (normalized === 'key-value' || normalized === 'key value' || normalized === 'key_value') return 'profile-key_value';
+  if (normalized === 'cache') return 'profile-cache';
+  if (normalized === 'queue') return 'profile-queue';
   if (normalized === 'storage') return 'storage';
   return null;
 }
@@ -3364,13 +3586,13 @@ function humanizeStorageName(value) {
   return { storage: raw, type: '-' };
 }
 
-const VALKEY_PROFILE_LABELS = {
+const MANAGED_PROFILE_LABELS = {
   key_value: 'Key Value',
   cache: 'Cache',
   queue: 'Queue',
 };
 
-function requireValkeyCatalog(value) {
+function requireManagedDatabaseCatalog(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || value.engine !== 'valkey'
     || typeof value.version !== 'string'
@@ -3379,26 +3601,26 @@ function requireValkeyCatalog(value) {
     || !Array.isArray(value.plans)
     || value.profiles.length === 0
     || value.plans.length === 0) {
-    throw new CliError('Falha ao carregar o catalogo Valkey. Tente novamente mais tarde.');
+    throw new CliError('Falha ao carregar o catalogo de Key Value, Cache e Queue. Tente novamente mais tarde.');
   }
 
-  const validProfiles = new Set(Object.keys(VALKEY_PROFILE_LABELS));
+  const validProfiles = new Set(Object.keys(MANAGED_PROFILE_LABELS));
   if (value.profiles.some((profile) => !validProfiles.has(profile?.id) || typeof profile.persistence !== 'boolean')) {
-    throw new CliError('Falha ao carregar o catalogo Valkey. Tente novamente mais tarde.');
+    throw new CliError('Falha ao carregar o catalogo de Key Value, Cache e Queue. Tente novamente mais tarde.');
   }
   if (value.plans.some((plan) => !validProfiles.has(plan?.profile) || typeof plan.id !== 'string' || !plan.prices || typeof plan.prices !== 'object')) {
-    throw new CliError('Falha ao carregar o catalogo Valkey. Tente novamente mais tarde.');
+    throw new CliError('Falha ao carregar o catalogo de Key Value, Cache e Queue. Tente novamente mais tarde.');
   }
 
   return value;
 }
 
-function valkeyProfileFilter(type) {
-  if (!type.startsWith('valkey-')) return null;
-  return type.slice('valkey-'.length);
+function managedDatabaseProfileFilter(type) {
+  if (!type.startsWith('profile-')) return null;
+  return type.slice('profile-'.length);
 }
 
-function filterValkeyCatalog(catalog, profile) {
+function filterManagedDatabaseCatalog(catalog, profile) {
   if (!profile) return catalog;
   return {
     ...catalog,
@@ -3420,13 +3642,27 @@ async function fetchPlansCatalogs(session, flags, type) {
   }
 
   if (type === 'database') {
+    const [databasePayload, managedDatabasePayload] = await Promise.all([
+      request(session, flags, 'GET', '/project/database/plans', { tokenRequired: false }),
+      request(session, flags, 'GET', '/managed-services/catalog', { tokenRequired: false }),
+    ]);
     return {
       http: [],
-      database: requireWizardCatalogArray(
+      database: requireWizardCatalogArray(unwrapData(databasePayload), 'os planos de banco').filter((plan) => !isAnalyticsPlan(plan)),
+      storage: [],
+      valkey: filterManagedDatabaseCatalog(requireManagedDatabaseCatalog(unwrapData(managedDatabasePayload)), 'key_value'),
+    };
+  }
+
+  if (type === 'analytics') {
+    return {
+      http: [],
+      database: [],
+      storage: [],
+      analytics: requireWizardCatalogArray(
         unwrapData(await request(session, flags, 'GET', '/project/database/plans', { tokenRequired: false })),
         'os planos de banco',
-      ),
-      storage: [],
+      ).filter(isAnalyticsPlan),
     };
   }
 
@@ -3452,19 +3688,19 @@ async function fetchPlansCatalogs(session, flags, type) {
     };
   }
 
-  if (type === 'valkey' || type.startsWith('valkey-')) {
-    const catalog = requireValkeyCatalog(
+  if (type === 'valkey' || type.startsWith('profile-')) {
+    const catalog = requireManagedDatabaseCatalog(
       unwrapData(await request(session, flags, 'GET', '/managed-services/catalog', { tokenRequired: false })),
     );
     return {
       http: [],
       database: [],
       storage: [],
-      valkey: filterValkeyCatalog(catalog, valkeyProfileFilter(type)),
+      valkey: filterManagedDatabaseCatalog(catalog, managedDatabaseProfileFilter(type)),
     };
   }
 
-  const [httpPayload, databasePayload, storagePayload, jobPayload, valkeyPayload] = await Promise.all([
+  const [httpPayload, databasePayload, storagePayload, jobPayload, managedDatabasePayload] = await Promise.all([
     request(session, flags, 'GET', '/project/plans', { tokenRequired: false }),
     request(session, flags, 'GET', '/project/database/plans', { tokenRequired: false }),
     request(session, flags, 'GET', '/project/storage/plans', { tokenRequired: false }),
@@ -3472,26 +3708,42 @@ async function fetchPlansCatalogs(session, flags, type) {
     request(session, flags, 'GET', '/managed-services/catalog', { tokenRequired: false }),
   ]);
 
+  const databasePlans = requireWizardCatalogArray(unwrapData(databasePayload), 'os planos de banco');
   return {
     http: requireWizardCatalogArray(unwrapData(httpPayload), 'os planos HTTP'),
-    database: requireWizardCatalogArray(unwrapData(databasePayload), 'os planos de banco'),
+    database: databasePlans.filter((plan) => !isAnalyticsPlan(plan)),
+    analytics: databasePlans.filter(isAnalyticsPlan),
     storage: requireWizardCatalogArray(unwrapData(storagePayload), 'os planos de storage'),
     job: requireJobPlans(unwrapData(jobPayload)),
-    valkey: requireValkeyCatalog(unwrapData(valkeyPayload)),
+    valkey: requireManagedDatabaseCatalog(unwrapData(managedDatabasePayload)),
   };
 }
 
-function printValkeyCatalog(catalog, profileFilter) {
-  const profiles = profileFilter ? [profileFilter] : Object.keys(VALKEY_PROFILE_LABELS);
+function isAnalyticsPlan(plan) {
+  return Boolean(plan?.engines?.clickhouse) || String(plan?.plan || '').startsWith('analytics-');
+}
+
+function printDatabasePlansTable(plans) {
+  printTable(asArray(plans), [
+    { label: 'Plano', value: (plan) => plan.plan || '-' },
+    { label: 'Hora', value: (plan) => formatBrlFromCents(plan.prices?.hourly) },
+    { label: 'Mes', value: (plan) => formatBrlFromCents(plan.prices?.monthly) },
+    { label: 'Ano', value: (plan) => formatBrlFromCents(plan.prices?.yearly) },
+    { label: 'Recursos', value: (plan) => asArray(plan.features).join(', ') || '-' },
+  ]);
+}
+
+function printManagedDatabaseCatalog(catalog, profileFilter) {
+  const profiles = profileFilter ? [profileFilter] : Object.keys(MANAGED_PROFILE_LABELS);
   profiles.forEach((profile, index) => {
     if (index > 0) process.stdout.write('\n');
-    process.stdout.write(`${VALKEY_PROFILE_LABELS[profile]}\n`);
+    process.stdout.write(`${MANAGED_PROFILE_LABELS[profile]}\n`);
     const plans = catalog.plans.filter((plan) => plan.profile === profile);
     printTable(plans, [
       { label: 'Plano', value: (plan) => plan.id || '-' },
-      { label: 'Hora', value: (plan) => formatBrl(plan.prices?.hourly, catalog.currency) },
-      { label: 'Mes', value: (plan) => formatBrl(plan.prices?.monthly, catalog.currency) },
-      { label: 'Ano', value: (plan) => formatBrl(plan.prices?.yearly, catalog.currency) },
+      { label: 'Hora', value: (plan) => formatBrlFromCents(plan.prices?.hourly) },
+      { label: 'Mes', value: (plan) => formatBrlFromCents(plan.prices?.monthly) },
+      { label: 'Ano', value: (plan) => formatBrlFromCents(plan.prices?.yearly) },
       { label: 'Capacidade', value: (plan) => `${plan.resources?.vcpu ?? '-'} vCPU / ${plan.resources?.memory_mb ?? '-'} MB` },
       { label: 'Storage incluído', value: (plan) => `${plan.included_storage_gb ?? 0} GB` },
       { label: 'Alta disponibilidade', value: (plan) => plan.high_availability?.[profile] ? 'sim' : 'nao' },
@@ -3539,14 +3791,18 @@ function printPlansCatalogs(payload, type) {
 
   if (type === 'all' || type === 'database') {
     if (type === 'all') process.stdout.write('\n');
-    process.stdout.write('PostgreSQL / MariaDB\n');
-    printTable(asArray(payload.database), [
-      { label: 'Plano', value: (plan) => plan.plan || '-' },
-      { label: 'Hora', value: (plan) => formatBrlFromCents(plan.prices?.hourly) },
-      { label: 'Mes', value: (plan) => formatBrlFromCents(plan.prices?.monthly) },
-      { label: 'Ano', value: (plan) => formatBrlFromCents(plan.prices?.yearly) },
-      { label: 'Recursos', value: (plan) => asArray(plan.features).join(', ') || '-' },
-    ]);
+    process.stdout.write('Bancos de dados (PostgreSQL e MariaDB)\n');
+    printDatabasePlansTable(payload.database);
+    if (type === 'database' && payload.valkey) {
+      process.stdout.write('\n');
+      printManagedDatabaseCatalog(payload.valkey, 'key_value');
+    }
+  }
+
+  if (type === 'all' || type === 'analytics') {
+    if (type === 'all') process.stdout.write('\n');
+    process.stdout.write('Analytics (ClickHouse)\n');
+    printDatabasePlansTable(payload.analytics);
   }
 
   if (type === 'all' || type === 'storage') {
@@ -3571,16 +3827,16 @@ function printPlansCatalogs(payload, type) {
     return;
   }
 
-  if (type === 'all' || type === 'valkey' || type.startsWith('valkey-')) {
+  if (type === 'all' || type === 'valkey' || type.startsWith('profile-')) {
     if (type === 'all') process.stdout.write('\n');
-    printValkeyCatalog(payload.valkey, valkeyProfileFilter(type));
+    printManagedDatabaseCatalog(payload.valkey, managedDatabaseProfileFilter(type));
   }
 }
 
 async function handlePlans(session, flags) {
   const type = normalizePlansCatalogType(flags.type);
   if (!type) {
-    throw new CliError('Tipo de catalogo invalido. Valores aceitos: all, http, database, storage, valkey, job, key-value, cache ou queue.');
+    throw new CliError('Tipo de catalogo invalido. Valores aceitos: all, http, database, analytics, jobs, queue, cache ou storage.');
   }
 
   const payload = await fetchPlansCatalogs(session, flags, type);
@@ -3707,32 +3963,32 @@ function validateCreateAutoscaling(config, plan, typeProject) {
   return { ...config, autoscaling: nextAutoscaling };
 }
 
-function validateValkeyConfig(config, plan, catalog) {
-  const valkeyCatalog = requireValkeyCatalog(catalog);
-  const profile = normalizeValkeyProfile(config?.profile);
-  const profileDefinition = valkeyCatalog.profiles.find((entry) => entry.id === profile);
+function validateManagedDatabaseConfig(config, plan, catalog) {
+  const managedDatabaseCatalog = requireManagedDatabaseCatalog(catalog);
+  const profile = normalizeManagedDatabaseProfile(config?.profile);
+  const profileDefinition = managedDatabaseCatalog.profiles.find((entry) => entry.id === profile);
   if (!profileDefinition) {
     throw new CliError('config.profile invalido. Use key_value, cache ou queue.');
   }
 
-  const planDefinition = valkeyCatalog.plans.find((entry) => entry.id === plan && entry.profile === profile);
+  const planDefinition = managedDatabaseCatalog.plans.find((entry) => entry.id === plan && entry.profile === profile);
   if (!planDefinition) {
-    throw new CliError(`Plano ${plan} nao pode ser usado com o perfil ${profile}. Consulte "zenifra plans --type valkey".`);
+    throw new CliError(`Plano ${plan} nao pode ser usado com o perfil ${profile}. Consulte "zenifra plans --type key-value", "--type cache" ou "--type queue".`);
   }
 
-  if (config.version !== valkeyCatalog.version) {
-    throw new CliError(`config.version invalida: use ${valkeyCatalog.version}, conforme o catalogo Valkey.`);
+  if (config.version !== managedDatabaseCatalog.version) {
+    throw new CliError(`config.version invalida: use ${managedDatabaseCatalog.version}, conforme o catalogo de Key Value, Cache e Queue.`);
   }
 
   const forbiddenFields = ['instances', 'envs', 'image', 'github', 'port', 'exposure', 'autoscaling'];
   const forbiddenField = forbiddenFields.find((field) => config[field] !== undefined);
   if (forbiddenField) {
-    throw new CliError(`Valkey nao aceita config.${forbiddenField}. A capacidade e definida pelo plano.`);
+    throw new CliError(`Key Value, Cache e Queue nao aceitam config.${forbiddenField}. A capacidade e definida pelo plano.`);
   }
 
   if (profileDefinition.persistence) {
     if (!isRecord(config.storage) || config.storage.persistent !== true) {
-      throw new CliError('Perfis Valkey persistentes exigem storage.persistent=true.');
+      throw new CliError('Key Value e Queue exigem armazenamento persistente (storage.persistent=true).');
     }
     const capacity = Number(config.storage.capacity);
     if (!Number.isInteger(capacity) || capacity < 1 || capacity > 250) {
@@ -3746,7 +4002,7 @@ function validateValkeyConfig(config, plan, catalog) {
     ...config,
     type_project: 'valkey',
     profile,
-    version: valkeyCatalog.version,
+    version: managedDatabaseCatalog.version,
   };
 }
 
@@ -3801,7 +4057,7 @@ function validateGithubVersionDeployConfig(github) {
   }
 }
 
-function validateCreateInput({ plan, paymentMode, config, valkeyCatalog }) {
+function validateCreateInput({ plan, paymentMode, config, managedDatabaseCatalog }) {
   const nextTypeProject = normalizeTypeProject(config?.type_project);
   const nextPlan = normalizePlan(plan);
   const nextPaymentMode = normalizePaymentMode(paymentMode);
@@ -3842,7 +4098,7 @@ function validateCreateInput({ plan, paymentMode, config, valkeyCatalog }) {
     return {
       plan: nextPlan,
       paymentMode: nextPaymentMode,
-      config: validateValkeyConfig(nextConfig, nextPlan, valkeyCatalog),
+      config: validateManagedDatabaseConfig(nextConfig, nextPlan, managedDatabaseCatalog),
     };
   }
 
@@ -3895,7 +4151,7 @@ function printWizardSummary(payload) {
     '',
     tone('Resumo da criacao', 'green'),
     projectSummary,
-    `  tipo: ${masked.config.type_project}`,
+    `  tipo: ${masked.config.type_project === 'valkey' ? MANAGED_PROFILE_LABELS[masked.config.profile] || masked.config.profile : masked.config.type_project}`,
   ];
 
   if (masked.description) lines.push(`  descricao: ${masked.description}`);
@@ -3923,7 +4179,7 @@ function printWizardSummary(payload) {
   }
 
   if (masked.config.type_project === 'valkey') {
-    lines.push(`  Valkey: perfil ${masked.config.profile} | versao ${masked.config.version}${masked.config.storage ? ` | storage ${masked.config.storage.capacity}Gi persistente` : ' | sem storage persistente'}`);
+    lines.push(`  Banco: ${MANAGED_PROFILE_LABELS[masked.config.profile] || masked.config.profile} | versao ${masked.config.version}${masked.config.storage ? ` | storage ${masked.config.storage.capacity}Gi persistente` : ' | sem storage persistente'}`);
   }
 
   process.stdout.write(`${lines.join('\n')}\n`);
@@ -4352,11 +4608,11 @@ async function buildMariadbConfig() {
   };
 }
 
-async function buildValkeyConfig({ profile, plan, catalog }) {
+async function buildManagedDatabaseConfig({ profile, plan, catalog }) {
   const planDefinition = catalog.plans.find((entry) => entry.id === plan && entry.profile === profile);
   const profileDefinition = catalog.profiles.find((entry) => entry.id === profile);
   if (!planDefinition || !profileDefinition) {
-    throw new CliError('O catalogo Valkey nao possui o plano ou perfil selecionado. Tente novamente.');
+    throw new CliError('O catalogo de Key Value, Cache e Queue nao possui o plano ou perfil selecionado. Tente novamente.');
   }
 
   let storage;
@@ -4365,7 +4621,7 @@ async function buildValkeyConfig({ profile, plan, catalog }) {
       persistent: true,
       capacity: await promptWizardNumber({
         label: `Capacidade de armazenamento persistente (Gi, inclui ${planDefinition.included_storage_gb ?? 0} Gi)`,
-        docs: DOCS_CREATE_VALKEY_URL,
+        docs: DOCS_CREATE_MANAGED_DATABASE_URL,
         examples: [String(Math.max(1, planDefinition.included_storage_gb ?? 1)), '10', '20'],
         min: 1,
         max: 250,
@@ -4375,12 +4631,12 @@ async function buildValkeyConfig({ profile, plan, catalog }) {
 
   const whitelist = await promptWizardPairs({
     introLabel: 'Deseja configurar acesso de rede para este projeto?',
-    docs: DOCS_CREATE_VALKEY_URL,
+    docs: DOCS_CREATE_MANAGED_DATABASE_URL,
     examples: ['sim', 'nao'],
-    stateKey: 'valkeyNetworkAccess',
+    stateKey: 'managedDatabaseNetworkAccess',
     itemLabels: [
-      { key: 'cidr', label: 'CIDR permitido', required: true, examples: ['203.0.113.0/24'], docs: DOCS_CREATE_VALKEY_URL },
-      { key: 'description', label: 'Descricao do acesso', required: true, examples: ['Aplicacao'], docs: DOCS_CREATE_VALKEY_URL },
+      { key: 'cidr', label: 'CIDR permitido', required: true, examples: ['203.0.113.0/24'], docs: DOCS_CREATE_MANAGED_DATABASE_URL },
+      { key: 'description', label: 'Descricao do acesso', required: true, examples: ['Aplicacao'], docs: DOCS_CREATE_MANAGED_DATABASE_URL },
     ],
   });
 
@@ -4388,11 +4644,11 @@ async function buildValkeyConfig({ profile, plan, catalog }) {
   if (whitelist.length > 0) {
     blacklist = await promptWizardPairs({
       introLabel: 'Deseja adicionar bloqueios de rede?',
-      docs: DOCS_CREATE_VALKEY_URL,
+      docs: DOCS_CREATE_MANAGED_DATABASE_URL,
       examples: ['sim', 'nao'],
       itemLabels: [
-        { key: 'cidr', label: 'CIDR bloqueado', required: true, examples: ['198.51.100.0/24'], docs: DOCS_CREATE_VALKEY_URL },
-        { key: 'description', label: 'Descricao do bloqueio', required: true, examples: ['Bloqueio'], docs: DOCS_CREATE_VALKEY_URL },
+        { key: 'cidr', label: 'CIDR bloqueado', required: true, examples: ['198.51.100.0/24'], docs: DOCS_CREATE_MANAGED_DATABASE_URL },
+        { key: 'description', label: 'Descricao do bloqueio', required: true, examples: ['Bloqueio'], docs: DOCS_CREATE_MANAGED_DATABASE_URL },
       ],
     });
   }
@@ -4495,35 +4751,29 @@ async function runProjectCreateWizard(session, flags) {
     examples: ['API publica da empresa'],
     docs: DOCS_CONFIGURATION_URL,
   });
-  const typeProject = await promptWizardSelect({
+  const selectedType = await promptWizardSelect({
     label: 'Tipo do projeto',
     docs: DOCS_CONFIGURATION_URL,
     examples: WIZARD_TYPE_PROJECT_OPTIONS,
     options: WIZARD_TYPE_PROJECT_OPTIONS.map((value) => ({ value })),
     extraValues: ['job'],
+    inlineLimit: WIZARD_TYPE_PROJECT_OPTIONS.length,
   });
+  const profile = WIZARD_MANAGED_DATABASE_PROFILES[selectedType];
+  const typeProject = profile ? 'valkey' : selectedType;
   ui.state.typeProject = typeProject;
-  const valkeyCatalog = typeProject === 'valkey'
-    ? requireValkeyCatalog(unwrapData(await request(session, flags, 'GET', '/managed-services/catalog')))
+  const managedDatabaseCatalog = typeProject === 'valkey'
+    ? requireManagedDatabaseCatalog(unwrapData(await request(session, flags, 'GET', '/managed-services/catalog')))
     : undefined;
   const jobPlans = typeProject === 'job'
     ? requireJobPlans(unwrapData(await request(session, flags, 'GET', '/project/job/plans')))
     : undefined;
-  const profile = typeProject === 'valkey'
-    ? await promptWizardSelect({
-      label: 'Perfil Valkey',
-      docs: DOCS_CREATE_VALKEY_URL,
-      examples: WIZARD_VALKEY_PROFILE_OPTIONS,
-      options: WIZARD_VALKEY_PROFILE_OPTIONS.map((value) => ({ value })),
-    })
-    : undefined;
-  ui.state.valkeyProfile = profile;
   const planOptions = typeProject === 'http'
     ? sortWizardOptions(catalogs.httpPlans
       .map((plan) => plan?.plan)
       .filter((plan) => WIZARD_HTTP_PLAN_OPTIONS.includes(plan) && Number(catalogs.availableInstances?.[plan] || 0) > 0), WIZARD_HTTP_PLAN_OPTIONS)
     : typeProject === 'valkey'
-      ? valkeyCatalog.plans
+      ? managedDatabaseCatalog.plans
         .filter((planDefinition) => planDefinition.profile === profile)
         .map((planDefinition) => planDefinition.id)
       : typeProject === 'job'
@@ -4535,7 +4785,7 @@ async function runProjectCreateWizard(session, flags) {
     label: 'Plano',
     docs: typeProject === 'http'
       ? DOCS_CREATE_HTTP_URL
-      : typeProject === 'valkey' ? DOCS_CREATE_VALKEY_URL
+      : typeProject === 'valkey' ? DOCS_CREATE_MANAGED_DATABASE_URL
         : typeProject === 'job' ? DOCS_CONFIGURATION_URL : DOCS_DATABASE_CONFIGURATION_URL,
     examples: [planOptions[0], planOptions.at(-1)],
     options: planOptions.map((value) => ({ value })),
@@ -4563,7 +4813,7 @@ async function runProjectCreateWizard(session, flags) {
   } else if (typeProject === 'postgresql') {
     config = await buildPostgresqlConfig({ plan, databasePlans: catalogs.databasePlans });
   } else if (typeProject === 'valkey') {
-    config = await buildValkeyConfig({ profile, plan, catalog: valkeyCatalog });
+    config = await buildManagedDatabaseConfig({ profile, plan, catalog: managedDatabaseCatalog });
   } else if (typeProject === 'job') {
     config = await buildJobConfig();
   } else {
@@ -4583,7 +4833,7 @@ async function runProjectCreateWizard(session, flags) {
     label: 'Confirmar criacao do projeto',
     docs: typeProject === 'http'
       ? DOCS_CREATE_HTTP_URL
-      : typeProject === 'valkey' ? DOCS_CREATE_VALKEY_URL : DOCS_DATABASE_CONFIGURATION_URL,
+      : typeProject === 'valkey' ? DOCS_CREATE_MANAGED_DATABASE_URL : DOCS_DATABASE_CONFIGURATION_URL,
     examples: ['sim', 'nao'],
   });
   if (!confirmed) return null;
@@ -4611,10 +4861,10 @@ async function handleProjectCreate(session, flags) {
   const paymentMode = typeProject === 'job'
     ? flags.paymentMode || 'per_minute'
     : wizardPayload?.payment_mode || flags.paymentMode || await prompt('Modo de pagamento');
-  const valkeyCatalog = typeProject === 'valkey'
-    ? requireValkeyCatalog(unwrapData(await request(session, flags, 'GET', '/managed-services/catalog')))
+  const managedDatabaseCatalog = typeProject === 'valkey'
+    ? requireManagedDatabaseCatalog(unwrapData(await request(session, flags, 'GET', '/managed-services/catalog')))
     : undefined;
-  const validated = validateCreateInput({ plan, paymentMode, config, valkeyCatalog });
+  const validated = validateCreateInput({ plan, paymentMode, config, managedDatabaseCatalog });
 
   if (validated.config.source !== undefined || validated.config.build !== undefined) {
     if (!await supportsNeutralGitRoutes(session, flags, orgId)) {
@@ -4649,7 +4899,7 @@ async function handleProjectCreate(session, flags) {
   if (validated.config.type_project === 'valkey') {
     const service = project.managed_service || {};
     rows.push(
-      { field: 'Perfil', value: service.profile || validated.config.profile },
+      { field: 'Perfil', value: MANAGED_PROFILE_LABELS[service.profile || validated.config.profile] || service.profile || validated.config.profile },
       { field: 'Host', value: service.host || '-' },
       { field: 'Porta', value: service.port ?? '-' },
       { field: 'TLS', value: service.tls === true ? 'sim' : 'nao' },
@@ -4658,7 +4908,7 @@ async function handleProjectCreate(session, flags) {
       rows.push({ field: 'String de conexao', value: service.connection_string });
       process.stdout.write('Salve a string de conexao em um local seguro; ela pode nao ser exibida novamente.\n');
     } else {
-      rows.push({ field: 'Credencial', value: 'nao retornada nesta resposta; use valkey credentials rotate' });
+      rows.push({ field: 'Credencial', value: 'nao retornada nesta resposta; use database credentials rotate' });
     }
   }
   process.stdout.write('\n');
@@ -5137,7 +5387,7 @@ async function handleProjectMetrics(session, flags) {
 
   if (flags.json) return printJson(metrics);
   if (metrics?.type === 'valkey') {
-    return printValkeyMetrics(metrics);
+    return printManagedDatabaseMetrics(metrics);
   }
   if (Array.isArray(metrics)) {
     return printTable(metrics, [
@@ -5665,17 +5915,46 @@ async function handleProjectBillingUsage(session, flags) {
   printBillingUsage(data);
 }
 
-function printValkeyStatus(data) {
+const DATABASE_ENGINE_LABELS = { postgresql: 'PostgreSQL', mariadb: 'MariaDB', clickhouse: 'ClickHouse' };
+
+async function resolveDatabaseProject(session, flags, commandKey) {
+  const projectId = requireProjectId(flags, commandKey);
+  if (!projectId) return null;
+  const orgId = await resolveOrgId(session, flags);
+  const project = await getProject(session, flags, projectId, orgId);
+  const type = project?.type_project || project?.config?.type_project;
+  if (type === 'valkey') return { projectId, orgId, managed: true };
+  if (Object.hasOwn(DATABASE_ENGINE_LABELS, type)) return { projectId, orgId, managed: false, type };
+  throw new CliError(`O projeto ${projectId} nao e um banco gerenciado. Os comandos "zenifra database" atendem PostgreSQL, MariaDB, ClickHouse, Key Value, Cache e Queue.`);
+}
+
+function printManagedServiceStatus(data) {
   printTable([data], [
     { label: 'Status', value: (service) => service.status || '-' },
-    { label: 'Perfil', value: (service) => service.profile || '-' },
+    { label: 'Perfil', value: (service) => MANAGED_PROFILE_LABELS[service.profile] || service.profile || '-' },
     { label: 'Versao', value: (service) => service.version || '-' },
     { label: 'Persistente', value: (service) => service.persistence === true ? 'sim' : 'nao' },
     { label: 'Instancias', value: (service) => service.instances ?? '-' },
   ]);
 }
 
-function printValkeyConnection(data) {
+function printDatabaseStatus(data, type) {
+  const engine = data?.postgres || data?.mariadb || data?.clickhouse || {};
+  const instances = engine.instances === undefined ? '-' : `${engine.readyInstances ?? '-'} de ${engine.instances} prontas`;
+  printFieldTable([
+    { field: 'Tipo', value: DATABASE_ENGINE_LABELS[type] },
+    { field: 'Nome', value: data?.name },
+    { field: 'Status', value: data?.status },
+    { field: 'Plano', value: data?.plan },
+    { field: 'Acesso', value: data?.exposure === 'private' ? 'privado' : 'publico' },
+    { field: 'Instancias', value: instances },
+    { field: 'Armazenamento', value: engine.storage_gb === undefined ? '-' : `${engine.storage_gb} GB` },
+    { field: 'vCPU', value: engine.vcpu },
+    { field: 'Memoria', value: engine.memory_mb === undefined ? '-' : `${engine.memory_mb} MB` },
+  ]);
+}
+
+function printManagedServiceConnection(data) {
   printTable([data], [
     { label: 'Host', value: (service) => service.host || '-' },
     { label: 'Porta', value: (service) => service.port ?? '-' },
@@ -5685,7 +5964,20 @@ function printValkeyConnection(data) {
   ]);
 }
 
-function printValkeyRotation(data, { accepted = false } = {}) {
+function printDatabaseConnection(data) {
+  printFieldTable([
+    { field: 'Host', value: data?.host },
+    { field: 'Porta', value: data?.port },
+    ...(data?.httpsPort ? [{ field: 'Porta HTTPS', value: data.httpsPort }] : []),
+    { field: 'Banco', value: data?.database },
+    { field: 'Usuario', value: data?.username },
+    { field: 'Conexao', value: data?.connectionString },
+    ...(data?.connectionStringRO ? [{ field: 'Conexao de leitura', value: data.connectionStringRO }] : []),
+    { field: 'Acesso', value: data?.exposure === 'private' ? 'privado' : 'publico' },
+  ]);
+}
+
+function printManagedServiceRotation(data, { accepted = false } = {}) {
   const rows = [
     { field: accepted ? 'Operacao aceita' : 'Operacao', value: data.operation_id || '-' },
     { field: 'Estado', value: data.state || '-' },
@@ -5694,13 +5986,10 @@ function printValkeyRotation(data, { accepted = false } = {}) {
     rows.push({ field: 'String de conexao', value: data.connection_string });
     process.stdout.write('Salve a nova string de conexao em um local seguro; ela pode nao ser exibida novamente.\n');
   }
-  printTable(rows, [
-    { label: 'Campo', value: (row) => row.field },
-    { label: 'Valor', value: (row) => row.value },
-  ]);
+  printFieldTable(rows);
 }
 
-async function waitForValkeyRotation(session, flags, projectId, operationId, orgId) {
+async function waitForManagedServiceRotation(session, flags, projectId, operationId, orgId) {
   const intervalMs = parseSecondsOption(flags.interval, '--interval', { defaultValue: 2, min: 0.1 }) * 1000;
   const timeoutMs = parseSecondsOption(flags.timeout, '--timeout', { defaultValue: 900, min: 1 }) * 1000;
   const startedAt = Date.now();
@@ -5726,59 +6015,60 @@ async function waitForValkeyRotation(session, flags, projectId, operationId, org
   }
 }
 
-async function handleValkeyStatus(session, flags) {
-  const projectId = requireProjectId(flags, 'valkey status');
-  if (!projectId) return;
-  const orgId = await resolveOrgId(session, flags);
-  const data = unwrapData(await request(session, flags, 'GET', `/managed-services/${projectId}/status`, { orgId }));
+async function handleDatabaseStatus(session, flags) {
+  const target = await resolveDatabaseProject(session, flags, 'database status');
+  if (!target) return;
+  const path = target.managed ? `/managed-services/${target.projectId}/status` : `/project/${target.projectId}/database/status`;
+  const data = unwrapData(await request(session, flags, 'GET', path, { orgId: target.orgId }));
   if (flags.json) return printJson(data);
-  printValkeyStatus(data);
+  if (target.managed) return printManagedServiceStatus(data);
+  printDatabaseStatus(data, target.type);
 }
 
-async function handleValkeyConnection(session, flags) {
-  const projectId = requireProjectId(flags, 'valkey connection');
-  if (!projectId) return;
-  const orgId = await resolveOrgId(session, flags);
-  const data = unwrapData(await request(session, flags, 'GET', `/managed-services/${projectId}/connection`, { orgId }));
+async function handleDatabaseConnection(session, flags) {
+  const target = await resolveDatabaseProject(session, flags, 'database connection');
+  if (!target) return;
+  const path = target.managed ? `/managed-services/${target.projectId}/connection` : `/project/${target.projectId}/database/connection`;
+  const data = unwrapData(await request(session, flags, 'GET', path, { orgId: target.orgId }));
   if (flags.json) return printJson(data);
-  printValkeyConnection(data);
+  if (target.managed) return printManagedServiceConnection(data);
+  printDatabaseConnection(data);
 }
 
-async function handleValkeyCredentialStatus(session, flags) {
-  const projectId = requireProjectId(flags, 'valkey credentials status');
-  if (!projectId) return;
-  if (!flags.operation) {
-    printCommandHelpAndFail('valkey credentials status');
+async function saveConnectionFile(flags, data) {
+  await writeConnectionFile(String(flags.connectionFile), data.connection_string);
+  if (flags.json) return printJson({
+    operation_id: data.operation_id,
+    state: data.state,
+    connection_saved: true,
+    connection_file: String(flags.connectionFile),
+  });
+  process.stdout.write(`Credencial concluida e salva em ${flags.connectionFile}.\n`);
+}
+
+async function handleDatabaseCredentialStatus(session, flags) {
+  const target = await resolveDatabaseProject(session, flags, 'database credentials status');
+  if (!target) return;
+  if (!target.managed) {
+    throw new CliError(`A renovacao de credencial de ${DATABASE_ENGINE_LABELS[target.type]} e imediata: a nova senha aparece na resposta de "zenifra database credentials rotate". Nao ha operacao para acompanhar.`);
+  }
+  if (!flags.operation || flags.operation === true) {
+    printCommandHelpAndFail('database credentials status');
     return;
   }
-  const orgId = await resolveOrgId(session, flags);
   const data = unwrapData(await request(
     session,
     flags,
     'GET',
-    `/managed-services/${projectId}/credential-rotations/${flags.operation}`,
-    { orgId },
+    `/managed-services/${target.projectId}/credential-rotations/${flags.operation}`,
+    { orgId: target.orgId },
   ));
-  if (flags.connectionFile) {
-    await writeValkeyConnectionFile(String(flags.connectionFile), data.connection_string);
-    if (flags.json) return printJson({
-      operation_id: data.operation_id,
-      state: data.state,
-      connection_saved: true,
-      connection_file: String(flags.connectionFile),
-    });
-    process.stdout.write(`Credencial concluida e salva em ${flags.connectionFile}.\n`);
-    return;
-  }
+  if (flags.connectionFile) return saveConnectionFile(flags, data);
   if (flags.json) return printJson(data);
-  printValkeyRotation(data);
+  printManagedServiceRotation(data);
 }
 
-async function handleValkeyCredentialRotate(session, flags) {
-  const projectId = requireProjectId(flags, 'valkey credentials rotate');
-  if (!projectId) return;
-  const idempotencyKey = validateIdempotencyKey(flags.idempotencyKey === undefined ? randomUUID() : flags.idempotencyKey);
-  const orgId = await resolveOrgId(session, flags);
+async function rotateManagedServiceCredential(session, flags, { projectId, orgId }, idempotencyKey) {
   const acceptedPayload = await request(session, flags, 'PATCH', `/managed-services/${projectId}/credentials`, {
     orgId,
     body: {},
@@ -5788,25 +6078,481 @@ async function handleValkeyCredentialRotate(session, flags) {
   if (!accepted?.operation_id) throw new CliError('A API nao retornou o identificador da renovacao de credencial.');
 
   if (flags.wait) {
-    const completed = await waitForValkeyRotation(session, flags, projectId, accepted.operation_id, orgId);
-    if (flags.connectionFile) {
-      await writeValkeyConnectionFile(String(flags.connectionFile), completed.connection_string);
-      if (flags.json) return printJson({
-        operation_id: completed.operation_id,
-        state: completed.state,
-        connection_saved: true,
-        connection_file: String(flags.connectionFile),
-      });
-      process.stdout.write(`Credencial concluida e salva em ${flags.connectionFile}.\n`);
-      return;
-    }
+    const completed = await waitForManagedServiceRotation(session, flags, projectId, accepted.operation_id, orgId);
+    if (flags.connectionFile) return saveConnectionFile(flags, completed);
     if (flags.json) return printJson(completed);
-    printValkeyRotation(completed);
+    printManagedServiceRotation(completed);
     return;
   }
 
   if (flags.json) return printJson(acceptedPayload);
-  printValkeyRotation(accepted, { accepted: true });
+  printManagedServiceRotation(accepted, { accepted: true });
+}
+
+function connectionWithPassword(connectionString, password) {
+  const match = /^([^:]+:\/\/[^:]+:)\*+(@.+)$/.exec(String(connectionString || ''));
+  return match ? `${match[1]}${encodeURIComponent(password)}${match[2]}` : null;
+}
+
+function printLinkedApplications(linkedApplications) {
+  const linked = asArray(linkedApplications);
+  if (linked.length === 0) return;
+  process.stdout.write('Atualize a nova senha nas aplicacoes conectadas:\n');
+  printTable(linked, [
+    { label: 'Projeto', value: (app) => app.project_id || '-' },
+    { label: 'Variaveis', value: (app) => asArray(app.variable_names).join(', ') || '-' },
+  ]);
+}
+
+function printDatabasePassword(data) {
+  process.stdout.write(`${tone('Credencial renovada. Guarde a nova senha agora: ela nao sera exibida novamente.', 'yellow')}\n`);
+  process.stdout.write(`Senha: ${tone(data.password, 'bold')}\n`);
+  printLinkedApplications(data.linked_applications);
+}
+
+async function rotateDatabasePassword(session, flags, { projectId, orgId }) {
+  const data = unwrapData(await request(session, flags, 'PATCH', `/project/${projectId}/database/password`, { orgId, body: {} }));
+  if (!data?.password) throw new CliError('A API nao retornou a nova senha. Tente novamente.');
+  if (!flags.connectionFile) {
+    if (flags.json) return printJson(data);
+    return printDatabasePassword(data);
+  }
+  const connection = unwrapData(await request(session, flags, 'GET', `/project/${projectId}/database/connection`, { orgId }).catch(() => null));
+  const connectionString = connectionWithPassword(connection?.connectionString, data.password);
+  if (!connectionString) {
+    printDatabasePassword(data);
+    throw new CliError(`Nao foi possivel montar a conexao para ${flags.connectionFile}. Guarde a senha exibida acima.`);
+  }
+  await writeConnectionFile(String(flags.connectionFile), connectionString);
+  if (flags.json) return printJson({ project_id: projectId, connection_saved: true, connection_file: String(flags.connectionFile), linked_applications: data.linked_applications ?? [] });
+  process.stdout.write(`Credencial renovada e conexao salva em ${flags.connectionFile}.\n`);
+  printLinkedApplications(data.linked_applications);
+}
+
+async function handleDatabaseCredentialRotate(session, flags) {
+  if (!requireProjectId(flags, 'database credentials rotate')) return;
+  const idempotencyKey = validateIdempotencyKey(flags.idempotencyKey === undefined ? randomUUID() : flags.idempotencyKey);
+  const target = await resolveDatabaseProject(session, flags, 'database credentials rotate');
+  if (target.managed) return rotateManagedServiceCredential(session, flags, target, idempotencyKey);
+  return rotateDatabasePassword(session, flags, target);
+}
+
+const STORAGE_MAX_FILE_BYTES = 20 * 1024 ** 3;
+const STORAGE_ACCESS_LEVELS = ['read', 'read_write', 'full'];
+const STORAGE_CONTENT_TYPES = {
+  '.txt': 'text/plain',
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'text/javascript',
+  '.json': 'application/json',
+  '.csv': 'text/csv',
+  '.xml': 'application/xml',
+  '.pdf': 'application/pdf',
+  '.zip': 'application/zip',
+  '.gz': 'application/gzip',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.mp4': 'video/mp4',
+  '.mp3': 'audio/mpeg',
+};
+
+function requireStorageFlag(flags, name, commandKey) {
+  if (flags[name] === undefined || flags[name] === true || flags[name] === '') {
+    printCommandHelpAndFail(commandKey);
+    return null;
+  }
+  return String(flags[name]);
+}
+
+function requireStorageConfirmation(flags, action) {
+  if (flags.yes !== true) throw new CliError(`${action} exige --yes. Nenhuma solicitacao foi enviada.`);
+}
+
+function storageListFlag(value) {
+  return String(value).split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+async function getStorageState(session, flags, orgId) {
+  return unwrapData(await request(session, flags, 'GET', '/object-storage', { orgId }));
+}
+
+async function requireStorageService(session, flags) {
+  const orgId = await resolveOrgId(session, flags);
+  const state = await getStorageState(session, flags, orgId);
+  if (state?.service?.id) return { orgId, service: state.service };
+  if (state?.available) throw new CliError('A organizacao ainda nao criou o Armazem. Crie com "zenifra storage create".');
+  throw new CliError(PUBLIC_ERROR_CODE_MESSAGES.OBJECT_STORAGE_NOT_AVAILABLE);
+}
+
+function storageBucketPath(service, bucket, suffix = '') {
+  return `/object-storage/${encodeURIComponent(service.id)}/buckets/${encodeURIComponent(bucket)}${suffix}`;
+}
+
+function printFieldTable(rows) {
+  printTable(rows, [
+    { label: 'Campo', value: (row) => row.field },
+    { label: 'Valor', value: (row) => row.value ?? '-' },
+  ]);
+}
+
+function printStorageService(service) {
+  printFieldTable([
+    { field: 'ID', value: service.id },
+    { field: 'Nome', value: service.name },
+    { field: 'Status', value: service.status },
+    { field: 'Regiao', value: service.region },
+    { field: 'Endpoint', value: service.endpoint },
+    { field: 'Criado em', value: service.created_at },
+  ]);
+}
+
+async function handleStorageStatus(session, flags) {
+  const orgId = await resolveOrgId(session, flags);
+  const state = await getStorageState(session, flags, orgId);
+  if (flags.json) return printJson(state);
+  if (state?.service) return printStorageService(state.service);
+  if (state?.available) {
+    process.stdout.write('O Armazem esta disponivel para a organizacao, mas ainda nao foi criado. Crie com "zenifra storage create".\n');
+    return;
+  }
+  process.stdout.write(`${PUBLIC_ERROR_CODE_MESSAGES.OBJECT_STORAGE_NOT_AVAILABLE}\n`);
+  if (state?.beta_request?.requested_at) {
+    process.stdout.write(`Pedido de participacao enviado em ${state.beta_request.requested_at}.\n`);
+  }
+}
+
+async function handleStorageCreate(session, flags) {
+  const name = flags.name === undefined || flags.name === true ? 'Armazem' : String(flags.name).trim();
+  if (!name || name.length > 60) throw new CliError('--name deve ter entre 1 e 60 caracteres.');
+  const orgId = await resolveOrgId(session, flags);
+  const service = unwrapData(await request(session, flags, 'POST', '/object-storage', { orgId, body: { name } }));
+  if (flags.json) return printJson(service);
+  process.stdout.write(`Armazem pronto: ${service.id}\nEndpoint: ${service.endpoint} (regiao ${service.region})\n`);
+}
+
+async function handleStorageBuckets(session, flags) {
+  const { orgId, service } = await requireStorageService(session, flags);
+  const buckets = asArray(unwrapData(await request(session, flags, 'GET', `/object-storage/${encodeURIComponent(service.id)}/buckets`, { orgId })));
+  if (flags.json) return printJson(buckets);
+  printTable(buckets, [
+    { label: 'Bucket', value: (bucket) => bucket.name },
+    { label: 'Tamanho', value: (bucket) => formatBytes(bucket.size_bytes) },
+    { label: 'Arquivos', value: (bucket) => bucket.objects ?? '-' },
+    { label: 'Criado em', value: (bucket) => bucket.created_at || '-' },
+    { label: 'Atualizado em', value: (bucket) => bucket.last_updated_at || '-' },
+  ]);
+}
+
+async function handleStorageBucketCreate(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage buckets create');
+  if (!bucket) return;
+  const { orgId, service } = await requireStorageService(session, flags);
+  const data = unwrapData(await request(session, flags, 'POST', `/object-storage/${encodeURIComponent(service.id)}/buckets`, { orgId, body: { name: bucket } }));
+  if (flags.json) return printJson(data);
+  process.stdout.write(`Bucket criado: ${data?.name || bucket}\n`);
+}
+
+async function handleStorageBucketDelete(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage buckets delete');
+  if (!bucket) return;
+  requireStorageConfirmation(flags, 'A remocao do bucket');
+  const { orgId, service } = await requireStorageService(session, flags);
+  await request(session, flags, 'DELETE', storageBucketPath(service, bucket), { orgId });
+  if (flags.json) return printJson({ name: bucket, status: 'deleted' });
+  process.stdout.write(`Bucket removido: ${bucket}\n`);
+}
+
+async function handleStorageFiles(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage files');
+  if (!bucket) return;
+  if (flags.limit !== undefined) parseIntegerOption(flags.limit, '--limit', { min: 1, max: 1000 });
+  const { orgId, service } = await requireStorageService(session, flags);
+  const query = buildQuery(flags, ['prefix', 'continuationToken', 'limit']);
+  const data = unwrapData(await request(session, flags, 'GET', storageBucketPath(service, bucket, `/objects${query}`), { orgId }));
+  if (flags.json) return printJson(data);
+  const rows = [
+    ...asArray(data?.folders).map((folder) => ({ type: 'pasta', name: `${folder.name}/`, size: '-', date: '-' })),
+    ...asArray(data?.objects).map((object) => ({ type: 'arquivo', name: object.name || object.key, size: formatBytes(object.size_bytes), date: object.uploaded_at || '-' })),
+  ];
+  printTable(rows, [
+    { label: 'Tipo', value: (row) => row.type },
+    { label: 'Nome', value: (row) => row.name },
+    { label: 'Tamanho', value: (row) => row.size },
+    { label: 'Enviado em', value: (row) => row.date },
+  ]);
+  if (data?.next_continuation_token) {
+    const prefix = data.prefix ? ` --prefix ${JSON.stringify(data.prefix)}` : '';
+    process.stdout.write(`Ha mais itens. Proxima pagina: zenifra storage files --bucket ${bucket}${prefix} --continuation-token ${data.next_continuation_token}\n`);
+  }
+}
+
+function assertSignedUrlAllowed(session, flags, url) {
+  const target = new URL(url);
+  if (target.protocol === 'https:') return target;
+  if (target.protocol === 'http:' && new URL(apiBaseUrl(session, flags)).protocol === 'http:') return target;
+  throw new CliError('A API devolveu um link de transferencia invalido.');
+}
+
+function sendSignedRequest(session, flags, signed, { body, headers = {} } = {}) {
+  const target = assertSignedUrlAllowed(session, flags, signed.url);
+  const client = target.protocol === 'https:' ? https : http;
+  const timeoutMs = httpTimeoutMs();
+  return new Promise((resolvePromise, reject) => {
+    const req = client.request(target, {
+      method: signed.method,
+      headers: { ...(signed.headers || {}), ...headers },
+    }, resolvePromise);
+    req.setTimeout(timeoutMs, () => req.destroy(new CliError(`O Armazem nao respondeu em ate ${timeoutMs} ms.`)));
+    req.on('error', (error) => reject(error instanceof CliError ? error : new CliError(`Nao foi possivel conectar ao Armazem: ${error?.message || 'erro de rede'}.`)));
+    if (body) pipeline(body, req).catch(reject);
+    else req.end();
+  });
+}
+
+async function assertTransferSucceeded(response, action) {
+  if (response.statusCode >= 200 && response.statusCode < 300) return;
+  response.resume();
+  const hint = response.statusCode === 403 ? ' O link pode ter expirado ou o arquivo mudou durante a transferencia; tente novamente.' : '';
+  throw new CliError(`O Armazem recusou ${action} (HTTP ${response.statusCode}).${hint}`);
+}
+
+function storageUploadKey(flags, filePath) {
+  const fileName = basename(filePath);
+  if (flags.key === undefined || flags.key === true || flags.key === '') return fileName;
+  const key = String(flags.key);
+  return key.endsWith('/') ? `${key}${fileName}` : key;
+}
+
+function storageContentType(flags, key) {
+  if (flags.contentType !== undefined && flags.contentType !== true) return String(flags.contentType);
+  const extension = key.slice(key.lastIndexOf('.')).toLowerCase();
+  return key.includes('.') && Object.hasOwn(STORAGE_CONTENT_TYPES, extension) ? STORAGE_CONTENT_TYPES[extension] : 'application/octet-stream';
+}
+
+async function handleStorageFileUpload(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage files upload');
+  if (!bucket) return;
+  const filePath = requireStorageFlag(flags, 'file', 'storage files upload');
+  if (!filePath) return;
+  let fileStat;
+  try {
+    fileStat = await stat(filePath);
+  } catch {
+    throw new CliError(`Arquivo nao encontrado: ${filePath}.`);
+  }
+  if (!fileStat.isFile()) throw new CliError(`${filePath} nao e um arquivo.`);
+  if (fileStat.size > STORAGE_MAX_FILE_BYTES) throw new CliError(PUBLIC_ERROR_CODE_MESSAGES.OBJECT_TOO_LARGE);
+  const key = storageUploadKey(flags, filePath);
+  const contentType = storageContentType(flags, key);
+  const { orgId, service } = await requireStorageService(session, flags);
+  const signed = unwrapData(await request(session, flags, 'POST', storageBucketPath(service, bucket, '/write-url'), {
+    orgId,
+    body: { operation: 'upload', key, size: fileStat.size, content_type: contentType },
+  }));
+  const response = await sendSignedRequest(session, flags, signed, {
+    body: createReadStream(filePath),
+    headers: { 'content-length': String(fileStat.size) },
+  });
+  await assertTransferSucceeded(response, 'o envio');
+  response.resume();
+  const result = { bucket, key, size_bytes: fileStat.size, content_type: contentType };
+  if (flags.json) return printJson(result);
+  process.stdout.write(`Arquivo enviado: ${bucket}/${key} (${formatBytes(fileStat.size)})\n`);
+}
+
+async function handleStorageFileDownload(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage files download');
+  if (!bucket) return;
+  const key = requireStorageFlag(flags, 'key', 'storage files download');
+  if (!key) return;
+  const output = flags.output === undefined || flags.output === true ? basename(key) : String(flags.output);
+  if (!output) throw new CliError('Informe o destino com --output <path>.');
+  if (existsSync(output) && flags.yes !== true) {
+    throw new CliError(`${output} ja existe. Use --yes para substituir ou --output para outro destino.`);
+  }
+  const { orgId, service } = await requireStorageService(session, flags);
+  const signed = unwrapData(await request(session, flags, 'POST', storageBucketPath(service, bucket, '/read-url'), {
+    orgId,
+    body: { operation: 'download', key },
+  }));
+  const response = await sendSignedRequest(session, flags, signed);
+  await assertTransferSucceeded(response, 'o download');
+  try {
+    await pipeline(response, createWriteStream(output));
+  } catch (error) {
+    await rm(output, { force: true });
+    throw new CliError(`O download foi interrompido: ${error?.message || 'erro de rede'}.`);
+  }
+  const sizeBytes = (await stat(output)).size;
+  if (flags.json) return printJson({ bucket, key, output, size_bytes: sizeBytes });
+  process.stdout.write(`Arquivo baixado: ${output} (${formatBytes(sizeBytes)})\n`);
+}
+
+async function handleStorageFileDelete(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage files delete');
+  if (!bucket) return;
+  const key = requireStorageFlag(flags, 'key', 'storage files delete');
+  if (!key) return;
+  requireStorageConfirmation(flags, 'A exclusao do arquivo');
+  const { orgId, service } = await requireStorageService(session, flags);
+  const signed = unwrapData(await request(session, flags, 'POST', storageBucketPath(service, bucket, '/write-url'), {
+    orgId,
+    body: { operation: 'delete', key },
+  }));
+  const response = await sendSignedRequest(session, flags, signed);
+  await assertTransferSucceeded(response, 'a exclusao');
+  response.resume();
+  if (flags.json) return printJson({ bucket, key, deleted: true });
+  process.stdout.write(`Arquivo apagado: ${bucket}/${key}\n`);
+}
+
+async function handleStorageFileShare(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage files share');
+  if (!bucket) return;
+  const key = requireStorageFlag(flags, 'key', 'storage files share');
+  if (!key) return;
+  const { orgId, service } = await requireStorageService(session, flags);
+  const signed = unwrapData(await request(session, flags, 'POST', storageBucketPath(service, bucket, '/read-url'), {
+    orgId,
+    body: { operation: 'share', key },
+  }));
+  if (flags.json) return printJson(signed);
+  process.stdout.write(`Link de compartilhamento (valido ate ${signed.expires_at || '7 dias'}):\n${signed.url}\n`);
+}
+
+async function handleStorageFileInfo(session, flags) {
+  const bucket = requireStorageFlag(flags, 'bucket', 'storage files info');
+  if (!bucket) return;
+  const key = requireStorageFlag(flags, 'key', 'storage files info');
+  if (!key) return;
+  const { orgId, service } = await requireStorageService(session, flags);
+  const info = unwrapData(await request(session, flags, 'POST', storageBucketPath(service, bucket, '/object-info'), { orgId, body: { key } }));
+  if (flags.json) return printJson(info);
+  printFieldTable([
+    { field: 'Arquivo', value: info.key },
+    { field: 'Tamanho', value: formatBytes(info.size_bytes) },
+    { field: 'Tipo', value: info.content_type },
+    { field: 'Enviado em', value: info.uploaded_at },
+    { field: 'ETag', value: info.etag },
+    ...Object.entries(info.metadata || {}).map(([name, value]) => ({ field: `Metadado ${name}`, value })),
+  ]);
+}
+
+function storageKeyRows(keys) {
+  printTable(keys, [
+    { label: 'ID', value: (key) => key.access_key_id },
+    { label: 'Nome', value: (key) => key.name || '-' },
+    { label: 'Buckets', value: (key) => asArray(key.buckets).join(',') || '*' },
+    { label: 'Acesso', value: (key) => key.access || 'full' },
+    { label: 'IPs permitidos', value: (key) => asArray(key.allowed_ips).join(',') || 'qualquer' },
+    { label: 'Criada em', value: (key) => key.created_at || '-' },
+  ]);
+}
+
+async function handleStorageKeys(session, flags) {
+  const { orgId, service } = await requireStorageService(session, flags);
+  const keys = asArray(unwrapData(await request(session, flags, 'GET', `/object-storage/${encodeURIComponent(service.id)}/access-keys`, { orgId })));
+  if (flags.json) return printJson(keys);
+  storageKeyRows(keys);
+}
+
+function storageKeyCreateBody(flags) {
+  const name = String(flags.name).trim();
+  if (!name || name.length > 64) throw new CliError('--name deve ter entre 1 e 64 caracteres.');
+  const body = { name };
+  if (flags.buckets !== undefined || flags.access !== undefined) {
+    const buckets = flags.buckets === undefined || flags.buckets === true ? ['*'] : storageListFlag(flags.buckets);
+    const access = flags.access === undefined || flags.access === true ? 'full' : String(flags.access);
+    if (buckets.length === 0 || buckets.length > 10 || (buckets.includes('*') && buckets.length > 1)) {
+      throw new CliError('--buckets aceita * ou de 1 a 10 nomes de bucket separados por virgula.');
+    }
+    if (!STORAGE_ACCESS_LEVELS.includes(access)) throw new CliError(`--access deve ser um destes valores: ${STORAGE_ACCESS_LEVELS.join(', ')}.`);
+    body.scope = { buckets, access };
+  }
+  if (flags.allowedIps !== undefined && flags.allowedIps !== true) {
+    const allowedIps = storageListFlag(flags.allowedIps);
+    if (allowedIps.length > 20) throw new CliError('--allowed-ips aceita ate 20 IPs ou redes.');
+    body.allowed_ips = allowedIps;
+  }
+  return body;
+}
+
+async function handleStorageKeyCreate(session, flags) {
+  if (!requireStorageFlag(flags, 'name', 'storage keys create')) return;
+  const body = storageKeyCreateBody(flags);
+  const { orgId, service } = await requireStorageService(session, flags);
+  const key = unwrapData(await request(session, flags, 'POST', `/object-storage/${encodeURIComponent(service.id)}/access-keys`, { orgId, body }));
+  if (flags.json) return printJson(key);
+  process.stdout.write(`${tone('Chave de acesso criada. Guarde o segredo agora: ele nao sera exibido novamente.', 'yellow')}\n`);
+  printTable([
+    { field: 'ID da chave', value: key.access_key_id },
+    { field: 'Segredo', value: tone(key.secret_access_key, 'bold') },
+    { field: 'Endpoint', value: service.endpoint },
+    { field: 'Regiao', value: service.region },
+    { field: 'Buckets', value: asArray(key.buckets).join(',') || '*' },
+    { field: 'Acesso', value: key.access || 'full' },
+    { field: 'IPs permitidos', value: asArray(key.allowed_ips).join(',') || 'qualquer' },
+  ], [
+    { label: 'Campo', value: (row) => row.field },
+    { label: 'Valor', value: (row) => row.value ?? '-' },
+  ]);
+}
+
+async function handleStorageKeyRevoke(session, flags) {
+  const accessKeyId = requireStorageFlag(flags, 'accessKey', 'storage keys revoke');
+  if (!accessKeyId) return;
+  requireStorageConfirmation(flags, 'A revogacao da chave');
+  const { orgId, service } = await requireStorageService(session, flags);
+  await request(session, flags, 'DELETE', `/object-storage/${encodeURIComponent(service.id)}/access-keys/${encodeURIComponent(accessKeyId)}`, { orgId });
+  if (flags.json) return printJson({ access_key_id: accessKeyId, revoked: true });
+  process.stdout.write(`Chave revogada: ${accessKeyId}\n`);
+}
+
+function formatStorageAmount(value) {
+  return value === null || value === undefined ? '-' : formatJobBrlFromCents(value, 4);
+}
+
+function printStorageUsage(usage) {
+  const free = usage.free_requests || {};
+  process.stdout.write(`Periodo: ${usage.period_start || '-'} ate ${usage.period_end || '-'} (${usage.closed ? 'fechado' : 'em aberto'})\n`);
+  printFieldTable([
+    { field: 'Armazenamento', value: `${Number(usage.storage_gb_months ?? 0).toFixed(4)} GB-mes (franquia usada: ${Number(usage.free_storage_gb_months ?? 0).toFixed(4)} GB-mes)` },
+    { field: 'Gravacoes e listagens', value: `${usage.class_a_requests ?? 0} (franquia: ${free.class_a_used ?? 0} de ${free.class_a_limit ?? '-'})` },
+    { field: 'Leituras', value: `${usage.class_b_requests ?? 0} (franquia: ${free.class_b_used ?? 0} de ${free.class_b_limit ?? '-'})` },
+    { field: 'Saida', value: `${Number(usage.egress_gb ?? 0).toFixed(4)} GB` },
+    { field: 'Valor armazenamento', value: formatStorageAmount(usage.amounts?.storage) },
+    { field: 'Valor requisicoes', value: formatStorageAmount(usage.amounts?.requests) },
+    { field: 'Valor saida', value: formatStorageAmount(usage.amounts?.egress) },
+    { field: 'Franquia de armazenamento', value: formatStorageAmount(usage.free_storage_amount) },
+    { field: 'Estimado no periodo', value: formatStorageAmount(usage.estimated_amount) },
+    { field: 'Ja debitado', value: formatStorageAmount(usage.charged_amount) },
+  ]);
+  const buckets = asArray(usage.buckets);
+  if (buckets.length === 0) return;
+  process.stdout.write('\nPor bucket:\n');
+  printTable(buckets, [
+    { label: 'Bucket', value: (bucket) => bucket.name },
+    { label: 'Status', value: (bucket) => (bucket.status === 'deleted' ? `removido em ${bucket.deleted_at || '-'}` : 'ativo') },
+    { label: 'Tamanho atual', value: (bucket) => formatBytes(bucket.current_size_bytes) },
+    { label: 'Maximo', value: (bucket) => formatBytes(bucket.peak_size_bytes) },
+    { label: 'GB-mes', value: (bucket) => Number(bucket.storage_gb_months ?? 0).toFixed(4) },
+    { label: 'Valor', value: (bucket) => formatStorageAmount(bucket.storage_amount) },
+  ]);
+}
+
+async function handleStorageUsage(session, flags) {
+  if (flags.month !== undefined && !/^\d{4}-(0[1-9]|1[0-2])$/.test(String(flags.month))) {
+    throw new CliError('--month deve estar no formato AAAA-MM, por exemplo 2026-09.');
+  }
+  const { orgId, service } = await requireStorageService(session, flags);
+  const query = buildQuery(flags, ['month']);
+  const usage = unwrapData(await request(session, flags, 'GET', `/object-storage/${encodeURIComponent(service.id)}/usage${query}`, { orgId }));
+  if (flags.json) return printJson(usage);
+  printStorageUsage(usage);
 }
 
 function buildQuery(flags, allowedKeys) {
@@ -6019,7 +6765,12 @@ async function handleDeployWatch(session, flags) {
 }
 
 async function main() {
-  const { positional, flags } = parseArgs(process.argv.slice(2));
+  const parsed = parseArgs(process.argv.slice(2));
+  const { flags } = parsed;
+  const positional = resolveCommandAliases(parsed.positional);
+  if (parsed.positional[0] === 'valkey') {
+    process.stderr.write('Aviso: "zenifra valkey" foi substituido por "zenifra database". Use "zenifra database".\n');
+  }
   validateKnownFlags(flags);
   const [command, subcommand] = positional;
   const session = await readSession();
@@ -6074,14 +6825,29 @@ async function main() {
     if (command === 'whoami') return handleWhoami(session, flags);
     if (command === 'org' && subcommand === 'set') return handleOrgSet(session, flags);
     if (command === 'projects') return handleProjects(session, flags);
-    if (command === 'valkey' && subcommand === 'credentials' && positional.length === 2) {
-      process.stdout.write(commandHelp(['valkey', 'credentials']));
+    if (command === 'database' && subcommand === 'credentials' && positional.length === 2) {
+      process.stdout.write(commandHelp(['database', 'credentials']));
       return;
     }
-    if (command === 'valkey' && subcommand === 'status') return handleValkeyStatus(session, flags);
-    if (command === 'valkey' && subcommand === 'connection') return handleValkeyConnection(session, flags);
-    if (command === 'valkey' && subcommand === 'credentials' && positional[2] === 'rotate') return handleValkeyCredentialRotate(session, flags);
-    if (command === 'valkey' && subcommand === 'credentials' && positional[2] === 'status') return handleValkeyCredentialStatus(session, flags);
+    if (command === 'database' && subcommand === 'status') return handleDatabaseStatus(session, flags);
+    if (command === 'database' && subcommand === 'connection') return handleDatabaseConnection(session, flags);
+    if (command === 'database' && subcommand === 'credentials' && positional[2] === 'rotate') return handleDatabaseCredentialRotate(session, flags);
+    if (command === 'database' && subcommand === 'credentials' && positional[2] === 'status') return handleDatabaseCredentialStatus(session, flags);
+    if (command === 'storage' && subcommand === 'status') return handleStorageStatus(session, flags);
+    if (command === 'storage' && subcommand === 'create') return handleStorageCreate(session, flags);
+    if (command === 'storage' && subcommand === 'buckets' && positional[2] === 'create') return handleStorageBucketCreate(session, flags);
+    if (command === 'storage' && subcommand === 'buckets' && positional[2] === 'delete') return handleStorageBucketDelete(session, flags);
+    if (command === 'storage' && subcommand === 'buckets' && positional.length === 2) return handleStorageBuckets(session, flags);
+    if (command === 'storage' && subcommand === 'files' && positional[2] === 'upload') return handleStorageFileUpload(session, flags);
+    if (command === 'storage' && subcommand === 'files' && positional[2] === 'download') return handleStorageFileDownload(session, flags);
+    if (command === 'storage' && subcommand === 'files' && positional[2] === 'delete') return handleStorageFileDelete(session, flags);
+    if (command === 'storage' && subcommand === 'files' && positional[2] === 'share') return handleStorageFileShare(session, flags);
+    if (command === 'storage' && subcommand === 'files' && positional[2] === 'info') return handleStorageFileInfo(session, flags);
+    if (command === 'storage' && subcommand === 'files' && positional.length === 2) return handleStorageFiles(session, flags);
+    if (command === 'storage' && subcommand === 'keys' && positional[2] === 'create') return handleStorageKeyCreate(session, flags);
+    if (command === 'storage' && subcommand === 'keys' && positional[2] === 'revoke') return handleStorageKeyRevoke(session, flags);
+    if (command === 'storage' && subcommand === 'keys' && positional.length === 2) return handleStorageKeys(session, flags);
+    if (command === 'storage' && subcommand === 'usage') return handleStorageUsage(session, flags);
     if (command === 'project' && subcommand === 'healthcheck' && positional.length === 2) {
       process.stdout.write(commandHelp(['project', 'healthcheck']));
       return;

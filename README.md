@@ -52,14 +52,17 @@ zenifra orgs
 zenifra org set
 zenifra plans
 zenifra plans --type http
-zenifra plans --type valkey
+zenifra plans --type database
+zenifra plans --type analytics
+zenifra plans --type cache
+zenifra plans --type queue
 zenifra plans --type storage --json
 zenifra git providers
 zenifra git runtimes
 zenifra git connections
 zenifra git repositories resolve --connection <connection-id> --path equipe/aplicacao
 zenifra git branches --connection <connection-id> --repository <repository-id>
-zenifra plans --type job
+zenifra plans --type jobs
 zenifra create project
 zenifra create project --name <name> --plan free --payment-mode hourly --config @examples/http-project.json
 zenifra create project --name <name> --plan basic --payment-mode hourly --config @examples/http-github-project.json
@@ -68,20 +71,31 @@ zenifra create project --name <name> --plan premium --payment-mode hourly --conf
 zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/postgresql-project.json
 zenifra create project --name <name> --plan db-basic --payment-mode monthly --config @examples/mariadb-project.json
 zenifra create project --name <name> --plan analytics-starter --payment-mode hourly --config @examples/clickhouse-project.json
-zenifra create project --name <name> --plan db-starter --payment-mode hourly --config @examples/valkey-key-value-project.json
-zenifra create project --name <name> --plan cache-free --payment-mode hourly --config @examples/valkey-cache-project.json
-zenifra create project --name <name> --plan queue-free --payment-mode hourly --config @examples/valkey-queue-project.json
+zenifra create project --name <name> --plan db-starter --payment-mode hourly --config @examples/key-value-project.json
+zenifra create project --name <name> --plan cache-free --payment-mode hourly --config @examples/cache-project.json
+zenifra create project --name <name> --plan queue-free --payment-mode hourly --config @examples/queue-project.json
 zenifra create project --name nightly-report --plan job-basic --payment-mode per_minute --config @examples/job-project.json
 zenifra projects --type http --page 1 --limit 15
-zenifra projects --type valkey --page 1 --limit 15
+zenifra projects --type key-value --page 1 --limit 15
 zenifra project info --project <project-id>
 zenifra project stop --project <project-id>
 zenifra project resume --project <project-id>
 zenifra project delete --project <project-id> --yes
-zenifra valkey status --project <project-id>
-zenifra valkey connection --project <project-id>
-zenifra valkey credentials rotate --project <project-id> --wait
-zenifra valkey credentials status --project <project-id> --operation <operation-id>
+zenifra database status --project <project-id>
+zenifra database connection --project <project-id>
+zenifra database credentials rotate --project <project-id>
+zenifra database credentials rotate --project <project-id> --wait
+zenifra database credentials status --project <project-id> --operation <operation-id>
+zenifra storage status
+zenifra storage create
+zenifra storage buckets
+zenifra storage buckets create --bucket fotos
+zenifra storage files --bucket fotos --prefix 2026/
+zenifra storage files upload --bucket fotos --file ./logo.png
+zenifra storage files download --bucket fotos --key logo.png
+zenifra storage files share --bucket fotos --key logo.png
+zenifra storage keys create --name deploy --buckets fotos --access read_write
+zenifra storage usage
 zenifra project url --project <project-id>
 zenifra project logs --project <project-id> --instance <instance-id>
 zenifra project runs --project <project-id> --page 1 --limit 20
@@ -117,9 +131,42 @@ zenifra deploy --project <project-id> --branch main
 zenifra deploy watch --project <project-id> --build <build-id>
 ```
 
-## Metricas de projetos Valkey
+## Armazem (armazenamento de objetos)
 
-O comando `zenifra project metrics` mostra as metricas do projeto e, para projetos Valkey, o snapshot da instancia selecionada:
+O Armazem e o armazenamento de objetos compativel com S3 da Zenifra (endpoint `https://armazem.zenifra.com`, regiao `br-sp1`). Cada organizacao tem um Armazem, com buckets, arquivos e chaves de acesso. O grupo `zenifra storage` tem o alias `zenifra armazem`.
+
+O Armazem esta em beta para organizacoes convidadas. Se `zenifra storage status` disser que ele ainda nao esta disponivel, peca para participar pelo console, na pagina Armazem.
+
+```bash
+zenifra storage status
+zenifra storage create
+zenifra storage buckets
+zenifra storage buckets create --bucket fotos
+zenifra storage buckets delete --bucket fotos --yes
+zenifra storage files --bucket fotos --prefix 2026/
+zenifra storage files --bucket fotos --prefix 2026/ --continuation-token <token>
+zenifra storage files upload --bucket fotos --file ./logo.png --key 2026/
+zenifra storage files download --bucket fotos --key 2026/logo.png --output ./logo.png
+zenifra storage files info --bucket fotos --key 2026/logo.png
+zenifra storage files share --bucket fotos --key 2026/logo.png
+zenifra storage files delete --bucket fotos --key 2026/logo.png --yes
+zenifra storage keys
+zenifra storage keys create --name deploy --buckets fotos --access read_write --allowed-ips 203.0.113.7
+zenifra storage keys revoke --access-key <access-key-id> --yes
+zenifra storage usage
+zenifra storage usage --month 2026-09
+```
+
+- Envio e download vao direto para o Armazem por links assinados, em streaming, sem passar pela API e sem carregar o arquivo inteiro na memoria. Cada arquivo pode ter ate 20 GiB.
+- `files` lista um nivel de pasta por vez; use `--prefix pasta/` para entrar em uma pasta e o `--continuation-token` mostrado para a proxima pagina.
+- `files share` gera um link de download valido por 7 dias. Qualquer pessoa com o link consegue baixar o arquivo.
+- `buckets delete` remove somente bucket vazio. Um bucket com arquivos so pode ser removido pelo console, com codigo de verificacao.
+- `keys create` mostra o segredo da chave uma unica vez. O CLI nao grava o segredo em arquivo nem em log: guarde-o em um cofre de segredos. `--access` aceita `read`, `read_write` ou `full`; sem `--buckets`, a chave vale para todos os buckets.
+- `usage` mostra o consumo do mes atual ou de um dos 12 meses anteriores, em reais; no `--json`, os valores vem em centavos.
+
+## Metricas de bancos Key Value, Cache e Queue
+
+O comando `zenifra project metrics` mostra as metricas do projeto e, para bancos Key Value, Cache e Queue, o snapshot da instancia selecionada:
 
 ```bash
 zenifra project metrics --project <project-id> --instance instance-1
@@ -277,10 +324,16 @@ Para comparar custo antes de criar um projeto, use:
 zenifra plans
 zenifra plans --type http
 zenifra plans --type database
+zenifra plans --type analytics
+zenifra plans --type jobs
+zenifra plans --type queue
+zenifra plans --type cache
 zenifra plans --type storage --json
 ```
 
-`zenifra plans` funciona sem autenticacao e mostra os catalogos publicos de HTTP, banco, armazenamento, Jobs agendados e Valkey. Use `--type job` para consultar Jobs agendados ou `--type valkey` para consultar Key Value, Cache e Queue.
+Os grupos de `--type` são os mesmos do console: `http` (aplicações), `database` (PostgreSQL, MariaDB e Key Value), `analytics` (ClickHouse), `jobs` (jobs agendados), `queue`, `cache` e `storage` (armazenamento das aplicações).
+
+`zenifra plans` funciona sem autenticacao e mostra os catalogos publicos de HTTP, banco, armazenamento, Jobs agendados, Key Value, Cache e Queue. Use `--type job` para consultar Jobs agendados ou `--type key-value`, `--type cache` e `--type queue` para consultar cada perfil.
 
 Para planos HTTP, a saida legivel tambem mostra as capacidades disponiveis, como logs, metricas, verificacao de saude, auto-scaling, subdominio personalizado e acesso de rede. Use `--json` quando precisar consumir o catalogo sem formatacao.
 
@@ -355,9 +408,9 @@ Use os arquivos em `examples/` como base para `zenifra create project`:
 - `examples/postgresql-project.json`: projeto PostgreSQL
 - `examples/mariadb-project.json`: projeto MariaDB
 - `examples/clickhouse-project.json`: projeto ClickHouse com Native TLS e armazenamento persistente
-- `examples/valkey-key-value-project.json`: projeto Valkey Key Value com armazenamento persistente
-- `examples/valkey-cache-project.json`: projeto Valkey Cache sem armazenamento persistente
-- `examples/valkey-queue-project.json`: projeto Valkey Queue com armazenamento persistente
+- `examples/key-value-project.json`: banco Key Value com armazenamento persistente
+- `examples/cache-project.json`: banco Cache sem armazenamento persistente
+- `examples/queue-project.json`: banco Queue com armazenamento persistente
 - `examples/job-project.json`: Job agendado com cron UTC, imagem e armazenamento efêmero
 
 Se voce rodar apenas `zenifra create project`, a CLI abre um wizard interativo estilo `npm init` e pergunta todos os campos guiados. Cada pergunta mostra:
@@ -371,7 +424,7 @@ O wizard atual cobre:
 - projetos `http` com origem `github` ou `oci`
 - projetos `postgresql`
 - projetos `mariadb`
-- projetos `valkey` nos perfis `key_value`, `cache` e `queue`
+- bancos Key Value, Cache e Queue (`type_project: valkey`, perfis `key_value`, `cache` e `queue`)
 - Jobs agendados com uma imagem OCI pronta
 
 Projetos `clickhouse` usam atualmente o fluxo nao interativo com `--config`, como em `examples/clickhouse-project.json`.
@@ -385,10 +438,10 @@ Valores aceitos:
 - `payment_mode`: `hourly`, `monthly`, `yearly`, `per_minute` (somente Jobs)
 - `type_project` no `config`: `http`, `postgresql`, `mariadb`, `valkey`, `clickhouse`, `job`
 - `exposure` no `config` HTTP: `public`, `private`
-- `plan`: consulte `zenifra plans` para os planos atuais; ClickHouse usa `analytics-*`; Valkey usa `db-*` para Key Value, `cache-*` para Cache e `queue-*` para Queue
-- `config.profile` em projetos Valkey: `key_value`, `cache` ou `queue`
-- `config.version` em projetos Valkey: a versão retornada por `zenifra plans --type valkey`
-- `config.storage` em projetos Valkey: obrigatório e persistente para Key Value/Queue; omitido para Cache
+- `plan`: consulte `zenifra plans` para os planos atuais; ClickHouse usa `analytics-*`; Key Value usa `db-*`, Cache usa `cache-*` e Queue usa `queue-*`
+- `config.profile` em Key Value, Cache e Queue: `key_value`, `cache` ou `queue`
+- `config.version` em Key Value, Cache e Queue: a versão retornada por `zenifra plans --type database` (Key Value), `--type cache` ou `--type queue`
+- `config.storage` em Key Value, Cache e Queue: obrigatório e persistente para Key Value/Queue; omitido para Cache
 - `config.github.runtime` (quando houver GitHub em projeto HTTP): `nodejs`, `python` ou `bun`
 - `config.github.auto_deploy`: use `true` para o modo `branch`; mantenha `false` ao habilitar `version_deploy`
 - `config.github.version_deploy`: use `enabled: true`, `event: "tag"` ou `"release"` e um `tag_pattern` explicito; `include_prereleases` e opcional e padrao `false`
@@ -404,18 +457,20 @@ Observacoes do wizard:
 - na criacao com auto-scaling, `config.instances` e o minimo inicial e `config.autoscaling.max_instances` e o maximo
 - em projetos de banco, o wizard nao pergunta `username`, `password` nem `database name`
 - em projetos de banco, a CLI preenche apenas campos tecnicos minimos exigidos pela validacao atual da API
-- em projetos Valkey, a capacidade é definida pelo plano e a CLI não pergunta instâncias, imagem, variáveis de ambiente ou exposição HTTP
+- em Key Value, Cache e Queue, a capacidade é definida pelo plano e a CLI não pergunta instâncias, imagem, variáveis de ambiente ou exposição HTTP
 - em Jobs, a imagem OCI pronta é obrigatória, o cron usa cinco campos em UTC, a cobrança é por minuto inteiro e a CLI não pergunta origem GitHub, tipo de pagamento, comando, argumentos, exposição HTTP, porta ou instâncias
 - a conexão mascarada pode ser consultada a qualquer momento; a credencial completa aparece apenas na criação ou em uma rotação concluída, podendo ser salva em arquivo privado com `--connection-file <path>`
-- `valkey credentials rotate` retorna uma operação assíncrona; use `--wait` ou `valkey credentials status` para acompanhar
+- `database credentials rotate` renova na hora a senha de PostgreSQL, MariaDB e ClickHouse e mostra a nova senha uma única vez; em Key Value, Cache e Queue retorna uma operação assíncrona: use `--wait` ou `database credentials status` para acompanhar
+- `database status`, `database connection` e `database credentials` identificam o tipo do banco pelo projeto; projetos HTTP e Jobs não são bancos
 
 Exemplo de entrega segura para automação local:
 
 ```bash
-zenifra valkey credentials rotate --project <project-id> --wait --connection-file /caminho/privado/redis-url.txt --json
+zenifra database credentials rotate --project <project-id> --connection-file /caminho/privado/database-url.txt --json
+zenifra database credentials rotate --project <project-id> --wait --connection-file /caminho/privado/database-url.txt --json
 ```
 
-O arquivo é criado com permissão privada; a conexão não aparece na saída do comando quando essa opção é usada.
+O arquivo é criado com permissão privada (modo 600); a conexão e a senha não aparecem na saída do comando quando essa opção é usada. O CLI nunca grava a senha no perfil nem em log.
 
 ## Execuções de Jobs agendados
 

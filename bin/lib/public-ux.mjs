@@ -21,16 +21,16 @@ export function normalizeCustomDomains(domains, { primaryDomain } = {}) {
   return normalized;
 }
 
-export function validateValkeyConnection(value) {
+export function validateConnection(value) {
   const connection = String(value ?? '');
   if (!connection || connection.trim() === '' || MASKED_SECRET_PATTERN.test(connection)) {
-    throw new Error('The Valkey connection is masked. Rotate credentials and save the one-time connection securely.');
+    throw new Error('The connection is masked. Rotate credentials and save the one-time connection securely.');
   }
   return connection;
 }
 
-export async function writeValkeyConnectionFile(path, value) {
-  const connection = validateValkeyConnection(value);
+export async function writeConnectionFile(path, value) {
+  const connection = validateConnection(value);
   await atomicPrivateWrite(path, connection);
   return connection;
 }
