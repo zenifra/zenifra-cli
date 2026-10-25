@@ -6635,6 +6635,8 @@ test('the old valkey group still works as a hidden alias with a deprecation noti
     const index = await runCli(['--help'], { configDir });
     assert.match(index.stdout, /zenifra database status --project <id>/);
     assert.doesNotMatch(index.stdout, /zenifra valkey/);
+    const readme = await readFile(resolve('README.md'), 'utf8');
+    assert.doesNotMatch(readme, /zenifra valkey/);
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }
