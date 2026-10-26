@@ -133,7 +133,7 @@ zenifra deploy watch --project <project-id> --build <build-id>
 
 ## Armazem (armazenamento de objetos)
 
-O Armazem e o armazenamento de objetos compativel com S3 da Zenifra (endpoint `https://armazem.zenifra.com`, regiao `br-sp1`). Cada organizacao tem um Armazem, com buckets, arquivos e chaves de acesso. O grupo `zenifra storage` tem o alias `zenifra armazem`.
+O Armazem e o armazenamento de objetos da Zenifra (endpoint `https://armazem.zenifra.com`, regiao `br-sp1`). Cada organizacao tem um Armazem, com buckets, arquivos e chaves de acesso. O grupo `zenifra storage` tem o alias `zenifra armazem`.
 
 O Armazem esta em beta para organizacoes convidadas. Se `zenifra storage status` disser que ele ainda nao esta disponivel, peca para participar pelo console, na pagina Armazem.
 

@@ -576,13 +576,13 @@ const HELP_SPECS = [
   {
     command: 'storage',
     usage: 'zenifra storage\n  zenifra storage status [--json]\n  zenifra storage create [--name <name>] [--json]\n  zenifra storage buckets [--json]\n  zenifra storage buckets create --bucket <name> [--json]\n  zenifra storage buckets delete --bucket <name> --yes [--json]\n  zenifra storage files --bucket <name> [--prefix <folder/>] [--continuation-token <token>] [--limit <n>] [--json]\n  zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--json]\n  zenifra storage files download --bucket <name> --key <key> [--output <path>] [--yes] [--json]\n  zenifra storage files delete --bucket <name> --key <key> --yes [--json]\n  zenifra storage files share --bucket <name> --key <key> [--json]\n  zenifra storage files info --bucket <name> --key <key> [--json]\n  zenifra storage keys [--json]\n  zenifra storage keys create --name <name> [--buckets <a,b|*>] [--access <read|read_write|full>] [--allowed-ips <ip,cidr>] [--json]\n  zenifra storage keys revoke --access-key <id> --yes [--json]\n  zenifra storage usage [--month <YYYY-MM>] [--json]',
-    description: 'Gerencia o Armazem, o armazenamento de objetos compativel com S3 da organizacao: buckets, arquivos, chaves de acesso e consumo.',
+    description: 'Gerencia o Armazem, o armazenamento de objetos da organizacao: buckets, arquivos, chaves de acesso e consumo.',
     examples: ['zenifra storage status', 'zenifra storage buckets create --bucket fotos', 'zenifra storage files upload --bucket fotos --file ./logo.png', 'zenifra armazem usage'],
     output: 'Zenifra CLI - storage',
     notes: [
       'O alias "zenifra armazem" aceita os mesmos subcomandos.',
       'O Armazem esta em beta para organizacoes convidadas. Para participar, peca pelo console, na pagina Armazem.',
-      'Endpoint S3: https://armazem.zenifra.com, regiao br-sp1. Os arquivos vao direto para o Armazem por links assinados, sem passar pela API.',
+      'Endpoint: https://armazem.zenifra.com, regiao br-sp1. Os arquivos vao direto para o Armazem por links assinados, sem passar pela API.',
     ],
   },
   {
@@ -692,7 +692,7 @@ const HELP_SPECS = [
   {
     command: 'storage keys',
     usage: 'zenifra storage keys [--json]\n  zenifra storage keys create --name <name> [--buckets <a,b|*>] [--access <read|read_write|full>] [--allowed-ips <ip,cidr>] [--json]\n  zenifra storage keys revoke --access-key <id> --yes [--json]',
-    description: 'Lista as chaves de acesso S3 do Armazem, sem o segredo.',
+    description: 'Lista as chaves de acesso do Armazem, sem o segredo.',
     flags: ['--json  Imprime a resposta em JSON.'],
     examples: ['zenifra storage keys', 'zenifra storage keys create --name deploy --buckets fotos --access read_write', 'zenifra storage keys revoke --access-key ZNKEXAMPLE0123 --yes'],
     output: 'ID              Nome    Buckets  Acesso      IPs permitidos  Criada em\nZNKEXAMPLE0123  deploy  fotos    read_write  qualquer        2026-10-20T08:00:00.000Z',
@@ -701,7 +701,7 @@ const HELP_SPECS = [
   {
     command: 'storage keys create',
     usage: 'zenifra storage keys create --name <name> [--buckets <a,b|*>] [--access <read|read_write|full>] [--allowed-ips <ip,cidr>] [--json]',
-    description: 'Cria uma chave de acesso S3. O segredo aparece somente nesta resposta.',
+    description: 'Cria uma chave de acesso do Armazem. O segredo aparece somente nesta resposta.',
     flags: ['--name <name>           Nome da chave, 1 a 64 caracteres.', '--buckets <a,b|*>       Buckets liberados, separados por virgula, ate 10. Padrao: * (todos).', '--access <level>        read, read_write ou full. Padrao: full.', '--allowed-ips <ip,cidr> IPs ou redes IPv4/IPv6 autorizados, separados por virgula, ate 20. Padrao: qualquer IP.', '--json                  Imprime a resposta em JSON, incluindo o segredo.'],
     examples: ['zenifra storage keys create --name deploy', 'zenifra storage keys create --name leitura-site --buckets site,assets --access read --allowed-ips 203.0.113.7,198.51.100.0/24'],
     output: 'Chave de acesso criada. Guarde o segredo agora: ele nao sera exibido novamente.\nID da chave  ZNKEXAMPLE0123\nSegredo      <segredo>\nEndpoint     https://armazem.zenifra.com\nRegiao       br-sp1',

@@ -6721,3 +6721,19 @@ test('projects accepts key-value, cache and queue as filters', async () => {
     ]);
   });
 });
+
+test('storage help and README never name other companies products', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-'));
+  try {
+    for (const args of [['storage', '--help'], ['storage', 'keys', '--help'], ['storage', 'keys', 'create', '--help']]) {
+      const result = await runCli(args, { configDir });
+      assert.equal(result.code, 0, result.stderr);
+      assert.doesNotMatch(result.stdout, /\bS3\b|\bAWS\b|amazon/i, args.join(' '));
+    }
+    const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+    const storageSection = readme.slice(readme.indexOf('Armazem'), readme.indexOf('Armazem') + 4000);
+    assert.doesNotMatch(storageSection, /\bS3\b|\bAWS\b|amazon/i);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
