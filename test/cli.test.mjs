@@ -110,6 +110,11 @@ const STORAGE_PLAN_CATALOG = [
   { storage: '1gb_persistente', prices: { hourly: 0.5, monthly: 360, yearly: 4320 }, persistent: true },
   { storage: '1gb_efêmero', prices: { hourly: 0.25, monthly: 180, yearly: 2160 }, persistent: false },
 ];
+const GIT_RUNTIME_CATALOG = [
+  { id: 'nodejs', label: 'Node.js', default_version: '24', default_start_command: 'npm start', versions: [{ id: '26', label: '26' }, { id: '24', label: '24' }, { id: '22', label: '22' }, { id: '20', label: '20' }] },
+  { id: 'python', label: 'Python', default_version: '3.14', default_start_command: 'python main.py', versions: [{ id: '3.14', label: '3.14' }, { id: '3.13', label: '3.13' }] },
+  { id: 'bun', label: 'Bun', default_version: '1.4', default_start_command: 'bun run start', versions: [{ id: '1.4', label: '1.4' }, { id: '1.3', label: '1.3' }] },
+];
 const AVAILABLE_INSTANCES = {
   free: 1,
   static: 2,
@@ -1050,6 +1055,11 @@ async function withWizardCatalogServer(postHandler, callback, { httpPlans = HTTP
 
     if (req.method === 'GET' && req.url === '/v1/managed-services/catalog') {
       jsonResponse(res, 200, { status: 'success', data: VALKEY_CATALOG });
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/v1/git/runtime-catalog') {
+      jsonResponse(res, 200, { status: 'success', data: GIT_RUNTIME_CATALOG });
       return;
     }
 
@@ -2673,6 +2683,29 @@ test('create scheduled Job rejects an invalid image reference before calling the
   }
 });
 
+test('create project accepts bun as github runtime in the JSON config', async () => {
+  let body;
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/project');
+    body = await readJson(req);
+    jsonResponse(res, 201, { status: 'success', data: { id: 'proj_bun' } });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli([
+      'create', 'project',
+      '--name', 'api-bun',
+      '--plan', 'free',
+      '--payment-mode', 'hourly',
+      '--config', '{"type_project":"http","exposure":"public","github":{"runtime":"bun","version":"1.4"}}',
+      '--json',
+    ], { apiBase, configDir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(body.config.github.runtime, 'bun');
+  });
+});
+
 test('create project fails when github runtime is missing for http github project', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {
@@ -3999,10 +4032,10 @@ test('create project wizard re-prompts invalid runtime and creates an http githu
       'zenifra-cli',
       'main',
       'ruby',
-      'nodejs',
-      '24',
+      'bun',
+      '1.4',
       '2',
-      'npm start',
+      'bun run start',
       '',
       'npm run build',
       's',
@@ -4016,10 +4049,10 @@ test('create project wizard re-prompts invalid runtime and creates an http githu
       repository_owner: 'zenifra',
       repository_name: 'zenifra-cli',
       branch: 'main',
-      runtime: 'nodejs',
-      version: '24',
+      runtime: 'bun',
+      version: '1.4',
       auto_deploy: true,
-      start_command: 'npm start',
+      start_command: 'bun run start',
       pre_build_command: null,
       build_command: 'npm run build',
     });
@@ -4027,7 +4060,31 @@ test('create project wizard re-prompts invalid runtime and creates an http githu
       persistent: false,
       capacity: 1,
     });
-    assert.match(result.stdout, /valor invalido: use nodejs ou python/i);
+    assert.match(result.stdout, /valor invalido: use nodejs, python, bun/i);
+    assert.match(result.stdout, /1=1\.4 2=1\.3/);
+    assert.match(result.stdout, /bun run start/);
+  });
+});
+
+test('create project wizard asks for the runtime catalog right after choosing github and offers only known runtimes', async () => {
+  const requests = [];
+  await withCliServer(async (req, res) => {
+    requests.push(req.url);
+    if (req.url === '/v1/project/plans') return jsonResponse(res, 200, { status: 'success', data: HTTP_PLAN_CATALOG });
+    if (req.url === '/v1/projects/available') return jsonResponse(res, 200, { status: 'success', data: AVAILABLE_INSTANCES });
+    if (req.url === '/v1/project/database/plans') return jsonResponse(res, 200, { status: 'success', data: DATABASE_PLAN_CATALOG });
+    if (req.url === '/v1/git/runtime-catalog') {
+      return jsonResponse(res, 200, { status: 'success', data: [{ id: 'other', label: 'Other', versions: [{ id: '1', label: '1' }] }, { id: 'bun', label: 'Bun', versions: [] }] });
+    }
+    jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+  }, async ({ apiBase, configDir }) => {
+    const stdin = ['gh-webapp', '', '1', '1', '2', '1'].join('\n');
+    const result = await runCli(['create', 'project'], { apiBase, configDir, stdin });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Nenhum runtime disponivel para builds GitHub/);
+    assert.doesNotMatch(result.stdout, /Porta da aplicacao/);
+    assert.equal(requests.at(-1), '/v1/git/runtime-catalog');
   });
 });
 
