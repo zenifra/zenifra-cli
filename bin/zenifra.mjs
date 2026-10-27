@@ -136,7 +136,7 @@ const ALLOWED_PLAN_VALUES = new Set([
 ]);
 const ALLOWED_PAYMENT_MODE_VALUES = new Set(['hourly', 'monthly', 'yearly', 'per_minute']);
 const ALLOWED_TYPE_PROJECT_VALUES = new Set(['http', 'postgresql', 'mariadb', 'valkey', 'clickhouse', 'job']);
-const ALLOWED_RUNTIME_VALUES = new Set(['nodejs', 'python']);
+const ALLOWED_RUNTIME_VALUES = new Set(['nodejs', 'python', 'bun']);
 const ALLOWED_GITHUB_VERSION_DEPLOY_EVENTS = new Set(['tag', 'release']);
 const ALLOWED_GITHUB_VERSION_DEPLOY_FIELDS = new Set(['enabled', 'event', 'tag_pattern', 'include_prereleases']);
 const GITHUB_TAG_PATTERN_BLOCKED_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\[\]{}\\]/u;
@@ -162,10 +162,6 @@ const GIT_BUILD_SETTINGS_FIELDS = [
   'context_path',
 ];
 const ALLOWED_EXPOSURE_VALUES = new Set(['public', 'private']);
-const GITHUB_RUNTIME_VERSIONS = {
-  nodejs: ['24', '22', '20'],
-  python: ['3.13', '3.12', '3.11'],
-};
 const ALLOWED_POSTGRESQL_VERSIONS = ['15', '16', '17', '18'];
 const ALLOWED_MARIADB_VERSIONS = ['10', '11'];
 const DEFAULT_HTTP_NETWORK_ACCESS = {
@@ -484,8 +480,8 @@ const HELP_SPECS = [
     description: 'Lista runtimes e versoes disponiveis para builds de repositorios Git.',
     flags: ['--json  Imprime a resposta publica da API em JSON.'],
     examples: ['zenifra git runtimes', 'zenifra git runtimes --json'],
-    output: 'Runtime  Versao padrao  Versoes\nnodejs   24             24, 22, 20',
-    jsonOutput: '{"status":"success","data":[{"id":"nodejs","label":"Node.js","default_version":"24","default_port":3000,"default_start_command":"npm start","default_build_command":"npm run build","versions":[{"id":"24","label":"24"}]}]}',
+    output: 'Runtime  Versao padrao  Versoes\nNode.js  24             26, 24, 22, 20\nBun      1.4            1.4, 1.3, 1.2',
+    jsonOutput: '{"status":"success","data":[{"id":"nodejs","label":"Node.js","default_version":"24","default_port":3000,"default_start_command":"npm start","default_build_command":null,"versions":[{"id":"24","label":"24"}]}]}',
   },
   {
     command: 'git connections',
@@ -2238,13 +2234,18 @@ async function handleGitProviders(session, flags) {
   ]);
 }
 
-async function handleGitRuntimes(session, flags) {
+async function fetchGitRuntimeCatalog(session, flags) {
   const orgId = await resolveOrgId(session, flags);
   const payload = await request(session, flags, 'GET', '/git/runtime-catalog', { orgId });
   const runtimes = unwrapData(payload);
   if (!Array.isArray(runtimes)) {
     throw new CliError('A API retornou uma resposta invalida para o catalogo de runtimes Git.');
   }
+  return { payload, runtimes };
+}
+
+async function handleGitRuntimes(session, flags) {
+  const { payload, runtimes } = await fetchGitRuntimeCatalog(session, flags);
   if (flags.json) return printJson(payload);
 
   printTable(runtimes, [
@@ -3440,6 +3441,7 @@ function normalizeRuntime(value) {
     ['nodejs', 'nodejs'],
     ['node.js', 'nodejs'],
     ['python', 'python'],
+    ['bun', 'bun'],
   ]);
   return aliases.get(raw) || raw;
 }
@@ -4185,7 +4187,7 @@ function printWizardSummary(payload) {
   process.stdout.write(`${lines.join('\n')}\n`);
 }
 
-async function buildHttpGithubConfig() {
+async function buildHttpGithubConfig(runtimes) {
   const repository_owner = await promptWizardText({
     label: 'Repository owner',
     required: true,
@@ -4207,21 +4209,24 @@ async function buildHttpGithubConfig() {
     docs: DOCS_RUNTIME_URL,
   });
 
+  const runtimeIds = runtimes.map((entry) => entry.id);
   const runtime = await promptWizardText({
     label: 'Runtime',
     required: true,
-    examples: ['nodejs', 'python'],
+    examples: runtimeIds,
     docs: DOCS_RUNTIME_URL,
-    allowedValues: [...ALLOWED_RUNTIME_VALUES],
+    allowedValues: runtimeIds,
     normalize: normalizeRuntime,
-    validate: (value) => (ALLOWED_RUNTIME_VALUES.has(value) ? null : 'use nodejs ou python'),
+    validate: (value) => (runtimeIds.includes(value) ? null : `use ${formatAllowedValues(runtimeIds)}`),
   });
+  const runtimeEntry = runtimes.find((entry) => entry.id === runtime);
+  const versionIds = runtimeEntry.versions.map((entry) => entry.id);
 
   const version = await promptWizardSelect({
     label: 'Versao do runtime',
     docs: DOCS_RUNTIME_URL,
-    examples: GITHUB_RUNTIME_VERSIONS[runtime],
-    options: GITHUB_RUNTIME_VERSIONS[runtime].map((value) => ({ value })),
+    examples: versionIds,
+    options: versionIds.map((value) => ({ value })),
   });
 
   const deployMode = await promptWizardSelect({
@@ -4267,7 +4272,7 @@ async function buildHttpGithubConfig() {
   const start_command = await promptWizardText({
     label: 'Start command',
     required: true,
-    examples: runtime === 'nodejs' ? ['npm start'] : ['python main.py'],
+    examples: [runtimeEntry.default_start_command].filter(Boolean),
     docs: DOCS_RUNTIME_URL,
   });
 
@@ -4382,7 +4387,7 @@ async function buildHttpImageConfig() {
   return image;
 }
 
-async function buildHttpConfig({ plan, httpPlans, availableInstances }) {
+async function buildHttpConfig({ session, flags, plan, httpPlans, availableInstances }) {
   const source = await promptWizardSelect({
     label: 'Origem do deploy HTTP',
     docs: DOCS_CREATE_HTTP_URL,
@@ -4393,6 +4398,13 @@ async function buildHttpConfig({ plan, httpPlans, availableInstances }) {
     ],
   });
   promptWizardSelect.ui.state.httpSource = source;
+  const githubRuntimes = source === 'github'
+    ? (await fetchGitRuntimeCatalog(session, flags)).runtimes
+      .filter((entry) => ALLOWED_RUNTIME_VALUES.has(entry?.id) && Array.isArray(entry.versions) && entry.versions.length > 0)
+    : [];
+  if (source === 'github' && githubRuntimes.length === 0) {
+    throw new CliError('Nenhum runtime disponivel para builds GitHub no momento. Tente novamente mais tarde.');
+  }
 
   const port = await promptWizardNumber({
     label: 'Porta da aplicacao',
@@ -4536,7 +4548,9 @@ async function buildHttpConfig({ plan, httpPlans, availableInstances }) {
   return {
     type_project: 'http',
     exposure,
-    ...(source === 'github' ? { github: await buildHttpGithubConfig() } : { image: await buildHttpImageConfig() }),
+    ...(source === 'github'
+      ? { github: await buildHttpGithubConfig(githubRuntimes) }
+      : { image: await buildHttpImageConfig() }),
     port,
     instances,
     ...(autoscaling ? { autoscaling } : {}),
@@ -4806,6 +4820,8 @@ async function runProjectCreateWizard(session, flags) {
   let config;
   if (typeProject === 'http') {
     config = await buildHttpConfig({
+      session,
+      flags,
       plan,
       httpPlans: catalogs.httpPlans,
       availableInstances: catalogs.availableInstances,
