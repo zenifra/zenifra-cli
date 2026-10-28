@@ -6568,7 +6568,7 @@ test('storage files delete, share and info use the signed links and object detai
       return;
     }
     if (req.url.endsWith('/read-url')) {
-      jsonResponse(res, 201, { status: 'success', data: { method: 'GET', url: 'https://armazem.zenifra.com/fotos/logo.png?X-Amz-Expires=604800', headers: {}, expires_at: '2026-10-31T12:00:00.000Z' } });
+      jsonResponse(res, 201, { status: 'success', data: { method: 'GET', url: 'https://fotos.armazem.zenifra.com/logo.png?X-Amz-Expires=604800', headers: {}, expires_at: '2026-10-31T12:00:00.000Z' } });
       return;
     }
     jsonResponse(res, 200, { status: 'success', data: { key: 'logo.png', name: 'logo.png', size_bytes: 12288, content_type: 'image/png', uploaded_at: '2026-10-20T08:00:00.000Z', etag: 'abc', metadata: { origem: 'site' }, visibility: 'public', public_url: 'https://fotos.armazem.zenifra.com/logo.png' } });
@@ -6586,7 +6586,7 @@ test('storage files delete, share and info use the signed links and object detai
     result = await runCli(['storage', 'files', 'share', '--bucket', 'fotos', '--key', 'logo.png'], { apiBase, configDir });
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /valido ate 2026-10-31T12:00:00.000Z/);
-    assert.match(result.stdout, /https:\/\/armazem\.zenifra\.com\/fotos\/logo\.png/);
+    assert.match(result.stdout, /https:\/\/fotos\.armazem\.zenifra\.com\/logo\.png/);
 
     result = await runCli(['storage', 'files', 'info', '--bucket', 'fotos', '--key', 'logo.png'], { apiBase, configDir });
     assert.equal(result.code, 0, result.stderr);
