@@ -2707,6 +2707,29 @@ test('create project accepts bun as github runtime in the JSON config', async ()
   });
 });
 
+for (const runtime of ['go', 'java']) {
+  test(`create project accepts ${runtime} as github runtime in the JSON config`, async () => {
+    let body;
+    await withCliServer(async (req, res) => {
+      assertApiKeyAuth(req);
+      body = await readJson(req);
+      jsonResponse(res, 201, { status: 'success', data: { id: `proj_${runtime}` } });
+    }, async ({ apiBase, configDir }) => {
+      const result = await runCli([
+        'create', 'project',
+        '--name', `api-${runtime}`,
+        '--plan', 'free',
+        '--payment-mode', 'hourly',
+        '--config', JSON.stringify({ type_project: 'http', exposure: 'public', github: { runtime } }),
+        '--json',
+      ], { apiBase, configDir });
+
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(body.config.github.runtime, runtime);
+    });
+  });
+}
+
 test('create project fails when github runtime is missing for http github project', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {
