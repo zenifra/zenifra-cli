@@ -675,8 +675,8 @@ const HELP_SPECS = [
     description: 'Gera um link de download do arquivo, valido por 7 dias, para copiar e compartilhar.',
     flags: ['--bucket <name>  Nome do bucket.', '--key <key>      Caminho do arquivo no bucket.', '--json           Imprime a resposta em JSON.'],
     examples: ['zenifra storage files share --bucket fotos --key logo.png'],
-    output: 'Link de compartilhamento (valido ate 2026-10-31T12:00:00.000Z):\nhttps://armazem.zenifra.com/fotos/logo.png?X-Amz-Expires=604800&...',
-    jsonOutput: '{"method":"GET","url":"https://armazem.zenifra.com/fotos/logo.png?X-Amz-Expires=604800","headers":{},"expires_at":"2026-10-31T12:00:00.000Z"}',
+    output: 'Link de compartilhamento (valido ate 2026-10-31T12:00:00.000Z):\nhttps://fotos.armazem.zenifra.com/logo.png?X-Amz-Expires=604800&...',
+    jsonOutput: '{"method":"GET","url":"https://fotos.armazem.zenifra.com/logo.png?X-Amz-Expires=604800","headers":{},"expires_at":"2026-10-31T12:00:00.000Z"}',
     notes: ['Qualquer pessoa com o link consegue baixar o arquivo ate ele expirar.'],
   },
   {
