@@ -6109,6 +6109,8 @@ test('storage help covers every subcommand and the armazem alias', async () => {
     ['storage', 'files', 'delete'],
     ['storage', 'files', 'share'],
     ['storage', 'files', 'info'],
+    ['storage', 'files', 'public'],
+    ['storage', 'files', 'private'],
     ['storage', 'keys'],
     ['storage', 'keys', 'create'],
     ['storage', 'keys', 'revoke'],
@@ -6143,6 +6145,8 @@ test('storage help covers every subcommand and the armazem alias', async () => {
       ['storage', 'files', 'delete', '--bucket', 'fotos'],
       ['storage', 'files', 'share'],
       ['storage', 'files', 'info'],
+      ['storage', 'files', 'public', '--bucket', 'fotos'],
+      ['storage', 'files', 'private'],
       ['storage', 'keys', 'create'],
       ['storage', 'keys', 'revoke'],
     ]) {
@@ -6305,7 +6309,10 @@ test('storage files lists one folder level and shows the next page token', async
         bucket: 'fotos',
         prefix: '2026/',
         folders: [{ prefix: '2026/10/', name: '10' }],
-        objects: [{ key: '2026/logo.png', name: 'logo.png', size_bytes: 12288, uploaded_at: '2026-10-20T08:00:00.000Z', etag: 'abc' }],
+        objects: [
+          { key: '2026/logo.png', name: 'logo.png', size_bytes: 12288, uploaded_at: '2026-10-20T08:00:00.000Z', etag: 'abc', public: true },
+          { key: '2026/nota.pdf', name: 'nota.pdf', size_bytes: 10, uploaded_at: '2026-10-20T08:00:00.000Z', etag: 'def', public: false },
+        ],
         next_continuation_token: 'token-2',
       },
     });
@@ -6313,7 +6320,8 @@ test('storage files lists one folder level and shows the next page token', async
     const result = await runCli(['storage', 'files', '--bucket', 'fotos', '--prefix', '2026/', '--limit', '2'], { apiBase, configDir });
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /pasta\s+10\//);
-    assert.match(result.stdout, /arquivo\s+logo\.png\s+12 KB/);
+    assert.match(result.stdout, /arquivo\s+logo\.png\s+12 KB\s+publico/);
+    assert.match(result.stdout, /arquivo\s+nota\.pdf\s+10 B\s+privado/);
     assert.match(result.stdout, /--continuation-token token-2/);
 
     const next = await runCli(['storage', 'files', '--bucket', 'fotos', '--prefix', '2026/', '--continuation-token', 'token-2', '--json'], { apiBase, configDir });
@@ -6417,6 +6425,90 @@ test('storage files upload refuses files over 20 GiB and reports storage refusal
   });
 });
 
+const visibilityInfo = (key, visibility) => ({
+  key, name: key, size_bytes: 4, content_type: 'image/png', uploaded_at: null, etag: 'a', metadata: {},
+  visibility, public_url: visibility === 'public' ? `https://fotos.armazem.zenifra.com/${key}` : null,
+});
+
+test('storage files public asks for --yes, and private makes the file private again', async () => {
+  const calls = [];
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    if (req.url === '/v1/object-storage') return storageStateResponse(res);
+    const body = await readJson(req);
+    calls.push({ method: req.method, url: req.url, body });
+    jsonResponse(res, 200, { status: 'success', data: visibilityInfo(body.key, body.visibility) });
+  }, async ({ apiBase, configDir }) => {
+    let result = await runCli(['storage', 'files', 'public', '--bucket', 'fotos', '--key', 'logo.png'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /exige --yes/);
+    assert.equal(calls.length, 0);
+
+    result = await runCli(['storage', 'files', 'public', '--bucket', 'fotos', '--key', 'logo.png', '--yes'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Arquivo publico: https:\/\/fotos\.armazem\.zenifra\.com\/logo\.png/);
+
+    result = await runCli(['storage', 'files', 'private', '--bucket', 'fotos', '--key', 'logo.png', '--json'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).visibility, 'private');
+
+    result = await runCli(['storage', 'files', 'private', '--bucket', 'fotos', '--key', 'logo.png'], { apiBase, configDir });
+    assert.match(result.stdout, /Arquivo privado: fotos\/logo\.png/);
+
+    assert.deepEqual(calls.map(({ method, url, body }) => [method, url, body.visibility]), [
+      ['PUT', `${STORAGE_BASE}/buckets/fotos/object-visibility`, 'public'],
+      ['PUT', `${STORAGE_BASE}/buckets/fotos/object-visibility`, 'private'],
+      ['PUT', `${STORAGE_BASE}/buckets/fotos/object-visibility`, 'private'],
+    ]);
+  });
+});
+
+test('storage files upload --public makes the uploaded file public and says when it stayed private', async () => {
+  let visibilityStatus = 200;
+  const visibilityBodies = [];
+  await withCliServer(async (req, res) => {
+    if (req.url.startsWith('/signed/')) {
+      await readBody(req);
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+    assertApiKeyAuth(req);
+    if (req.url === '/v1/object-storage') return storageStateResponse(res);
+    const body = await readJson(req);
+    if (req.url.endsWith('/write-url')) {
+      jsonResponse(res, 201, { status: 'success', data: { method: 'PUT', url: signedUrl(req, '/signed/fotos/logo.png'), headers: {}, expires_at: '2026-10-24T12:15:00.000Z' } });
+      return;
+    }
+    visibilityBodies.push(body);
+    if (visibilityStatus !== 200) return jsonResponse(res, visibilityStatus, { status: 'failed', code: 'OBJECT_STORAGE_UNAVAILABLE' });
+    jsonResponse(res, 200, { status: 'success', data: visibilityInfo(body.key, body.visibility) });
+  }, async ({ apiBase, configDir }) => {
+    const filePath = join(configDir, 'logo.png');
+    await writeFile(filePath, 'logo');
+
+    let result = await runCli(['storage', 'files', 'upload', '--bucket', 'fotos', '--file', filePath, '--public'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Arquivo enviado: fotos\/logo\.png/);
+    assert.match(result.stdout, /Endereco publico: https:\/\/fotos\.armazem\.zenifra\.com\/logo\.png/);
+
+    result = await runCli(['storage', 'files', 'upload', '--bucket', 'fotos', '--file', filePath, '--public', '--json'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { bucket: 'fotos', key: 'logo.png', size_bytes: 4, content_type: 'image/png', visibility: 'public', public_url: 'https://fotos.armazem.zenifra.com/logo.png' });
+
+    result = await runCli(['storage', 'files', 'upload', '--bucket', 'fotos', '--file', filePath], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(visibilityBodies.length, 2);
+
+    visibilityStatus = 503;
+    result = await runCli(['storage', 'files', 'upload', '--bucket', 'fotos', '--file', filePath, '--public'], { apiBase, configDir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /fotos\/logo\.png foi enviado, mas continua privado/);
+    assert.match(result.stderr, /zenifra storage files public --bucket fotos --key logo\.png --yes/);
+    assert.deepEqual(visibilityBodies[0], { key: 'logo.png', visibility: 'public' });
+  });
+});
+
 test('storage files download streams to disk and does not overwrite without --yes', async () => {
   const content = Buffer.alloc(128 * 1024, 'd');
   let readBodyRequest;
@@ -6479,7 +6571,7 @@ test('storage files delete, share and info use the signed links and object detai
       jsonResponse(res, 201, { status: 'success', data: { method: 'GET', url: 'https://armazem.zenifra.com/fotos/logo.png?X-Amz-Expires=604800', headers: {}, expires_at: '2026-10-31T12:00:00.000Z' } });
       return;
     }
-    jsonResponse(res, 200, { status: 'success', data: { key: 'logo.png', name: 'logo.png', size_bytes: 12288, content_type: 'image/png', uploaded_at: '2026-10-20T08:00:00.000Z', etag: 'abc', metadata: { origem: 'site' } } });
+    jsonResponse(res, 200, { status: 'success', data: { key: 'logo.png', name: 'logo.png', size_bytes: 12288, content_type: 'image/png', uploaded_at: '2026-10-20T08:00:00.000Z', etag: 'abc', metadata: { origem: 'site' }, visibility: 'public', public_url: 'https://fotos.armazem.zenifra.com/logo.png' } });
   }, async ({ apiBase, configDir }) => {
     let result = await runCli(['storage', 'files', 'delete', '--bucket', 'fotos', '--key', 'logo.png'], { apiBase, configDir });
     assert.equal(result.code, 1);
@@ -6501,6 +6593,8 @@ test('storage files delete, share and info use the signed links and object detai
     assert.match(result.stdout, /image\/png/);
     assert.match(result.stdout, /12 KB/);
     assert.match(result.stdout, /Metadado origem\s+site/);
+    assert.match(result.stdout, /Visibilidade\s+publico/);
+    assert.match(result.stdout, /Endereco publico\s+https:\/\/fotos\.armazem\.zenifra\.com\/logo\.png/);
 
     assert.deepEqual(bodies, [
       { url: `${STORAGE_BASE}/buckets/fotos/write-url`, body: { operation: 'delete', key: 'logo.png' } },

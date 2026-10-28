@@ -150,6 +150,9 @@ zenifra storage files download --bucket fotos --key 2026/logo.png --output ./log
 zenifra storage files info --bucket fotos --key 2026/logo.png
 zenifra storage files share --bucket fotos --key 2026/logo.png
 zenifra storage files delete --bucket fotos --key 2026/logo.png --yes
+zenifra storage files upload --bucket site --file ./banner.jpg --public
+zenifra storage files public --bucket site --key banner.jpg --yes
+zenifra storage files private --bucket site --key banner.jpg
 zenifra storage keys
 zenifra storage keys create --name deploy --buckets fotos --access read_write --allowed-ips 203.0.113.7
 zenifra storage keys revoke --access-key <access-key-id> --yes
@@ -160,6 +163,7 @@ zenifra storage usage --month 2026-09
 - Envio e download vao direto para o Armazem por links assinados, em streaming, sem passar pela API e sem carregar o arquivo inteiro na memoria. Cada arquivo pode ter ate 20 GiB.
 - `files` lista um nivel de pasta por vez; use `--prefix pasta/` para entrar em uma pasta e o `--continuation-token` mostrado para a proxima pagina.
 - `files share` gera um link de download valido por 7 dias. Qualquer pessoa com o link consegue baixar o arquivo.
+- Tudo no Armazem e privado por padrao: buckets sao sempre privados e todo arquivo enviado nasce privado. `files upload --public` e `files public --yes` tornam um arquivo publico, com endereco fixo `https://<bucket>.armazem.zenifra.com/<arquivo>`; `files private` volta o arquivo para privado. A lista de arquivos do bucket nunca e publica, e enviar de novo um arquivo com o mesmo nome deixa o arquivo privado.
 - `buckets delete` remove somente bucket vazio. Um bucket com arquivos so pode ser removido pelo console, com codigo de verificacao.
 - `keys create` mostra o segredo da chave uma unica vez. O CLI nao grava o segredo em arquivo nem em log: guarde-o em um cofre de segredos. `--access` aceita `read`, `read_write` ou `full`; sem `--buckets`, a chave vale para todos os buckets.
 - `usage` mostra o consumo do mes atual ou de um dos 12 meses anteriores, em reais; no `--json`, os valores vem em centavos.

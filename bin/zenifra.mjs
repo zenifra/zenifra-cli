@@ -89,6 +89,7 @@ const KNOWN_FLAG_NAMES = new Set([
   'plan',
   'profile',
   'project',
+  'public',
   'repository',
   'revoke',
   'run',
@@ -247,11 +248,13 @@ Usage:
   zenifra storage buckets create --bucket <name> [--json]
   zenifra storage buckets delete --bucket <name> --yes [--json]
   zenifra storage files --bucket <name> [--prefix <folder/>] [--continuation-token <token>] [--limit <n>] [--json]
-  zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--json]
+  zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--public] [--json]
   zenifra storage files download --bucket <name> --key <key> [--output <path>] [--yes] [--json]
   zenifra storage files delete --bucket <name> --key <key> --yes [--json]
   zenifra storage files share --bucket <name> --key <key> [--json]
   zenifra storage files info --bucket <name> --key <key> [--json]
+  zenifra storage files public --bucket <name> --key <key> --yes [--json]
+  zenifra storage files private --bucket <name> --key <key> [--json]
   zenifra storage keys [--json]
   zenifra storage keys create --name <name> [--buckets <a,b|*>] [--access <read|read_write|full>] [--allowed-ips <ip,cidr>] [--json]
   zenifra storage keys revoke --access-key <id> --yes [--json]
@@ -571,7 +574,7 @@ const HELP_SPECS = [
   },
   {
     command: 'storage',
-    usage: 'zenifra storage\n  zenifra storage status [--json]\n  zenifra storage create [--name <name>] [--json]\n  zenifra storage buckets [--json]\n  zenifra storage buckets create --bucket <name> [--json]\n  zenifra storage buckets delete --bucket <name> --yes [--json]\n  zenifra storage files --bucket <name> [--prefix <folder/>] [--continuation-token <token>] [--limit <n>] [--json]\n  zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--json]\n  zenifra storage files download --bucket <name> --key <key> [--output <path>] [--yes] [--json]\n  zenifra storage files delete --bucket <name> --key <key> --yes [--json]\n  zenifra storage files share --bucket <name> --key <key> [--json]\n  zenifra storage files info --bucket <name> --key <key> [--json]\n  zenifra storage keys [--json]\n  zenifra storage keys create --name <name> [--buckets <a,b|*>] [--access <read|read_write|full>] [--allowed-ips <ip,cidr>] [--json]\n  zenifra storage keys revoke --access-key <id> --yes [--json]\n  zenifra storage usage [--month <YYYY-MM>] [--json]',
+    usage: 'zenifra storage\n  zenifra storage status [--json]\n  zenifra storage create [--name <name>] [--json]\n  zenifra storage buckets [--json]\n  zenifra storage buckets create --bucket <name> [--json]\n  zenifra storage buckets delete --bucket <name> --yes [--json]\n  zenifra storage files --bucket <name> [--prefix <folder/>] [--continuation-token <token>] [--limit <n>] [--json]\n  zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--public] [--json]\n  zenifra storage files download --bucket <name> --key <key> [--output <path>] [--yes] [--json]\n  zenifra storage files delete --bucket <name> --key <key> --yes [--json]\n  zenifra storage files share --bucket <name> --key <key> [--json]\n  zenifra storage files info --bucket <name> --key <key> [--json]\n  zenifra storage files public --bucket <name> --key <key> --yes [--json]\n  zenifra storage files private --bucket <name> --key <key> [--json]\n  zenifra storage keys [--json]\n  zenifra storage keys create --name <name> [--buckets <a,b|*>] [--access <read|read_write|full>] [--allowed-ips <ip,cidr>] [--json]\n  zenifra storage keys revoke --access-key <id> --yes [--json]\n  zenifra storage usage [--month <YYYY-MM>] [--json]',
     description: 'Gerencia o Armazem, o armazenamento de objetos da organizacao: buckets, arquivos, chaves de acesso e consumo.',
     examples: ['zenifra storage status', 'zenifra storage buckets create --bucket fotos', 'zenifra storage files upload --bucket fotos --file ./logo.png', 'zenifra armazem usage'],
     output: 'Zenifra CLI - storage',
@@ -613,7 +616,7 @@ const HELP_SPECS = [
     command: 'storage buckets create',
     usage: 'zenifra storage buckets create --bucket <name> [--json]',
     description: 'Cria um bucket no Armazem.',
-    flags: ['--bucket <name>  Nome do bucket: 3 a 63 caracteres, letras minusculas, numeros, ponto e hifen.', '--json           Imprime a resposta em JSON.'],
+    flags: ['--bucket <name>  Nome do bucket: 3 a 63 caracteres, letras minusculas, numeros e hifen. Buckets sao sempre privados.', '--json           Imprime a resposta em JSON.'],
     examples: ['zenifra storage buckets create --bucket fotos'],
     output: 'Bucket criado: fotos',
     jsonOutput: '{"name":"fotos"}',
@@ -630,23 +633,23 @@ const HELP_SPECS = [
   },
   {
     command: 'storage files',
-    usage: 'zenifra storage files --bucket <name> [--prefix <folder/>] [--continuation-token <token>] [--limit <n>] [--json]\n  zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--json]\n  zenifra storage files download --bucket <name> --key <key> [--output <path>] [--yes] [--json]\n  zenifra storage files delete --bucket <name> --key <key> --yes [--json]\n  zenifra storage files share --bucket <name> --key <key> [--json]\n  zenifra storage files info --bucket <name> --key <key> [--json]',
+    usage: 'zenifra storage files --bucket <name> [--prefix <folder/>] [--continuation-token <token>] [--limit <n>] [--json]\n  zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--public] [--json]\n  zenifra storage files download --bucket <name> --key <key> [--output <path>] [--yes] [--json]\n  zenifra storage files delete --bucket <name> --key <key> --yes [--json]\n  zenifra storage files share --bucket <name> --key <key> [--json]\n  zenifra storage files info --bucket <name> --key <key> [--json]\n  zenifra storage files public --bucket <name> --key <key> --yes [--json]\n  zenifra storage files private --bucket <name> --key <key> [--json]',
     description: 'Lista um nivel de pasta de um bucket: subpastas e arquivos.',
     flags: ['--bucket <name>               Nome do bucket.', '--prefix <folder/>            Pasta a listar, com barra no final. Padrao: raiz do bucket.', '--continuation-token <token>  Continua a listagem da pagina anterior.', '--limit <n>                   Itens por pagina, de 1 a 1000. Padrao: 200.', '--json                        Imprime a resposta em JSON.'],
     examples: ['zenifra storage files --bucket fotos', 'zenifra storage files --bucket fotos --prefix 2026/', 'zenifra storage files --bucket fotos --continuation-token <token>'],
-    output: 'Tipo     Nome      Tamanho  Enviado em\n-------  --------  -------  ------------------------\npasta    2026/     -        -\narquivo  logo.png  12 KB    2026-10-20T08:00:00.000Z',
-    jsonOutput: '{"bucket":"fotos","prefix":"","folders":[{"prefix":"2026/","name":"2026"}],"objects":[{"key":"logo.png","name":"logo.png","size_bytes":12288,"uploaded_at":"2026-10-20T08:00:00.000Z","etag":"9b2cf535f27731c974343645a3985328"}],"next_continuation_token":null}',
+    output: 'Tipo     Nome      Tamanho  Visibilidade  Enviado em\n-------  --------  -------  ------------  ------------------------\npasta    2026/     -        -             -\narquivo  logo.png  12 KB    privado       2026-10-20T08:00:00.000Z',
+    jsonOutput: '{"bucket":"fotos","prefix":"","folders":[{"prefix":"2026/","name":"2026"}],"objects":[{"key":"logo.png","name":"logo.png","size_bytes":12288,"uploaded_at":"2026-10-20T08:00:00.000Z","etag":"9b2cf535f27731c974343645a3985328","public":false}],"next_continuation_token":null}',
     notes: ['Quando houver mais itens, o comando mostra o --continuation-token da proxima pagina.'],
   },
   {
     command: 'storage files upload',
-    usage: 'zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--json]',
+    usage: 'zenifra storage files upload --bucket <name> --file <path> [--key <key>] [--content-type <type>] [--public] [--json]',
     description: 'Envia um arquivo local para o bucket direto ao Armazem, em streaming, sem carregar o arquivo inteiro na memoria.',
-    flags: ['--bucket <name>        Nome do bucket.', '--file <path>          Arquivo local a enviar. Ate 20 GiB.', '--key <key>            Caminho no bucket. Padrao: nome do arquivo. Terminado em "/", o nome do arquivo e acrescentado.', '--content-type <type>  Tipo do conteudo. Padrao: deduzido da extensao ou application/octet-stream.', '--json                 Imprime a resposta em JSON.'],
-    examples: ['zenifra storage files upload --bucket fotos --file ./logo.png', 'zenifra storage files upload --bucket backups --file ./dump.sql.gz --key 2026/10/'],
+    flags: ['--bucket <name>        Nome do bucket.', '--file <path>          Arquivo local a enviar. Ate 20 GiB.', '--key <key>            Caminho no bucket. Padrao: nome do arquivo. Terminado em "/", o nome do arquivo e acrescentado.', '--content-type <type>  Tipo do conteudo. Padrao: deduzido da extensao ou application/octet-stream.', '--public               Torna o arquivo publico depois do envio. Sem esta opcao, o arquivo fica privado.', '--json                 Imprime a resposta em JSON.'],
+    examples: ['zenifra storage files upload --bucket fotos --file ./logo.png', 'zenifra storage files upload --bucket site --file ./banner.jpg --public', 'zenifra storage files upload --bucket backups --file ./dump.sql.gz --key 2026/10/'],
     output: 'Arquivo enviado: fotos/logo.png (12 KB)',
     jsonOutput: '{"bucket":"fotos","key":"logo.png","size_bytes":12288,"content_type":"image/png"}',
-    notes: ['O link de envio vale 15 minutos para iniciar o envio e aceita exatamente o tamanho informado.'],
+    notes: ['O link de envio vale 15 minutos para iniciar o envio e aceita exatamente o tamanho informado.', 'Todo arquivo enviado e privado. Com --public, o arquivo ganha um endereco publico fixo em https://<bucket>.armazem.zenifra.com/<arquivo>.'],
   },
   {
     command: 'storage files download',
@@ -679,11 +682,30 @@ const HELP_SPECS = [
   {
     command: 'storage files info',
     usage: 'zenifra storage files info --bucket <name> --key <key> [--json]',
-    description: 'Mostra tamanho, tipo, data de envio, etag e metadados de um arquivo.',
+    description: 'Mostra tamanho, tipo, data de envio, etag, visibilidade, endereco publico e metadados de um arquivo.',
     flags: ['--bucket <name>  Nome do bucket.', '--key <key>      Caminho do arquivo no bucket.', '--json           Imprime a resposta em JSON.'],
     examples: ['zenifra storage files info --bucket fotos --key logo.png'],
     output: 'Campo       Valor\n----------  ------------------------\nArquivo     logo.png\nTamanho     12 KB\nTipo        image/png\nEnviado em  2026-10-20T08:00:00.000Z',
-    jsonOutput: '{"key":"logo.png","name":"logo.png","size_bytes":12288,"content_type":"image/png","uploaded_at":"2026-10-20T08:00:00.000Z","etag":"9b2cf535f27731c974343645a3985328","metadata":{}}',
+    jsonOutput: '{"key":"logo.png","name":"logo.png","size_bytes":12288,"content_type":"image/png","uploaded_at":"2026-10-20T08:00:00.000Z","etag":"9b2cf535f27731c974343645a3985328","metadata":{},"visibility":"private","public_url":null}',
+  },
+  {
+    command: 'storage files public',
+    usage: 'zenifra storage files public --bucket <name> --key <key> --yes [--json]',
+    description: 'Torna um arquivo publico: qualquer pessoa com o endereco consegue ver o arquivo, sem chave.',
+    flags: ['--bucket <name>  Nome do bucket.', '--key <key>      Caminho do arquivo no bucket.', '--yes            Confirma que o arquivo ficara publico.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra storage files public --bucket site --key banner.jpg --yes'],
+    output: 'Arquivo publico: https://site.armazem.zenifra.com/banner.jpg',
+    jsonOutput: '{"key":"banner.jpg","name":"banner.jpg","size_bytes":12288,"content_type":"image/jpeg","uploaded_at":"2026-10-20T08:00:00.000Z","etag":"9b2cf535f27731c974343645a3985328","metadata":{},"visibility":"public","public_url":"https://site.armazem.zenifra.com/banner.jpg"}',
+    notes: ['Buckets e a lista de arquivos continuam privados. Volte o arquivo para privado a qualquer momento com "zenifra storage files private".', 'Enviar de novo um arquivo com o mesmo nome deixa o arquivo privado.'],
+  },
+  {
+    command: 'storage files private',
+    usage: 'zenifra storage files private --bucket <name> --key <key> [--json]',
+    description: 'Torna um arquivo privado de novo. O endereco publico para de funcionar na hora.',
+    flags: ['--bucket <name>  Nome do bucket.', '--key <key>      Caminho do arquivo no bucket.', '--json           Imprime a resposta em JSON.'],
+    examples: ['zenifra storage files private --bucket site --key banner.jpg'],
+    output: 'Arquivo privado: site/banner.jpg',
+    jsonOutput: '{"key":"banner.jpg","name":"banner.jpg","size_bytes":12288,"content_type":"image/jpeg","uploaded_at":"2026-10-20T08:00:00.000Z","etag":"9b2cf535f27731c974343645a3985328","metadata":{},"visibility":"private","public_url":null}',
   },
   {
     command: 'storage keys',
@@ -2015,6 +2037,7 @@ const PUBLIC_ERROR_CODE_MESSAGES = {
   OBJECT_STORAGE_CURRENCY_NOT_SUPPORTED: 'O Armazem esta disponivel somente para organizacoes cobradas em reais (BRL).',
   OBJECT_STORAGE_READ_ONLY: 'A organizacao atingiu o limite de armazenamento e o Armazem esta somente leitura. Apague arquivos ou peca mais espaco por support@zenifra.com informando a organizacao, seu e-mail e o motivo.',
   BUCKET_NAME_RESERVED: 'Este nome de bucket e reservado. Escolha outro nome.',
+  BUCKET_NAME_NOT_PUBLIC: 'Arquivos de um bucket com ponto no nome nao podem ser publicos. Use um bucket sem ponto no nome.',
   BUCKET_ALREADY_EXISTS: 'Ja existe um bucket com este nome. Escolha outro nome.',
   BUCKET_LIMIT_REACHED: 'A organizacao atingiu o limite de buckets. Para pedir mais, envie para support@zenifra.com a organizacao, seu e-mail e o motivo; o pedido pode ser aprovado ou recusado.',
   BUCKET_NOT_FOUND: 'Bucket nao encontrado neste Armazem.',
@@ -6264,13 +6287,14 @@ async function handleStorageFiles(session, flags) {
   const data = unwrapData(await request(session, flags, 'GET', storageBucketPath(service, bucket, `/objects${query}`), { orgId }));
   if (flags.json) return printJson(data);
   const rows = [
-    ...asArray(data?.folders).map((folder) => ({ type: 'pasta', name: `${folder.name}/`, size: '-', date: '-' })),
-    ...asArray(data?.objects).map((object) => ({ type: 'arquivo', name: object.name || object.key, size: formatBytes(object.size_bytes), date: object.uploaded_at || '-' })),
+    ...asArray(data?.folders).map((folder) => ({ type: 'pasta', name: `${folder.name}/`, size: '-', visibility: '-', date: '-' })),
+    ...asArray(data?.objects).map((object) => ({ type: 'arquivo', name: object.name || object.key, size: formatBytes(object.size_bytes), visibility: object.public ? 'publico' : 'privado', date: object.uploaded_at || '-' })),
   ];
   printTable(rows, [
     { label: 'Tipo', value: (row) => row.type },
     { label: 'Nome', value: (row) => row.name },
     { label: 'Tamanho', value: (row) => row.size },
+    { label: 'Visibilidade', value: (row) => row.visibility },
     { label: 'Enviado em', value: (row) => row.date },
   ]);
   if (data?.next_continuation_token) {
@@ -6349,8 +6373,38 @@ async function handleStorageFileUpload(session, flags) {
   await assertTransferSucceeded(response, 'o envio');
   response.resume();
   const result = { bucket, key, size_bytes: fileStat.size, content_type: contentType };
+  // Every upload starts private; --public asks for the public address only after the file arrived.
+  const visible = flags.public === true ? await makeUploadPublic(session, flags, { orgId, service, bucket, key }) : null;
+  if (visible) Object.assign(result, { visibility: visible.visibility, public_url: visible.public_url });
   if (flags.json) return printJson(result);
   process.stdout.write(`Arquivo enviado: ${bucket}/${key} (${formatBytes(fileStat.size)})\n`);
+  if (visible?.public_url) process.stdout.write(`Endereco publico: ${visible.public_url}\n`);
+}
+
+function setStorageFileVisibility(session, flags, { orgId, service, bucket, key }, visibility) {
+  return request(session, flags, 'PUT', storageBucketPath(service, bucket, '/object-visibility'), { orgId, body: { key, visibility } }).then(unwrapData);
+}
+
+async function makeUploadPublic(session, flags, target) {
+  try {
+    return await setStorageFileVisibility(session, flags, target, 'public');
+  } catch (error) {
+    const reason = error instanceof CliError ? ` ${error.message}` : '';
+    throw new CliError(`${target.bucket}/${target.key} foi enviado, mas continua privado.${reason} Tente: zenifra storage files public --bucket ${target.bucket} --key ${target.key} --yes`);
+  }
+}
+
+async function handleStorageFileVisibility(session, flags, visibility) {
+  const commandKey = `storage files ${visibility}`;
+  const bucket = requireStorageFlag(flags, 'bucket', commandKey);
+  if (!bucket) return;
+  const key = requireStorageFlag(flags, 'key', commandKey);
+  if (!key) return;
+  if (visibility === 'public') requireStorageConfirmation(flags, 'Tornar o arquivo publico');
+  const { orgId, service } = await requireStorageService(session, flags);
+  const info = await setStorageFileVisibility(session, flags, { orgId, service, bucket, key }, visibility);
+  if (flags.json) return printJson(info);
+  process.stdout.write(info.public_url ? `Arquivo publico: ${info.public_url}\n` : `Arquivo privado: ${bucket}/${key}\n`);
 }
 
 async function handleStorageFileDownload(session, flags) {
@@ -6427,6 +6481,8 @@ async function handleStorageFileInfo(session, flags) {
     { field: 'Tipo', value: info.content_type },
     { field: 'Enviado em', value: info.uploaded_at },
     { field: 'ETag', value: info.etag },
+    { field: 'Visibilidade', value: info.visibility === 'public' ? 'publico' : 'privado' },
+    ...(info.public_url ? [{ field: 'Endereco publico', value: info.public_url }] : []),
     ...Object.entries(info.metadata || {}).map(([name, value]) => ({ field: `Metadado ${name}`, value })),
   ]);
 }
@@ -6832,6 +6888,7 @@ async function main() {
     if (command === 'storage' && subcommand === 'files' && positional[2] === 'delete') return handleStorageFileDelete(session, flags);
     if (command === 'storage' && subcommand === 'files' && positional[2] === 'share') return handleStorageFileShare(session, flags);
     if (command === 'storage' && subcommand === 'files' && positional[2] === 'info') return handleStorageFileInfo(session, flags);
+    if (command === 'storage' && subcommand === 'files' && (positional[2] === 'public' || positional[2] === 'private')) return handleStorageFileVisibility(session, flags, positional[2]);
     if (command === 'storage' && subcommand === 'files' && positional.length === 2) return handleStorageFiles(session, flags);
     if (command === 'storage' && subcommand === 'keys' && positional[2] === 'create') return handleStorageKeyCreate(session, flags);
     if (command === 'storage' && subcommand === 'keys' && positional[2] === 'revoke') return handleStorageKeyRevoke(session, flags);
