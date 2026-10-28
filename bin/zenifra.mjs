@@ -1674,7 +1674,7 @@ function estimateWizardTotal(state = {}) {
   }
 
   if (typeProject === 'valkey') {
-    total += 2;
+    if (state.managedProfile !== 'cache') total += 1;
     return total;
   }
 
@@ -3978,7 +3978,7 @@ function validateManagedDatabaseConfig(config, plan, catalog) {
     throw new CliError(`Plano ${plan} nao pode ser usado com o perfil ${profile}. Consulte "zenifra plans --type key-value", "--type cache" ou "--type queue".`);
   }
 
-  if (config.version !== managedDatabaseCatalog.version) {
+  if (config.version !== undefined && config.version !== managedDatabaseCatalog.version) {
     throw new CliError(`config.version invalida: use ${managedDatabaseCatalog.version}, conforme o catalogo de Key Value, Cache e Queue.`);
   }
 
@@ -4643,41 +4643,11 @@ async function buildManagedDatabaseConfig({ profile, plan, catalog }) {
     };
   }
 
-  const whitelist = await promptWizardPairs({
-    introLabel: 'Deseja configurar acesso de rede para este projeto?',
-    docs: DOCS_CREATE_MANAGED_DATABASE_URL,
-    examples: ['sim', 'nao'],
-    stateKey: 'managedDatabaseNetworkAccess',
-    itemLabels: [
-      { key: 'cidr', label: 'CIDR permitido', required: true, examples: ['203.0.113.0/24'], docs: DOCS_CREATE_MANAGED_DATABASE_URL },
-      { key: 'description', label: 'Descricao do acesso', required: true, examples: ['Aplicacao'], docs: DOCS_CREATE_MANAGED_DATABASE_URL },
-    ],
-  });
-
-  let blacklist = [];
-  if (whitelist.length > 0) {
-    blacklist = await promptWizardPairs({
-      introLabel: 'Deseja adicionar bloqueios de rede?',
-      docs: DOCS_CREATE_MANAGED_DATABASE_URL,
-      examples: ['sim', 'nao'],
-      itemLabels: [
-        { key: 'cidr', label: 'CIDR bloqueado', required: true, examples: ['198.51.100.0/24'], docs: DOCS_CREATE_MANAGED_DATABASE_URL },
-        { key: 'description', label: 'Descricao do bloqueio', required: true, examples: ['Bloqueio'], docs: DOCS_CREATE_MANAGED_DATABASE_URL },
-      ],
-    });
-  }
-
   return {
     type_project: 'valkey',
     profile,
     version: catalog.version,
     ...(storage ? { storage } : {}),
-    ...(whitelist.length > 0 ? {
-      network_access: {
-        ingress_white_list: whitelist,
-        ingress_black_list: blacklist,
-      },
-    } : {}),
   };
 }
 
@@ -4776,6 +4746,7 @@ async function runProjectCreateWizard(session, flags) {
   const profile = WIZARD_MANAGED_DATABASE_PROFILES[selectedType];
   const typeProject = profile ? 'valkey' : selectedType;
   ui.state.typeProject = typeProject;
+  ui.state.managedProfile = profile;
   const managedDatabaseCatalog = typeProject === 'valkey'
     ? requireManagedDatabaseCatalog(unwrapData(await request(session, flags, 'GET', '/managed-services/catalog')))
     : undefined;
@@ -4869,11 +4840,13 @@ async function handleProjectCreate(session, flags) {
   const description = wizardPayload?.description || flags.description;
   const plan = wizardPayload?.plan || flags.plan || await prompt('Plano');
   const config = wizardPayload?.config || await parseConfig(flags.config || await prompt('Config JSON ou @arquivo'));
-  const idempotencyKey = flags.idempotencyKey === undefined ? undefined : validateIdempotencyKey(flags.idempotencyKey);
   if (Array.isArray(config?.custom_domains)) {
     config.custom_domains = normalizeCustomDomains(config.custom_domains, { primaryDomain: config.domain });
   }
   const typeProject = normalizeTypeProject(config?.type_project);
+  const idempotencyKey = flags.idempotencyKey !== undefined
+    ? validateIdempotencyKey(flags.idempotencyKey)
+    : typeProject === 'valkey' ? randomUUID() : undefined;
   const paymentMode = typeProject === 'job'
     ? flags.paymentMode || 'per_minute'
     : wizardPayload?.payment_mode || flags.paymentMode || await prompt('Modo de pagamento');

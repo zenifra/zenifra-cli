@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 const cliPath = resolve('bin/zenifra.mjs');
 const stagingAutoscalingScriptPath = resolve('scripts/staging-autoscaling-regression.mjs');
@@ -4642,7 +4643,7 @@ test('create project wizard supports Key Value, Cache and Queue without invalid 
         version: '9.1.1',
         storage: { persistent: true, capacity: 1 },
       },
-      stdin: ['key-value', '', '4', '1', '1', '1', 'n', 's'],
+      stdin: ['key-value', '', '4', '1', '1', '1', 's'],
     },
     {
       name: 'cache',
@@ -4651,7 +4652,7 @@ test('create project wizard supports Key Value, Cache and Queue without invalid 
         profile: 'cache',
         version: '9.1.1',
       },
-      stdin: ['cache', '', '5', '1', '1', 'n', 's'],
+      stdin: ['cache', '', '5', '1', '1', 's'],
     },
     {
       name: 'queue',
@@ -4661,7 +4662,7 @@ test('create project wizard supports Key Value, Cache and Queue without invalid 
         version: '9.1.1',
         storage: { persistent: true, capacity: 1 },
       },
-      stdin: ['queue', '', '6', '1', '1', '1', 'n', 's'],
+      stdin: ['queue', '', '6', '1', '1', '1', 's'],
     },
   ];
 
@@ -4670,6 +4671,7 @@ test('create project wizard supports Key Value, Cache and Queue without invalid 
     await withWizardCatalogServer(async (req, res) => {
       assert.equal(req.method, 'POST');
       assert.equal(req.url, '/v1/project');
+      assert.match(req.headers['idempotency-key'], /^[0-9a-f-]{36}$/);
       body = await readJson(req);
       jsonResponse(res, 201, { status: 'success', data: { project_id: `proj_${item.name}` } });
     }, async ({ apiBase, configDir }) => {
@@ -4683,7 +4685,9 @@ test('create project wizard supports Key Value, Cache and Queue without invalid 
       assert.deepEqual(body.config, item.expected);
       assert.match(result.stdout, /Key Value|Cache|Queue/);
       assert.doesNotMatch(result.stdout, /valkey/i);
+      assert.doesNotMatch(result.stdout, /acesso de rede|CIDR/i);
       if (item.name === 'cache') assert.doesNotMatch(result.stdout, /Capacidade de storage/i);
+      assert.match(result.stdout, item.name === 'cache' ? /\[6\/6\] Confirmar criacao/ : /\[7\/7\] Confirmar criacao/);
     });
   }
 });
@@ -6792,5 +6796,37 @@ test('storage help and README never name other companies products', async () => 
     assert.doesNotMatch(storageSection, /\bS3\b|\bAWS\b|amazon/i);
   } finally {
     await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('Key Value, Cache and Queue examples create with the catalog version and no IP rules', async () => {
+  const cases = [
+    ['key-value-project.json', 'db-free'],
+    ['cache-project.json', 'cache-free'],
+    ['queue-project.json', 'queue-free'],
+  ];
+  for (const [file, plan] of cases) {
+    let body;
+    let idempotencyKey;
+    await withCliServer(async (req, res) => {
+      assertApiKeyAuth(req);
+      if (req.method === 'GET' && req.url === '/v1/managed-services/catalog') {
+        jsonResponse(res, 200, { status: 'success', data: { ...VALKEY_CATALOG, version: '9.9.9' } });
+        return;
+      }
+      idempotencyKey = req.headers['idempotency-key'];
+      body = await readJson(req);
+      jsonResponse(res, 201, { status: 'success', data: { project_id: 'proj_example' } });
+    }, async ({ apiBase, configDir }) => {
+      const examplePath = fileURLToPath(new URL(`../examples/${file}`, import.meta.url));
+      const result = await runCli([
+        'create', 'project', '--name', 'example', '--plan', plan, '--payment-mode', 'hourly', '--config', `@${examplePath}`,
+      ], { apiBase, configDir });
+
+      assert.equal(result.code, 0, `${file}\n${result.stderr}`);
+      assert.equal(body.config.version, '9.9.9', file);
+      assert.equal(body.config.network_access, undefined, file);
+      assert.match(idempotencyKey, /^[0-9a-f-]{36}$/, file);
+    });
   }
 });

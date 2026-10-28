@@ -440,7 +440,7 @@ Valores aceitos:
 - `exposure` no `config` HTTP: `public`, `private`
 - `plan`: consulte `zenifra plans` para os planos atuais; ClickHouse usa `analytics-*`; Key Value usa `db-*`, Cache usa `cache-*` e Queue usa `queue-*`
 - `config.profile` em Key Value, Cache e Queue: `key_value`, `cache` ou `queue`
-- `config.version` em Key Value, Cache e Queue: a versão retornada por `zenifra plans --type database` (Key Value), `--type cache` ou `--type queue`
+- `config.version` em Key Value, Cache e Queue: opcional; sem ela, a CLI usa a versão retornada por `zenifra plans --type database` (Key Value), `--type cache` ou `--type queue`. Se informada, precisa ser essa mesma versão
 - `config.storage` em Key Value, Cache e Queue: obrigatório e persistente para Key Value/Queue; omitido para Cache
 - `config.github.runtime` (quando houver GitHub em projeto HTTP): `nodejs`, `python` ou `bun`
 - `config.github.auto_deploy`: use `true` para o modo `branch`; mantenha `false` ao habilitar `version_deploy`
