@@ -137,7 +137,7 @@ const ALLOWED_PLAN_VALUES = new Set([
 ]);
 const ALLOWED_PAYMENT_MODE_VALUES = new Set(['hourly', 'monthly', 'yearly', 'per_minute']);
 const ALLOWED_TYPE_PROJECT_VALUES = new Set(['http', 'postgresql', 'mariadb', 'valkey', 'clickhouse', 'job']);
-const ALLOWED_RUNTIME_VALUES = new Set(['nodejs', 'python', 'bun', 'go', 'java']);
+const ALLOWED_RUNTIME_VALUES = new Set(['nodejs', 'python', 'bun', 'go', 'java', 'php']);
 const ALLOWED_GITHUB_VERSION_DEPLOY_EVENTS = new Set(['tag', 'release']);
 const ALLOWED_GITHUB_VERSION_DEPLOY_FIELDS = new Set(['enabled', 'event', 'tag_pattern', 'include_prereleases']);
 const GITHUB_TAG_PATTERN_BLOCKED_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\[\]{}\\]/u;
@@ -3469,6 +3469,7 @@ function normalizeRuntime(value) {
     ['go', 'go'],
     ['golang', 'go'],
     ['java', 'java'],
+    ['php', 'php'],
   ]);
   return aliases.get(raw) || raw;
 }
