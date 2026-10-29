@@ -3348,6 +3348,39 @@ test('deploy and build history use neutral routes when API v1 is advertised', as
   });
 });
 
+const tagDeployMessage = 'Tag and release deployments publish the latest matching version; a branch or commit cannot be chosen.';
+const deployRefusals = [
+  ['GIT_VERSION_REF_OVERRIDE', tagDeployMessage, 'Este projeto publica a versao mais recente da tag ou release. Rode o deploy sem --branch e sem --commit-sha.'],
+  [undefined, tagDeployMessage, tagDeployMessage],
+  [undefined, 'pod build-1 failed in namespace zn-org-1', 'Nao foi possivel concluir a operacao. Tente novamente mais tarde.'],
+];
+
+for (const [code, message, expected] of deployRefusals) {
+  test(`deploy refusal shows a public message (${code || message})`, async () => {
+    await withCliServer(async (req, res) => {
+      assertApiKeyAuth(req);
+      if (req.method === 'GET' && req.url === '/v1/git/providers') {
+        gitProvidersApiV1Response(res);
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/v1/project/proj_123/deploy') {
+        jsonResponse(res, 400, {
+          status: 'failed',
+          code,
+          message,
+        });
+        return;
+      }
+      jsonResponse(res, 404, { status: 'failed', message: 'unexpected request' });
+    }, async ({ apiBase, configDir }) => {
+      const result = await runCli(['deploy', '--project', 'proj_123', '--branch', 'v0.0.111'], { apiBase, configDir });
+
+      assert.equal(result.code, 1);
+      assert.ok(result.stderr.includes(expected), result.stderr);
+    });
+  });
+}
+
 test('neutral API v1 accepts a future provider descriptor without routing by its id', async () => {
   const requests = [];
   const capabilities = { repositoryDiscovery: true, pushDeploy: false, nativePreviews: false };
