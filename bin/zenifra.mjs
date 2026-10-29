@@ -2017,7 +2017,7 @@ function httpTimeoutMs() {
 
 function publicApiErrorMessage(value) {
   const message = String(value || 'Nao foi possivel concluir a operacao.');
-  if (/kubernetes|k8s|namespace|cluster|pod|serviceaccount|deployment|internal[_ -]/i.test(message)) {
+  if (/\b(?:kubernetes|k8s|namespaces?|clusters?|pods?|serviceaccounts?|deployment)\b|internal[_ -]/i.test(message)) {
     return 'Nao foi possivel concluir a operacao. Tente novamente mais tarde.';
   }
   return message;
@@ -2029,6 +2029,7 @@ const PUBLIC_ERROR_CODE_MESSAGES = {
   ORGANIZATION_BILLING_BLOCKED: 'A organizacao tem pagamentos pendentes. Regularize para aumentar o uso.',
   PROJECT_OPERATION_NOT_SUPPORTED: 'Esta acao nao esta disponivel para este tipo de projeto.',
   PROJECT_PLAN_ALREADY_SELECTED: 'O projeto ja usa este plano.',
+  GIT_VERSION_REF_OVERRIDE: 'Este projeto publica a versao mais recente da tag ou release. Rode o deploy sem --branch e sem --commit-sha.',
   DATABASE_CREDENTIAL_ROTATION_IN_PROGRESS: 'A credencial deste banco ja esta sendo renovada. Aguarde alguns instantes e confira com "zenifra database status".',
   DATABASE_CREDENTIAL_ROTATION_FAILED: 'Nao foi possivel renovar a credencial do banco. Tente novamente em instantes.',
   OBJECT_STORAGE_NOT_AVAILABLE: 'O Armazem ainda nao esta disponivel para esta organizacao. Ele esta em beta para organizacoes convidadas: peca para participar pelo console, na pagina Armazem.',
