@@ -2707,7 +2707,7 @@ test('create project accepts bun as github runtime in the JSON config', async ()
   });
 });
 
-for (const runtime of ['go', 'java']) {
+for (const runtime of ['go', 'java', 'php']) {
   test(`create project accepts ${runtime} as github runtime in the JSON config`, async () => {
     let body;
     await withCliServer(async (req, res) => {
