@@ -1645,8 +1645,8 @@ function estimateWizardTotal(state = {}) {
     total += 3;
 
     if (state.plan !== 'free') {
-      total += 2;
-      if (state.httpStoragePersistent) total += 1;
+      total += 1;
+      if (state.httpStoragePersistent) total += 2;
     }
 
     if (state.planAllowsAutoscaling) {
@@ -3923,9 +3923,12 @@ function validateJobConfig(config) {
   if (typeof config.storage.persistent !== 'boolean') {
     throw new CliError('config.storage.persistent deve ser booleano.');
   }
-  const capacity = Number(config.storage.capacity);
-  if (!Number.isInteger(capacity) || capacity < 1 || capacity > 250) {
-    throw new CliError('config.storage.capacity deve ser um inteiro entre 1 e 250 GiB.');
+  // Without persistent storage the capacity is optional: the plan's temporary disk applies.
+  if (config.storage.persistent || config.storage.capacity !== undefined) {
+    const capacity = Number(config.storage.capacity);
+    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 250) {
+      throw new CliError('config.storage.capacity deve ser um inteiro entre 1 e 250 GiB.');
+    }
   }
   if (config.storage.persistent) {
     if (typeof config.storage.dir_path_to_persist !== 'string' || !config.storage.dir_path_to_persist.trim()) {
@@ -4172,6 +4175,11 @@ function maskWizardSummary(value, key = '') {
   return value;
 }
 
+function describeStorage(storage) {
+  if (storage.persistent) return `${storage.capacity}Gi (persistente)`;
+  return storage.capacity ? `${storage.capacity}Gi (temporario)` : 'temporario, incluido no plano';
+}
+
 function printWizardSummary(payload) {
   const masked = maskWizardSummary(payload);
   const projectSummary = masked.config.type_project === 'job'
@@ -4187,7 +4195,7 @@ function printWizardSummary(payload) {
   if (masked.description) lines.push(`  descricao: ${masked.description}`);
 
   if (masked.config.type_project === 'http') {
-    lines.push(`  http: exposicao ${masked.config.exposure} | porta ${masked.config.port} | instancias ${masked.config.instances} | storage ${masked.config.storage.capacity}Gi (${masked.config.storage.persistent ? 'persistente' : 'efemero'})`);
+    lines.push(`  http: exposicao ${masked.config.exposure} | porta ${masked.config.port} | instancias ${masked.config.instances} | storage ${describeStorage(masked.config.storage)}`);
     if (masked.config.autoscaling?.enabled) {
       lines.push(`  auto-scaling: ${masked.config.instances}-${masked.config.autoscaling.max_instances} instancias | CPU ${masked.config.autoscaling.target_cpu_utilization_percent}% | memoria ${masked.config.autoscaling.target_memory_utilization_percent}%`);
     }
@@ -4203,7 +4211,7 @@ function printWizardSummary(payload) {
   }
 
   if (masked.config.type_project === 'job') {
-    lines.push(`  Job: cron ${masked.config.job.cron} UTC | storage ${masked.config.storage.capacity}Gi (${masked.config.storage.persistent ? 'persistente' : 'efemero'})`);
+    lines.push(`  Job: cron ${masked.config.job.cron} UTC | storage ${describeStorage(masked.config.storage)}`);
     if (masked.config.image) lines.push(`  imagem: ${masked.config.image.url} | publica: ${masked.config.image.is_public ? 'sim' : 'nao'}`);
     if (masked.config.github) lines.push(`  github: ${masked.config.github.repository_owner}/${masked.config.github.repository_name}@${masked.config.github.branch}`);
   }
@@ -4486,11 +4494,10 @@ async function buildHttpConfig({ session, flags, plan, httpPlans, availableInsta
     }
   }
 
-  let storage;
-  if (plan === 'free') {
-    storage = { persistent: false, capacity: 1 };
-    promptWizardBoolean.ui.state.httpStoragePersistent = false;
-  } else {
+  // Without persistent storage the project gets the temporary disk its plan includes.
+  let storage = { persistent: false };
+  promptWizardBoolean.ui.state.httpStoragePersistent = false;
+  if (plan !== 'free') {
     const persistent = await promptWizardBoolean({
       label: 'Storage persistente',
       docs: DOCS_CONFIGURATION_URL,
@@ -4498,24 +4505,24 @@ async function buildHttpConfig({ session, flags, plan, httpPlans, availableInsta
     });
     promptWizardBoolean.ui.state.httpStoragePersistent = persistent;
 
-    storage = {
-      persistent,
-      ...(persistent ? {
+    if (persistent) {
+      storage = {
+        persistent,
         dir_path_to_persist: await promptWizardText({
           label: 'Diretorio persistente',
           required: true,
           examples: ['/data'],
           docs: DOCS_CONFIGURATION_URL,
         }),
-      } : {}),
-      capacity: await promptWizardNumber({
-        label: 'Capacidade de storage (Gi)',
-        docs: DOCS_CONFIGURATION_URL,
-        examples: ['1', '5', '10'],
-        min: 1,
-        max: 250,
-      }),
-    };
+        capacity: await promptWizardNumber({
+          label: 'Capacidade de storage (Gi)',
+          docs: DOCS_CONFIGURATION_URL,
+          examples: ['1', '5', '10'],
+          min: 1,
+          max: 250,
+        }),
+      };
+    }
   }
 
   const envs = await promptWizardPairs({

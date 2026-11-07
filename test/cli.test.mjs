@@ -2660,6 +2660,38 @@ test('create scheduled Job accepts job-starter and rejects job-free before calli
   }
 });
 
+test('create scheduled Job only requires the storage capacity for persistent storage', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
+  try {
+    const run = (storage) => runCli([
+      'create', 'project',
+      '--name', 'nightly-job',
+      '--plan', 'job-basic',
+      '--payment-mode', 'per_minute',
+      '--config', JSON.stringify({
+        type_project: 'job',
+        image: { url: 'registry.example.com/team/worker:1.0.0', is_public: true },
+        envs: [],
+        storage,
+        job: { cron: '0 3 * * *' },
+      }),
+    ], { configDir });
+
+    const temporary = await run({ persistent: false });
+    assert.doesNotMatch(temporary.stderr, /config\.storage\.capacity/);
+
+    const persistent = await run({ persistent: true, dir_path_to_persist: '/data' });
+    assert.equal(persistent.code, 1);
+    assert.match(persistent.stderr, /config\.storage\.capacity deve ser um inteiro entre 1 e 250 GiB/);
+
+    const tooBig = await run({ persistent: false, capacity: 251 });
+    assert.equal(tooBig.code, 1);
+    assert.match(tooBig.stderr, /config\.storage\.capacity deve ser um inteiro entre 1 e 250 GiB/);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
 test('create scheduled Job rejects an invalid image reference before calling the API', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-test-'));
   try {
@@ -3947,10 +3979,7 @@ test('create project launches the wizard for an http OCI project', async () => {
     });
     assert.equal(body.config.port, 8080);
     assert.equal(body.config.instances, 1);
-    assert.deepEqual(body.config.storage, {
-      persistent: false,
-      capacity: 1,
-    });
+    assert.deepEqual(body.config.storage, { persistent: false });
     assert.deepEqual(body.config.envs, []);
     assert.deepEqual(body.config.network_access, {
       ingress_white_list: [{ cidr: '0.0.0.0/0', description: 'Allow all' }],
@@ -4113,10 +4142,7 @@ test('create project wizard re-prompts invalid runtime and creates an http githu
       pre_build_command: null,
       build_command: 'npm run build',
     });
-    assert.deepEqual(body.config.storage, {
-      persistent: false,
-      capacity: 1,
-    });
+    assert.deepEqual(body.config.storage, { persistent: false });
     assert.match(result.stdout, /valor invalido: use nodejs, python, bun/i);
     assert.match(result.stdout, /1=1\.4 2=1\.3/);
     assert.match(result.stdout, /bun run start/);
@@ -4266,9 +4292,11 @@ test('create project wizard hides subdomain and network prompts for http basic p
 });
 
 test('create project wizard shows dynamic totals for a short http oci flow', async () => {
+  let body;
   await withWizardCatalogServer(async (req, res) => {
     assert.equal(req.method, 'POST');
     assert.equal(req.url, '/v1/project');
+    body = await readJson(req);
     jsonResponse(res, 200, { status: 'success', data: { id: 'proj_dynamic_1', domain: 'proj-dynamic.client.zenifra.com' } });
   }, async ({ apiBase, configDir }) => {
     const stdin = [
@@ -4281,7 +4309,6 @@ test('create project wizard shows dynamic totals for a short http oci flow', asy
       '80',
       '1',
       'n',
-      '1',
       'n',
       '1',
       's',
@@ -4292,8 +4319,10 @@ test('create project wizard shows dynamic totals for a short http oci flow', asy
     const result = await runCli(['create', 'project'], { apiBase, configDir, stdin });
 
     assert.equal(result.code, 0, result.stderr);
-    assert.match(result.stdout, /\[14\/15\] Image URL\*/);
-    assert.match(result.stdout, /\[15\/15\] Confirmar criacao do projeto\* \[s\/n\]/);
+    assert.match(result.stdout, /\[13\/14\] Image URL\*/);
+    assert.match(result.stdout, /\[14\/14\] Confirmar criacao do projeto\* \[s\/n\]/);
+    assert.doesNotMatch(result.stdout, /Capacidade de storage/);
+    assert.deepEqual(body.config.storage, { persistent: false });
   });
 });
 
@@ -4427,7 +4456,6 @@ test('create project wizard closes the tty and prints a success table with full 
         { waitFor: /Porta da aplicacao/, send: '8080\n' },
         { waitFor: /Quantidade de instancias/, send: '1\n' },
         { waitFor: /Storage persistente/, send: 'n\n' },
-        { waitFor: /Capacidade de storage/, send: '1\n' },
         { waitFor: /Deseja adicionar variaveis de ambiente/, send: 's\n' },
         { waitFor: /Nome da env/, send: 'PORT\n' },
         { waitFor: /Valor da env/, send: '8080\n' },
