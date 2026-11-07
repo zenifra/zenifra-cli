@@ -11,8 +11,7 @@
     }
   ],
   "storage": {
-    "persistent": false,
-    "capacity": 1
+    "persistent": false
   },
   "job": {
     "cron": "0 3 * * *"
