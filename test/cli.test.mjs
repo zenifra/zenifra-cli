@@ -3336,6 +3336,23 @@ test('generic Git deploy settings do not fall back to legacy GitHub routes on au
   });
 });
 
+test('403 names the missing permission when the API tells which one', async () => {
+  await withCliServer(async (req, res) => {
+    assertApiKeyAuth(req);
+    jsonResponse(res, 403, {
+      status: 'failed',
+      message: 'insufficient organization permission',
+      required_permission: { resource: 'organization', action: 'template.create' },
+      docs_url: 'https://docs.zenifra.com/pt/docs/organizations/api-keys',
+    });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['project', 'source', 'deploy-settings', 'set', '--project', 'proj_git', '--mode', 'branch'], { apiBase, configDir });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /esta API key nao tem template\.create\. Use uma API key com essa permissao ou o Console\. Veja as permissoes em https:\/\/docs\.zenifra\.com\/pt\/docs\/organizations\/api-keys/);
+  });
+});
+
 test('deploy and build history use neutral routes when API v1 is advertised', async () => {
   const build = { id: 'build_123', status: 'success', branch: 'release', commit_sha: 'abc123' };
   let deployBody;
