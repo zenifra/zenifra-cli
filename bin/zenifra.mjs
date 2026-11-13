@@ -2023,6 +2023,15 @@ function publicApiErrorMessage(value) {
   return message;
 }
 
+function missingPermissionMessage(payload, credential) {
+  const action = payload?.required_permission?.action;
+  if (typeof action !== 'string' || !/^[a-z_.]+$/.test(action)) return null;
+  const docs = typeof payload?.docs_url === 'string' && payload.docs_url.startsWith('https://docs.zenifra.com/') ? ` Veja as permissoes em ${payload.docs_url}` : '';
+  return credential?.type === 'api_key'
+    ? `Permissao insuficiente: esta API key nao tem ${action}. Use uma API key com essa permissao ou o Console.${docs}`
+    : `Permissao insuficiente: voce nao tem ${action} nesta organizacao. Peca acesso ao owner da organizacao.${docs}`;
+}
+
 const PUBLIC_ERROR_CODE_MESSAGES = {
   PROJECT_STATE_CONFLICT: 'Esta acao nao esta disponivel no estado atual do projeto.',
   PROJECT_OPERATION_IN_PROGRESS: 'Outra operacao esta em andamento neste projeto. Tente novamente em instantes.',
@@ -2130,7 +2139,7 @@ async function request(session, flags, method, path, {
       throw httpError(PUBLIC_ERROR_CODE_MESSAGES[payload.code]);
     }
     if (response.status === 403) {
-      throw httpError(message);
+      throw httpError(missingPermissionMessage(payload, credential) || message);
     }
     if (response.status === 429 && Number.isFinite(Number(payload?.retry_after_seconds))) {
       throw httpError(`${message} Tente novamente em ${Number(payload.retry_after_seconds)} segundo(s).`);
