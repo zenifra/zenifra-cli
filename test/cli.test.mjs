@@ -7201,3 +7201,88 @@ test('vm create explains the vm error codes', async () => {
     }
   });
 });
+
+const vmProject = (extra = {}) => ({
+  id: 'p1', name: 'web', status: 'running', plan: '1vcpu-1gib', type_project: 'vm', console_password: 'nao-deve-sair',
+  vm: {
+    image: 'ubuntu-24.04', default_user: 'ubuntu', ipv6: 'fde7:2cf5:ac14:40:1::a', ssh_command: 'ssh ubuntu@fde7:2cf5:ac14:40:1::a', bandwidth_mbps: 50,
+    transfer: { period: '2026-11', used_bytes: 1610612736, quota_bytes: 53687091200, throttled: false },
+  },
+  ...extra,
+});
+
+test('vm status shows the IPv6, the ssh command and the transfer use', async () => {
+  let project = vmProject();
+  await withCliServer(async (req, res) => {
+    if (req.method === 'GET' && req.url === '/v1/project/p1') return jsonResponse(res, 200, { status: 'success', data: project });
+    jsonResponse(res, 404, { status: 'failed', message: 'not found' });
+  }, async ({ apiBase, configDir }) => {
+    const run = (...extra) => runCli(['vm', 'status', '--org', 'org_1', '--project', 'p1', ...extra], { apiBase, configDir });
+    const ok = await run();
+    assert.equal(ok.code, 0, ok.stderr);
+    assert.match(ok.stdout, /IPv6\s+fde7:2cf5:ac14:40:1::a/);
+    assert.match(ok.stdout, /SSH\s+ssh ubuntu@fde7/);
+    assert.match(ok.stdout, /Banda\s+50 Mbps/);
+    assert.match(ok.stdout, /Trafego \(2026-11\)\s+1\.5 GB de 50 GB/);
+
+    project = vmProject({ vm: { ...vmProject().vm, bandwidth_mbps: 10, transfer: { ...vmProject().vm.transfer, throttled: true } } });
+    assert.match((await run()).stdout, /10 Mbps \(franquia do mes esgotada\)/);
+
+    project = vmProject({ status: 'creating', vm: { image: 'ubuntu-24.04', default_user: 'ubuntu', ipv6: null, ssh_command: null, bandwidth_mbps: 50, transfer: null } });
+    const creating = await run();
+    assert.equal(creating.code, 0, creating.stderr);
+    assert.match(creating.stdout, /IPv6\s+-/);
+    assert.match(creating.stdout, /SSH\s+-/);
+    assert.doesNotMatch(creating.stdout, /undefined|NaN/);
+
+    project = vmProject();
+    const json = JSON.parse((await run('--json')).stdout);
+    assert.deepEqual(Object.keys(json).sort(), ['id', 'name', 'plan', 'status', 'type_project', 'vm']);
+    assert.doesNotMatch(JSON.stringify(json), /console_password/);
+  });
+});
+
+test('vm start, stop, restart and delete call the lifecycle routes', async () => {
+  const calls = [];
+  await withCliServer(async (req, res) => {
+    calls.push(`${req.method} ${req.url}`);
+    if (req.method === 'GET') return jsonResponse(res, 200, { status: 'success', data: vmProject() });
+    const status = req.url.endsWith('/stop') ? 'stopped' : 'running';
+    if (req.method === 'DELETE') return jsonResponse(res, 202, { status: 'success', data: { project_id: 'p1', status: 'deleting' } });
+    jsonResponse(res, 202, { status: 'success', data: { project_id: 'p1', status } });
+  }, async ({ apiBase, configDir }) => {
+    const run = (...args) => runCli(['vm', ...args, '--org', 'org_1', '--project', 'p1'], { apiBase, configDir });
+    for (const [action, call, status] of [['start', 'PATCH /v1/project/p1/resume', 'running'], ['stop', 'PATCH /v1/project/p1/stop', 'stopped'], ['restart', 'POST /v1/project/p1/vm/restart', 'running']]) {
+      calls.length = 0;
+      const result = await run(action);
+      assert.equal(result.code, 0, result.stderr);
+      assert.ok(calls.includes(call), `${action}: ${calls}`);
+      assert.match(result.stdout, new RegExp(`VM p1: ${status}`));
+    }
+    calls.length = 0;
+    const refused = await run('delete');
+    assert.equal(refused.code, 1);
+    assert.match(refused.stderr, /exige --yes/);
+    assert.deepEqual(calls, []);
+    const done = await run('delete', '--yes');
+    assert.equal(done.code, 0, done.stderr);
+    assert.ok(calls.includes('DELETE /v1/project/p1'));
+    assert.match(done.stdout, /Exclusao da VM solicitada/);
+  });
+});
+
+test('vm commands refuse projects that are not virtual machines', async () => {
+  const calls = [];
+  await withCliServer(async (req, res) => {
+    calls.push(`${req.method} ${req.url}`);
+    jsonResponse(res, 200, { status: 'success', data: { id: 'h1', name: 'site', status: 'running', type_project: 'http' } });
+  }, async ({ apiBase, configDir }) => {
+    for (const args of [['start'], ['stop'], ['restart'], ['delete', '--yes'], ['status']]) {
+      calls.length = 0;
+      const result = await runCli(['vm', ...args, '--org', 'org_1', '--project', 'h1'], { apiBase, configDir });
+      assert.equal(result.code, 1, args.join(' '));
+      assert.match(result.stderr, /nao e uma maquina virtual/);
+      assert.deepEqual(calls, ['GET /v1/project/h1']);
+    }
+  });
+});

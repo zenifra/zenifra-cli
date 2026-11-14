@@ -788,7 +788,7 @@ const HELP_SPECS = [
     description: 'Mostra o estado e os dados de acesso do servidor virtual.',
     flags: ['--project <id>  ID do servidor.', '--json          Imprime a resposta em JSON.'],
     examples: ['zenifra vm status --project proj_1'],
-    output: 'Servidor: web (proj_1)\nStatus: running\nEndereco IPv6: fde7:2cf5:ac14:40:1::a',
+    output: 'Campo            Valor\n---------------  ---------------------------------\nIPv6             fde7:2cf5:ac14:40:1::a\nSSH              ssh ubuntu@fde7:2cf5:ac14:40:1::a\nBanda            50 Mbps\nTrafego (2026-11)  1.5 GB de 50 GB',
   },
   {
     command: 'vm start',
@@ -796,7 +796,7 @@ const HELP_SPECS = [
     description: 'Liga o servidor virtual.',
     flags: ['--project <id>  ID do servidor.', '--json          Imprime a resposta em JSON.'],
     examples: ['zenifra vm start --project proj_1'],
-    output: 'Servidor ligado: proj_1',
+    output: 'VM proj_1: running',
   },
   {
     command: 'vm stop',
@@ -804,7 +804,7 @@ const HELP_SPECS = [
     description: 'Desliga o servidor virtual.',
     flags: ['--project <id>  ID do servidor.', '--json          Imprime a resposta em JSON.'],
     examples: ['zenifra vm stop --project proj_1'],
-    output: 'Servidor desligado: proj_1',
+    output: 'VM proj_1: stopped',
   },
   {
     command: 'vm restart',
@@ -812,7 +812,7 @@ const HELP_SPECS = [
     description: 'Reinicia o servidor virtual.',
     flags: ['--project <id>  ID do servidor.', '--json          Imprime a resposta em JSON.'],
     examples: ['zenifra vm restart --project proj_1'],
-    output: 'Servidor reiniciado: proj_1',
+    output: 'VM proj_1: running',
   },
   {
     command: 'vm delete',
@@ -820,7 +820,7 @@ const HELP_SPECS = [
     description: 'Apaga o servidor virtual e o disco dele. A acao nao pode ser desfeita.',
     flags: ['--project <id>  ID do servidor.', '--yes           Confirma a exclusao.', '--json          Imprime a resposta em JSON.'],
     examples: ['zenifra vm delete --project proj_1 --yes'],
-    output: 'Servidor apagado: proj_1',
+    output: 'Exclusao da VM solicitada: proj_1',
   },
   {
     command: 'vm plans',
@@ -4062,14 +4062,70 @@ async function handleVmCreate(session, flags) {
   process.stdout.write(`\nGuarde a senha do console agora: ela nao sera exibida de novo.\nAcompanhe com: zenifra vm status --project ${data.project_id}\n`);
 }
 
-// Placeholder da Tarefa 3: valida --project e ainda nao chama a API.
-function handleVmPending(flags, subcommand) {
-  const required = ['project'];
-  if (required.some((name) => !flags[name] || flags[name] === true)) {
-    printCommandHelpAndFail(`vm ${subcommand}`);
-    return;
+async function requireVmProject(session, flags, commandKey) {
+  const projectId = requireProjectId(flags, commandKey);
+  if (!projectId) return null;
+  const orgId = await resolveOrgId(session, flags);
+  const project = await getProject(session, flags, projectId, orgId);
+  if (project?.type_project !== 'vm') {
+    throw new CliError(`O projeto ${projectId} nao e uma maquina virtual. Use os comandos de "zenifra project".`);
   }
-  throw new CliError(`"zenifra vm ${subcommand}" ainda nao esta disponivel.`);
+  return { orgId, projectId, project };
+}
+
+async function handleVmStatus(session, flags) {
+  const found = await requireVmProject(session, flags, 'vm status');
+  if (!found) return;
+  const { projectId, project } = found;
+  const vm = project.vm ?? {};
+  if (flags.json) {
+    const { id, name, status, plan, type_project, vm: vmView } = project;
+    return printJson({ id, name, status, plan, type_project, vm: vmView });
+  }
+  const transfer = vm.transfer;
+  const bandwidth = vm.bandwidth_mbps === undefined || vm.bandwidth_mbps === null
+    ? undefined
+    : `${vm.bandwidth_mbps} Mbps${transfer?.throttled ? ' (franquia do mes esgotada)' : ''}`;
+  printFieldTable([
+    { field: 'ID', value: project.id ?? projectId },
+    { field: 'Nome', value: project.name },
+    { field: 'Status', value: project.status },
+    { field: 'Plano', value: project.plan },
+    { field: 'Imagem', value: vm.image },
+    { field: 'Usuario', value: vm.default_user },
+    { field: 'IPv6', value: vm.ipv6 || undefined },
+    { field: 'SSH', value: vm.ssh_command || undefined },
+    { field: 'Banda', value: bandwidth },
+    { field: transfer?.period ? `Trafego (${transfer.period})` : 'Trafego', value: transfer ? `${formatBytes(transfer.used_bytes)} de ${formatBytes(transfer.quota_bytes)}` : undefined },
+  ]);
+}
+
+const VM_POWER_ROUTES = {
+  start: ['PATCH', 'resume'],
+  stop: ['PATCH', 'stop'],
+  restart: ['POST', 'vm/restart'],
+};
+
+async function handleVmPower(session, flags, action) {
+  const found = await requireVmProject(session, flags, `vm ${action}`);
+  if (!found) return;
+  const { orgId, projectId } = found;
+  const [method, route] = VM_POWER_ROUTES[action];
+  const payload = await request(session, flags, method, `/project/${projectId}/${route}`, { orgId });
+  if (flags.json) return printJson(payload);
+  process.stdout.write(`VM ${projectId}: ${unwrapData(payload)?.status ?? '-'}\n`);
+}
+
+async function handleVmDelete(session, flags) {
+  if (flags.project && flags.project !== true && flags.yes !== true) {
+    throw new CliError('A remocao exige --yes. Nenhuma solicitacao foi enviada.');
+  }
+  const found = await requireVmProject(session, flags, 'vm delete');
+  if (!found) return;
+  const { orgId, projectId } = found;
+  const payload = await request(session, flags, 'DELETE', `/project/${projectId}`, { orgId });
+  if (flags.json) return printJson(payload);
+  process.stdout.write(`Exclusao da VM solicitada: ${projectId}\n`);
 }
 
 async function handlePlans(session, flags) {
@@ -7119,7 +7175,9 @@ async function main() {
     if (command === 'vm' && subcommand === 'images') return handleVmImages(session, flags);
     if (command === 'vm' && subcommand === 'list') return handleProjects(session, { ...flags, type: 'vm' });
     if (command === 'vm' && subcommand === 'create') return handleVmCreate(session, flags);
-    if (command === 'vm' && ['status', 'start', 'stop', 'restart', 'delete'].includes(subcommand)) return handleVmPending(flags, subcommand);
+    if (command === 'vm' && subcommand === 'status') return handleVmStatus(session, flags);
+    if (command === 'vm' && ['start', 'stop', 'restart'].includes(subcommand)) return handleVmPower(session, flags, subcommand);
+    if (command === 'vm' && subcommand === 'delete') return handleVmDelete(session, flags);
     if (command === 'project' && subcommand === 'healthcheck' && positional.length === 2) {
       process.stdout.write(commandHelp(['project', 'healthcheck']));
       return;

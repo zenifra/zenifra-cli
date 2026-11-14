@@ -173,8 +173,19 @@ zenifra storage usage --month 2026-09
 ```bash
 zenifra vm plans
 zenifra vm images
+zenifra vm create --name web --plan 1vcpu-1gib --ssh-key ~/.ssh/id_ed25519.pub
 zenifra vm list
+zenifra vm status --project <project-id>
+zenifra vm stop --project <project-id>
+zenifra vm start --project <project-id>
+zenifra vm restart --project <project-id>
+zenifra vm delete --project <project-id> --yes
 ```
+
+- `vm create` mostra a senha do console uma unica vez: guarde-a em um cofre de segredos.
+- `vm status` mostra o IPv6, o comando SSH, a banda e o trafego do mes. IPv6 e SSH aparecem como `-` enquanto a VM ainda esta sendo criada.
+- `vm delete` apaga a VM e o disco dela e exige `--yes`.
+- O console serial e a reinstalacao da VM ficam no console da Zenifra.
 
 ## Metricas de bancos Key Value, Cache e Queue
 
