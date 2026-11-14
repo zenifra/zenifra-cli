@@ -96,6 +96,9 @@ zenifra storage files download --bucket fotos --key logo.png
 zenifra storage files share --bucket fotos --key logo.png
 zenifra storage keys create --name deploy --buckets fotos --access read_write
 zenifra storage usage
+zenifra vm plans
+zenifra vm images
+zenifra vm list
 zenifra project url --project <project-id>
 zenifra project logs --project <project-id> --instance <instance-id>
 zenifra project runs --project <project-id> --page 1 --limit 20
@@ -157,6 +160,9 @@ zenifra storage keys
 zenifra storage keys create --name deploy --buckets fotos --access read_write --allowed-ips 203.0.113.7
 zenifra storage keys revoke --access-key <access-key-id> --yes
 zenifra storage usage
+zenifra vm plans
+zenifra vm images
+zenifra vm list
 zenifra storage usage --month 2026-09
 ```
 

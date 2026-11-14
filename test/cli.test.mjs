@@ -7025,3 +7025,90 @@ test('Key Value, Cache and Queue examples create with the catalog version and no
     });
   }
 });
+
+test('vm help covers every subcommand, the vps alias and no internal names', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'zenifra-cli-'));
+  try {
+    const general = await runCli(['--help'], { configDir });
+    assert.match(general.stdout, /zenifra vm create/);
+    assert.match(general.stdout, /zenifra vps/);
+
+    const outputs = [];
+    for (const sub of ['', 'create', 'list', 'status', 'start', 'stop', 'restart', 'delete', 'plans', 'images']) {
+      const args = sub ? ['vm', sub, '--help'] : ['vm', '--help'];
+      const result = await runCli(args, { configDir });
+      assert.equal(result.code, 0, `${args.join(' ')}\n${result.stderr}`);
+      assert.match(result.stdout, new RegExp(`zenifra vm${sub ? ` ${sub}` : ''}`));
+      assert.match(result.stdout, /Examples:/);
+      outputs.push(result.stdout);
+    }
+    for (const args of [['vps'], ['help', 'vps']]) {
+      const result = await runCli(args, { configDir });
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stdout, /Zenifra CLI - vm/);
+      outputs.push(result.stdout);
+    }
+    for (const sub of ['create', 'status', 'start', 'stop', 'restart', 'delete']) {
+      const result = await runCli(['vm', sub], { configDir });
+      assert.equal(result.code, 1, `vm ${sub}`);
+      assert.match(result.stdout, /Usage:/);
+      assert.equal(result.stderr, '');
+    }
+    const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+    const vmReadme = readme.split('\n').filter((line) => /zenifra (vm|vps)/.test(line)).join('\n');
+    for (const text of [...outputs, vmReadme]) assert.doesNotMatch(text, /kubevirt|longhorn|\bpod\b|cluster/i);
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('vm plans and images print the public catalogs without a token', async () => {
+  const plans = [{
+    plan: '1vcpu-1gib',
+    prices: { hourly: 4.847222, monthly: 3490, yearly: null },
+    features: [],
+    permissions: { cpu: 1, memory_gib: 1, disk_gib: 20, bandwidth_mbps: 50, transfer_gib: 50, type_product: 'vm' },
+  }];
+  const images = [{ id: 'ubuntu-24.04', name: 'Ubuntu', version: '24.04 LTS', default_user: 'ubuntu', default: true }];
+  await withCliServer(async (req, res) => {
+    assert.equal(req.headers.authorization, undefined);
+    assert.equal(req.headers['x-api-key'], undefined);
+    if (req.method === 'GET' && req.url === '/v1/project/vm/plans') return jsonResponse(res, 200, { status: 'success', message: 'ok', data: plans });
+    if (req.method === 'GET' && req.url === '/v1/project/vm/images') return jsonResponse(res, 200, { status: 'success', message: 'ok', data: images });
+    jsonResponse(res, 404, { status: 'failed', message: 'not found' });
+  }, async ({ apiBase, configDir }) => {
+    const plansResult = await runCli(['vm', 'plans'], { apiBase, configDir, envApiKey: null });
+    assert.equal(plansResult.code, 0, plansResult.stderr);
+    assert.match(plansResult.stdout, /1vcpu-1gib\s+1\s+1 GB\s+20 GB\s+50 Mbps\s+50 GB/);
+    assert.match(plansResult.stdout, /R\$\s?34,90/);
+
+    const imagesResult = await runCli(['vm', 'images'], { apiBase, configDir, envApiKey: null });
+    assert.equal(imagesResult.code, 0, imagesResult.stderr);
+    assert.match(imagesResult.stdout, /ubuntu-24\.04\s+Ubuntu\s+24\.04 LTS\s+ubuntu\s+sim/);
+
+    assert.deepEqual(JSON.parse((await runCli(['vm', 'plans', '--json'], { apiBase, configDir, envApiKey: null })).stdout), plans);
+    assert.deepEqual(JSON.parse((await runCli(['vm', 'images', '--json'], { apiBase, configDir, envApiKey: null })).stdout), images);
+  });
+});
+
+test('vm list asks only for vm projects', async () => {
+  const calls = [];
+  await withCliServer(async (req, res) => {
+    calls.push(`${req.method} ${req.url}`);
+    if (req.url.startsWith('/v1/project?')) {
+      return jsonResponse(res, 200, {
+        status: 'success',
+        data: {
+          projects: [{ id: 'proj_vm', name: 'web', status: 'running', plan: '1vcpu-1gib', type_project: 'vm' }],
+          pagination: { page: 1, pages: 1, total: 1 },
+        },
+      });
+    }
+    jsonResponse(res, 404, { status: 'failed', message: 'not found' });
+  }, async ({ apiBase, configDir }) => {
+    const result = await runCli(['vm', 'list', '--org', 'org_1'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(calls[0], 'GET /v1/project?type=vm&page=1&limit=15');
+    assert.match(result.stdout, /web\s+running\s+1vcpu-1gib/);
+  });
+});
