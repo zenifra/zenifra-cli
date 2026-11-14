@@ -7054,12 +7054,27 @@ test('vm help covers every subcommand, the vps alias and no internal names', asy
       assert.match(result.stdout, /Usage:/);
       assert.equal(result.stderr, '');
     }
+    assert.match(outputs[1], /Senha do console/);
+    assert.doesNotMatch(outputs[1], /IPv6|Servidor criado/);
+    assert.match(outputs[3], /ID\s+proj_1[\s\S]*Usuario\s+ubuntu/);
+    assert.match((await runCli(['projects', '--help'], { configDir })).stdout, /--type <[^>]*\|vm>/);
     const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
     const vmReadme = readme.split('\n').filter((line) => /zenifra (vm|vps)/.test(line)).join('\n');
-    for (const text of [...outputs, vmReadme]) assert.doesNotMatch(text, /kubevirt|longhorn|\bpod\b|cluster/i);
+    for (const text of [...outputs, vmReadme]) assert.doesNotMatch(text, /kubevirt|longhorn|\bpod\b|cluster|namespace|multus|cloud-init|harbor|pfsense|fde7:/i);
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }
+});
+
+test('vm plans truncate the hourly price to 4 decimals, never round it up', async () => {
+  const hourly = [4.84722222, 6.23611111, 10.40277777, 16.65277777];
+  const plans = hourly.map((value, index) => ({ plan: `p${index}`, prices: { hourly: value, monthly: 3490, yearly: null }, features: [], permissions: { cpu: 1, memory_gib: 1, disk_gib: 20, bandwidth_mbps: 50, transfer_gib: 50 } }));
+  await withCliServer(async (req, res) => jsonResponse(res, 200, { status: 'success', data: plans }), async ({ apiBase, configDir }) => {
+    const result = await runCli(['vm', 'plans'], { apiBase, configDir, envApiKey: null });
+    assert.equal(result.code, 0, result.stderr);
+    for (const price of ['0,0484', '0,0623', '0,1040', '0,1665']) assert.match(result.stdout, new RegExp(`R\\$\\s?${price}`));
+    assert.doesNotMatch(result.stdout, /0,0485/);
+  });
 });
 
 test('vm plans and images print the public catalogs without a token', async () => {
@@ -7153,6 +7168,21 @@ test('vm create sends every ssh key, an idempotency key and shows the console pa
   });
 });
 
+test('vm create replayed by the idempotency key has no console password and says so', async () => {
+  await withCliServer(async (req, res) => {
+    if (req.method === 'POST' && req.url === '/v1/project') return jsonResponse(res, 200, { status: 'success', data: { project_id: 'p1', status: 'creating' } });
+    jsonResponse(res, 404, { status: 'failed', message: 'not found' });
+  }, async ({ apiBase, configDir }) => {
+    const a = join(configDir, 'a.pub');
+    await writeFile(a, 'ssh-ed25519 AAAAC3Nza... a@pc\n', 'utf8');
+    const result = await runCli(['vm', 'create', '--org', 'org_1', '--name', 'web', '--plan', '1vcpu-1gib', '--image', 'ubuntu-24.04', '--ssh-key', a, '--idempotency-key', 'repetir-criacao-0001'], { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /Senha do console|Guarde a senha/);
+    assert.match(result.stdout, /Esta resposta nao traz a senha do console \(criacao repetida\)\. Redefina a senha pelo console\./);
+    assert.match(result.stdout, /zenifra vm status --project p1/);
+  });
+});
+
 test('vm create refuses private keys and missing keys before calling the API', async () => {
   let requests = 0;
   await withCliServer(async (req, res) => {
@@ -7179,7 +7209,7 @@ test('vm create refuses private keys and missing keys before calling the API', a
 
 test('vm create explains the vm error codes', async () => {
   const cases = [
-    [403, 'VM_ORGANIZATION_NOT_VERIFIED', /documento e o termo gov\.br/],
+    [403, 'VM_ORGANIZATION_NOT_VERIFIED', /verificacao do cadastro \(documento e, para CNPJ, o termo gov\.br\)/],
     [409, 'VM_LIMIT_REACHED', /limite de maquinas virtuais/],
     [422, 'VM_IMAGE_NOT_AVAILABLE', /zenifra vm images/],
     [422, 'VM_SSH_KEY_INVALID', /ssh-ed25519/],
@@ -7205,7 +7235,7 @@ test('vm create explains the vm error codes', async () => {
 const vmProject = (extra = {}) => ({
   id: 'p1', name: 'web', status: 'running', plan: '1vcpu-1gib', type_project: 'vm', console_password: 'nao-deve-sair',
   vm: {
-    image: 'ubuntu-24.04', default_user: 'ubuntu', ipv6: 'fde7:2cf5:ac14:40:1::a', ssh_command: 'ssh ubuntu@fde7:2cf5:ac14:40:1::a', bandwidth_mbps: 50,
+    image: 'ubuntu-24.04', default_user: 'ubuntu', ipv6: '2001:db8:40::a', ssh_command: 'ssh ubuntu@2001:db8:40::a', bandwidth_mbps: 50,
     transfer: { period: '2026-11', used_bytes: 1610612736, quota_bytes: 53687091200, throttled: false },
   },
   ...extra,
@@ -7220,8 +7250,8 @@ test('vm status shows the IPv6, the ssh command and the transfer use', async () 
     const run = (...extra) => runCli(['vm', 'status', '--org', 'org_1', '--project', 'p1', ...extra], { apiBase, configDir });
     const ok = await run();
     assert.equal(ok.code, 0, ok.stderr);
-    assert.match(ok.stdout, /IPv6\s+fde7:2cf5:ac14:40:1::a/);
-    assert.match(ok.stdout, /SSH\s+ssh ubuntu@fde7/);
+    assert.match(ok.stdout, /IPv6\s+2001:db8:40::a/);
+    assert.match(ok.stdout, /SSH\s+ssh ubuntu@2001:db8:40::a/);
     assert.match(ok.stdout, /Banda\s+50 Mbps/);
     assert.match(ok.stdout, /Trafego \(2026-11\)\s+1\.5 GB de 50 GB/);
 
