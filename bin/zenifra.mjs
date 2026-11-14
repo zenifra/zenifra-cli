@@ -238,7 +238,7 @@ Usage:
   zenifra git branches --connection <id> --repository <opaque-id> [--json]
   zenifra create project
   zenifra create project --name <name> --plan <plan> [--payment-mode <mode>] --config <json|@file> [--description <text>] [--org <id>] [--json]
-  zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|clickhouse|key-value|cache|queue|job>] [--page <n>] [--limit <n>]
+  zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|clickhouse|key-value|cache|queue|job|vm>] [--page <n>] [--limit <n>]
   zenifra database status --project <id> [--json]
   zenifra database connection --project <id> [--json]
   zenifra database credentials rotate --project <id> [--wait] [--idempotency-key <key>] [--interval <seconds>] [--timeout <seconds>] [--connection-file <path>] [--json]
@@ -3967,16 +3967,18 @@ function printPlansCatalogs(payload, type) {
   }
 }
 
+const vmUnit = (value, unit) => (value === undefined || value === null ? '-' : `${value}${unit}`);
+
 async function handleVmPlans(session, flags) {
   const plans = asArray(unwrapData(await request(session, flags, 'GET', '/project/vm/plans', { tokenRequired: false })));
   if (flags.json) return printJson(plans);
   printTable(plans, [
     { label: 'Plano', value: (item) => item.plan },
-    { label: 'vCPU', value: (item) => item.permissions?.cpu },
-    { label: 'Memoria', value: (item) => `${item.permissions?.memory_gib} GB` },
-    { label: 'Disco', value: (item) => `${item.permissions?.disk_gib} GB` },
-    { label: 'Banda', value: (item) => `${item.permissions?.bandwidth_mbps} Mbps` },
-    { label: 'Trafego/mes', value: (item) => `${item.permissions?.transfer_gib} GB` },
+    { label: 'vCPU', value: (item) => vmUnit(item.permissions?.cpu, '') },
+    { label: 'Memoria', value: (item) => vmUnit(item.permissions?.memory_gib, ' GB') },
+    { label: 'Disco', value: (item) => vmUnit(item.permissions?.disk_gib, ' GB') },
+    { label: 'Banda', value: (item) => vmUnit(item.permissions?.bandwidth_mbps, ' Mbps') },
+    { label: 'Trafego/mes', value: (item) => vmUnit(item.permissions?.transfer_gib, ' GB') },
     // hourly vem em centavos fracionados (4,847 = R$ 0,0485): 2 casas escondem o preco real.
     { label: 'Hora', value: (item) => formatJobBrlFromCents(item.prices?.hourly) },
     { label: 'Mes', value: (item) => formatBrlFromCents(item.prices?.monthly) },

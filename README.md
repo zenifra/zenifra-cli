@@ -96,9 +96,6 @@ zenifra storage files download --bucket fotos --key logo.png
 zenifra storage files share --bucket fotos --key logo.png
 zenifra storage keys create --name deploy --buckets fotos --access read_write
 zenifra storage usage
-zenifra vm plans
-zenifra vm images
-zenifra vm list
 zenifra project url --project <project-id>
 zenifra project logs --project <project-id> --instance <instance-id>
 zenifra project runs --project <project-id> --page 1 --limit 20
@@ -160,9 +157,6 @@ zenifra storage keys
 zenifra storage keys create --name deploy --buckets fotos --access read_write --allowed-ips 203.0.113.7
 zenifra storage keys revoke --access-key <access-key-id> --yes
 zenifra storage usage
-zenifra vm plans
-zenifra vm images
-zenifra vm list
 zenifra storage usage --month 2026-09
 ```
 
@@ -173,6 +167,14 @@ zenifra storage usage --month 2026-09
 - `buckets delete` remove somente bucket vazio. Um bucket com arquivos so pode ser removido pelo console, com codigo de verificacao.
 - `keys create` mostra o segredo da chave uma unica vez. O CLI nao grava o segredo em arquivo nem em log: guarde-o em um cofre de segredos. `--access` aceita `read`, `read_write` ou `full`; sem `--buckets`, a chave vale para todos os buckets.
 - `usage` mostra o consumo do mes atual ou de um dos 12 meses anteriores, em reais; no `--json`, os valores vem em centavos.
+
+## Servidores virtuais (VPS)
+
+```bash
+zenifra vm plans
+zenifra vm images
+zenifra vm list
+```
 
 ## Metricas de bancos Key Value, Cache e Queue
 
