@@ -1385,6 +1385,12 @@ function isNamespaceCommand(command) {
   return ['auth', 'profile', 'project', 'org', 'database', 'git', 'storage', 'vm'].includes(command);
 }
 
+// --ssh-key pode repetir: acumula em lista; as demais flags guardam o ultimo valor.
+function setParsedFlag(flags, key, value) {
+  if (key === 'sshKey') flags[key] = [...(Array.isArray(flags[key]) ? flags[key] : []), value];
+  else flags[key] = value;
+}
+
 function parseArgs(argv) {
   const positional = [];
   const flags = {};
@@ -1402,7 +1408,7 @@ function parseArgs(argv) {
     const key = rawKey.replace(/-([a-z])/g, (_, value) => value.toUpperCase());
 
     if (inlineValue !== undefined) {
-      flags[key] = inlineValue;
+      setParsedFlag(flags, key, inlineValue);
       continue;
     }
 
@@ -1412,7 +1418,7 @@ function parseArgs(argv) {
       continue;
     }
 
-    flags[key] = next;
+    setParsedFlag(flags, key, next);
     index += 1;
   }
 
@@ -2128,6 +2134,12 @@ function missingPermissionMessage(payload, credential) {
 }
 
 const PUBLIC_ERROR_CODE_MESSAGES = {
+  VM_ORGANIZATION_NOT_VERIFIED: 'Para criar maquinas virtuais, a organizacao precisa ter o documento e o termo gov.br verificados. Complete o cadastro no console.',
+  VM_LIMIT_REACHED: 'A organizacao atingiu o limite de maquinas virtuais. Para pedir mais, envie para support@zenifra.com a organizacao, seu e-mail e o motivo.',
+  VM_IMAGE_NOT_AVAILABLE: 'Imagem indisponivel. Veja as opcoes com "zenifra vm images".',
+  VM_SSH_KEY_INVALID: 'Chave SSH invalida. Use uma chave publica ssh-ed25519, ssh-rsa (2048 bits ou mais) ou ecdsa-sha2-nistp256/384/521.',
+  VM_CAPACITY_UNAVAILABLE: 'Nao ha capacidade para este plano agora. Tente outro plano ou tente mais tarde.',
+  VM_NETWORK_NOT_CONFIGURED: 'As maquinas virtuais ainda nao estao disponiveis. Tente mais tarde.',
   PROJECT_STATE_CONFLICT: 'Esta acao nao esta disponivel no estado atual do projeto.',
   PROJECT_OPERATION_IN_PROGRESS: 'Outra operacao esta em andamento neste projeto. Tente novamente em instantes.',
   ORGANIZATION_BILLING_BLOCKED: 'A organizacao tem pagamentos pendentes. Regularize para aumentar o uso.',
@@ -3997,9 +4009,62 @@ async function handleVmImages(session, flags) {
   ]);
 }
 
-// Placeholder das Tarefas 2 e 3: valida as flags obrigatorias e ainda nao chama a API.
+async function readSshPublicKeys(paths) {
+  const keys = [];
+  for (const path of paths) {
+    let content;
+    try {
+      content = await readFile(path, 'utf8');
+    } catch {
+      throw new CliError(`Nao foi possivel ler o arquivo ${path}.`);
+    }
+    if (content.includes('PRIVATE KEY')) throw new CliError(`O arquivo ${path} e uma chave privada. Use o arquivo .pub.`);
+    const found = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith('#'));
+    if (found.length === 0) throw new CliError(`O arquivo ${path} nao tem nenhuma chave publica.`);
+    keys.push(...found);
+  }
+  return keys;
+}
+
+async function handleVmCreate(session, flags) {
+  const sshPaths = Array.isArray(flags.sshKey) ? flags.sshKey : [];
+  if (['name', 'plan'].some((name) => typeof flags[name] !== 'string' || !flags[name]) || sshPaths.length === 0) {
+    printCommandHelpAndFail('vm create');
+    return;
+  }
+  const idempotencyKey = flags.idempotencyKey === undefined ? randomUUID() : validateIdempotencyKey(flags.idempotencyKey);
+  const sshPublicKeys = await readSshPublicKeys(sshPaths);
+  const orgId = await resolveOrgId(session, flags);
+  let image = typeof flags.image === 'string' ? flags.image : undefined;
+  if (!image) {
+    const images = asArray(unwrapData(await request(session, flags, 'GET', '/project/vm/images', { tokenRequired: false })));
+    image = images.find((item) => item.default)?.id;
+    if (!image) throw new CliError('Nenhuma imagem padrao disponivel. Escolha uma com --image (veja "zenifra vm images").');
+  }
+  const payload = await request(session, flags, 'POST', '/project', {
+    orgId,
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: {
+      name: flags.name,
+      plan: flags.plan,
+      payment_mode: 'hourly',
+      config: { type_project: 'vm', vm: { image, ssh_public_keys: sshPublicKeys } },
+    },
+  });
+  if (flags.json) return printJson(payload);
+  const data = unwrapData(payload);
+  printFieldTable([
+    { field: 'Projeto', value: data.project_id },
+    { field: 'Status', value: data.status },
+    { field: 'Imagem', value: image },
+    { field: 'Senha do console', value: data.vm?.console_password },
+  ]);
+  process.stdout.write(`\nGuarde a senha do console agora: ela nao sera exibida de novo.\nAcompanhe com: zenifra vm status --project ${data.project_id}\n`);
+}
+
+// Placeholder da Tarefa 3: valida --project e ainda nao chama a API.
 function handleVmPending(flags, subcommand) {
-  const required = subcommand === 'create' ? ['name', 'plan', 'sshKey'] : ['project'];
+  const required = ['project'];
   if (required.some((name) => !flags[name] || flags[name] === true)) {
     printCommandHelpAndFail(`vm ${subcommand}`);
     return;
@@ -7053,7 +7118,8 @@ async function main() {
     if (command === 'vm' && subcommand === 'plans') return handleVmPlans(session, flags);
     if (command === 'vm' && subcommand === 'images') return handleVmImages(session, flags);
     if (command === 'vm' && subcommand === 'list') return handleProjects(session, { ...flags, type: 'vm' });
-    if (command === 'vm' && ['create', 'status', 'start', 'stop', 'restart', 'delete'].includes(subcommand)) return handleVmPending(flags, subcommand);
+    if (command === 'vm' && subcommand === 'create') return handleVmCreate(session, flags);
+    if (command === 'vm' && ['status', 'start', 'stop', 'restart', 'delete'].includes(subcommand)) return handleVmPending(flags, subcommand);
     if (command === 'project' && subcommand === 'healthcheck' && positional.length === 2) {
       process.stdout.write(commandHelp(['project', 'healthcheck']));
       return;

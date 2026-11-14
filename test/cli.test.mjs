@@ -7112,3 +7112,92 @@ test('vm list asks only for vm projects', async () => {
     assert.match(result.stdout, /web\s+running\s+1vcpu-1gib/);
   });
 });
+
+test('vm create sends every ssh key, an idempotency key and shows the console password once', async () => {
+  const calls = [];
+  await withCliServer(async (req, res) => {
+    const body = await readBody(req);
+    calls.push({ method: req.method, url: req.url, headers: req.headers, body: body.length ? JSON.parse(body.toString()) : undefined });
+    if (req.method === 'GET' && req.url === '/v1/project/vm/images') {
+      return jsonResponse(res, 200, { status: 'success', data: [{ id: 'debian-13' }, { id: 'ubuntu-24.04', default: true }] });
+    }
+    if (req.method === 'POST' && req.url === '/v1/project') {
+      return jsonResponse(res, 201, { status: 'success', message: 'project created', data: { project_id: 'p1', status: 'creating', type: 'virtual_machine', vm: { console_password: 'Senha-Unica-123' } } });
+    }
+    jsonResponse(res, 404, { status: 'failed', message: 'not found' });
+  }, async ({ apiBase, configDir }) => {
+    const a = join(configDir, 'a.pub');
+    const b = join(configDir, 'b.pub');
+    await writeFile(a, 'ssh-ed25519 AAAAC3Nza... a@pc\n', 'utf8');
+    await writeFile(b, '# comentario\n\nssh-rsa AAAAB3Nza... b@pc\n', 'utf8');
+    const base = ['vm', 'create', '--org', 'org_1', '--name', 'web', '--plan', '1vcpu-1gib', '--ssh-key', a, `--ssh-key=${b}`];
+    const result = await runCli(base, { apiBase, configDir });
+    assert.equal(result.code, 0, result.stderr);
+    const post = calls.find((call) => call.method === 'POST');
+    assert.deepEqual(post.body, {
+      name: 'web', plan: '1vcpu-1gib', payment_mode: 'hourly',
+      config: { type_project: 'vm', vm: { image: 'ubuntu-24.04', ssh_public_keys: ['ssh-ed25519 AAAAC3Nza... a@pc', 'ssh-rsa AAAAB3Nza... b@pc'] } },
+    });
+    assert.match(post.headers['idempotency-key'], /^[0-9a-f-]{36}$/);
+    assert.match(result.stdout, /Senha do console\s+Senha-Unica-123/);
+    assert.match(result.stdout, /nao sera exibida de novo/);
+    assert.equal(result.stdout.split('Senha-Unica-123').length - 1, 1);
+
+    calls.length = 0;
+    const withImage = await runCli([...base, '--image', 'debian-13', '--idempotency-key', 'repetir-criacao-0001'], { apiBase, configDir });
+    assert.equal(withImage.code, 0, withImage.stderr);
+    assert.equal(calls.some((call) => call.url === '/v1/project/vm/images'), false);
+    const second = calls.find((call) => call.method === 'POST');
+    assert.equal(second.body.config.vm.image, 'debian-13');
+    assert.equal(second.headers['idempotency-key'], 'repetir-criacao-0001');
+  });
+});
+
+test('vm create refuses private keys and missing keys before calling the API', async () => {
+  let requests = 0;
+  await withCliServer(async (req, res) => {
+    requests += 1;
+    jsonResponse(res, 404, { status: 'failed', message: 'not found' });
+  }, async ({ apiBase, configDir }) => {
+    const priv = join(configDir, 'id_ed25519');
+    const empty = join(configDir, 'empty.pub');
+    await writeFile(priv, '-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n', 'utf8');
+    await writeFile(empty, '\n# so comentario\n', 'utf8');
+    const common = ['vm', 'create', '--org', 'org_1', '--name', 'web', '--plan', '1vcpu-1gib'];
+    const privateResult = await runCli([...common, '--ssh-key', priv], { apiBase, configDir });
+    assert.equal(privateResult.code, 1);
+    assert.match(privateResult.stderr, /chave privada/);
+    const missing = await runCli(common, { apiBase, configDir });
+    assert.equal(missing.code, 1);
+    assert.match(missing.stdout, /Usage:/);
+    const emptyResult = await runCli([...common, '--ssh-key', empty], { apiBase, configDir });
+    assert.equal(emptyResult.code, 1);
+    assert.match(emptyResult.stderr, /nenhuma chave/);
+    assert.equal(requests, 0);
+  });
+});
+
+test('vm create explains the vm error codes', async () => {
+  const cases = [
+    [403, 'VM_ORGANIZATION_NOT_VERIFIED', /documento e o termo gov\.br/],
+    [409, 'VM_LIMIT_REACHED', /limite de maquinas virtuais/],
+    [422, 'VM_IMAGE_NOT_AVAILABLE', /zenifra vm images/],
+    [422, 'VM_SSH_KEY_INVALID', /ssh-ed25519/],
+    [409, 'VM_CAPACITY_UNAVAILABLE', /capacidade/],
+    [503, 'VM_NETWORK_NOT_CONFIGURED', /ainda nao estao disponiveis/],
+  ];
+  let current;
+  await withCliServer(async (req, res) => {
+    await readBody(req);
+    jsonResponse(res, current[0], { status: 'failed', code: current[1], message: 'x' });
+  }, async ({ apiBase, configDir }) => {
+    const key = join(configDir, 'k.pub');
+    await writeFile(key, 'ssh-ed25519 AAAAC3Nza... a@pc\n', 'utf8');
+    for (const entry of cases) {
+      current = entry;
+      const result = await runCli(['vm', 'create', '--org', 'org_1', '--name', 'web', '--plan', '1vcpu-1gib', '--image', 'ubuntu-24.04', '--ssh-key', key], { apiBase, configDir });
+      assert.equal(result.code, 1, entry[1]);
+      assert.match(result.stderr, entry[2], entry[1]);
+    }
+  });
+});
