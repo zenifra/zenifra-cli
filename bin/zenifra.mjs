@@ -828,8 +828,8 @@ const HELP_SPECS = [
     description: 'Lista os planos de maquina virtual com recursos e precos. Nao exige login.',
     flags: ['--json  Imprime a resposta em JSON.'],
     examples: ['zenifra vm plans', 'zenifra vm plans --json'],
-    output: 'Plano       vCPU  Memoria  Disco  Banda    Trafego/mes  Hora       Mes\n----------  ----  -------  -----  -------  -----------  ---------  ---------\n1vcpu-1gib  1     1 GB     20 GB  50 Mbps  50 GB        R$ 0,0485  R$ 34,90',
-    jsonOutput: '[{"plan":"1vcpu-1gib","prices":{"hourly":4.847222,"monthly":3490,"yearly":null},"features":[],"permissions":{"cpu":1,"memory_gib":1,"disk_gib":20,"bandwidth_mbps":50,"transfer_gib":50,"type_product":"vm"}}]',
+    output: 'Plano       vCPU  Memoria  Disco  Banda    Trafego/mes  Hora       Mes\n----------  ----  -------  -----  -------  -----------  ---------  ---------\n1vcpu-1gib  1     1 GB     20 GB  50 Mbps  50 GB        R$ 0,0484  R$ 34,90',
+    jsonOutput: '[{"plan":"1vcpu-1gib","prices":{"hourly":4.84722222,"monthly":3490,"yearly":null},"features":[],"permissions":{"cpu":1,"memory_gib":1,"disk_gib":20,"bandwidth_mbps":50,"transfer_gib":50,"type_product":"vm"}}]',
   },
   {
     command: 'vm images',
