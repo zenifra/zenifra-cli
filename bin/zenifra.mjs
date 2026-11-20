@@ -580,7 +580,7 @@ const HELP_SPECS = [
     output: 'Zenifra CLI - storage',
     notes: [
       'O alias "zenifra armazem" aceita os mesmos subcomandos.',
-      'O Armazem esta em beta para organizacoes convidadas. Para participar, peca pelo console, na pagina Armazem.',
+      'O Armazem esta disponivel para todas as organizacoes cobradas em reais (BRL). Limites padrao por organizacao: 10 buckets, 50 GB guardados e arquivos de ate 20 GB; precisa de mais, fale com o suporte.',
       'Endpoint: https://armazem.zenifra.com, regiao br-sp1. Os arquivos vao direto para o Armazem por links assinados, sem passar pela API.',
     ],
   },
@@ -591,7 +591,7 @@ const HELP_SPECS = [
     flags: ['--json  Imprime a resposta em JSON.'],
     examples: ['zenifra storage status', 'zenifra armazem status --json'],
     output: 'Campo     Valor\n--------  ----------------------------\nID        6650f1c2a1b2c3d4e5f60718\nNome      Armazem\nStatus    running\nRegiao    br-sp1\nEndpoint  https://armazem.zenifra.com',
-    jsonOutput: '{"available":true,"service":{"id":"6650f1c2a1b2c3d4e5f60718","name":"Armazem","status":"running","region":"br-sp1","endpoint":"https://armazem.zenifra.com"},"beta_request":null}',
+    jsonOutput: '{"available":true,"service":{"id":"6650f1c2a1b2c3d4e5f60718","name":"Armazem","status":"running","region":"br-sp1","endpoint":"https://armazem.zenifra.com"}}',
   },
   {
     command: 'storage create',
@@ -601,7 +601,7 @@ const HELP_SPECS = [
     examples: ['zenifra storage create', 'zenifra storage create --name "Arquivos da equipe"'],
     output: 'Armazem pronto: 6650f1c2a1b2c3d4e5f60718\nEndpoint: https://armazem.zenifra.com (regiao br-sp1)',
     jsonOutput: '{"id":"6650f1c2a1b2c3d4e5f60718","name":"Armazem","status":"running","region":"br-sp1","endpoint":"https://armazem.zenifra.com"}',
-    notes: ['Disponivel somente para organizacoes convidadas para o beta.'],
+    notes: ['Disponivel para todas as organizacoes cobradas em reais (BRL).'],
   },
   {
     command: 'storage buckets',
@@ -2041,7 +2041,7 @@ const PUBLIC_ERROR_CODE_MESSAGES = {
   GIT_VERSION_REF_OVERRIDE: 'Este projeto publica a versao mais recente da tag ou release. Rode o deploy sem --branch e sem --commit-sha.',
   DATABASE_CREDENTIAL_ROTATION_IN_PROGRESS: 'A credencial deste banco ja esta sendo renovada. Aguarde alguns instantes e confira com "zenifra database status".',
   DATABASE_CREDENTIAL_ROTATION_FAILED: 'Nao foi possivel renovar a credencial do banco. Tente novamente em instantes.',
-  OBJECT_STORAGE_NOT_AVAILABLE: 'O Armazem ainda nao esta disponivel para esta organizacao. Ele esta em beta para organizacoes convidadas: peca para participar pelo console, na pagina Armazem.',
+  OBJECT_STORAGE_NOT_AVAILABLE: 'O Armazem ainda nao esta disponivel para esta organizacao. Tente novamente em instantes; se continuar, fale com o suporte.',
   OBJECT_STORAGE_NOT_FOUND: 'Armazem nao encontrado nesta organizacao. Veja "zenifra storage status".',
   OBJECT_STORAGE_UNAVAILABLE: 'O Armazem esta temporariamente indisponivel. Tente novamente em instantes.',
   OBJECT_STORAGE_CURRENCY_NOT_SUPPORTED: 'O Armazem esta disponivel somente para organizacoes cobradas em reais (BRL).',
@@ -6253,9 +6253,6 @@ async function handleStorageStatus(session, flags) {
     return;
   }
   process.stdout.write(`${PUBLIC_ERROR_CODE_MESSAGES.OBJECT_STORAGE_NOT_AVAILABLE}\n`);
-  if (state?.beta_request?.requested_at) {
-    process.stdout.write(`Pedido de participacao enviado em ${state.beta_request.requested_at}.\n`);
-  }
 }
 
 async function handleStorageCreate(session, flags) {
