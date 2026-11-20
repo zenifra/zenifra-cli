@@ -6182,7 +6182,7 @@ const STORAGE_SERVICE = {
 const STORAGE_BASE = `/v1/object-storage/${STORAGE_SERVICE.id}`;
 
 function storageStateResponse(res, state = {}) {
-  jsonResponse(res, 200, { status: 'success', data: { available: true, service: STORAGE_SERVICE, beta_request: null, ...state } });
+  jsonResponse(res, 200, { status: 'success', data: { available: true, service: STORAGE_SERVICE, ...state } });
 }
 
 function signedUrl(req, path) {
@@ -6230,7 +6230,8 @@ test('storage help covers every subcommand and the armazem alias', async () => {
       assert.equal(result.code, 0, result.stderr);
       assert.match(result.stdout, /Zenifra CLI - storage/);
       assert.match(result.stdout, /zenifra storage files upload/);
-      assert.match(result.stdout, /beta para organizacoes convidadas/);
+      assert.match(result.stdout, /disponivel para todas as organizacoes/);
+      assert.doesNotMatch(result.stdout, /beta/i);
     }
 
     const index = await runCli(['--help'], { configDir });
@@ -6261,8 +6262,8 @@ test('storage help covers every subcommand and the armazem alias', async () => {
   }
 });
 
-test('storage status explains the beta, missing service and existing service', async () => {
-  let state = { available: false, service: null, beta_request: null };
+test('storage status explains an unavailable, missing and existing service', async () => {
+  let state = { available: false, service: null };
   await withCliServer(async (req, res) => {
     assertApiKeyAuth(req);
     assert.equal(req.method, 'GET');
@@ -6271,18 +6272,15 @@ test('storage status explains the beta, missing service and existing service', a
   }, async ({ apiBase, configDir }) => {
     let result = await runCli(['storage', 'status'], { apiBase, configDir });
     assert.equal(result.code, 0, result.stderr);
-    assert.match(result.stdout, /beta para organizacoes convidadas/);
-    assert.match(result.stdout, /console, na pagina Armazem/);
+    assert.match(result.stdout, /ainda nao esta disponivel/);
+    assert.match(result.stdout, /fale com o suporte/);
+    assert.doesNotMatch(result.stdout, /beta|convidadas/i);
 
-    state = { available: false, service: null, beta_request: { requested_at: '2026-10-20T10:00:00.000Z' } };
-    result = await runCli(['armazem', 'status'], { apiBase, configDir });
-    assert.match(result.stdout, /Pedido de participacao enviado em 2026-10-20T10:00:00.000Z/);
-
-    state = { available: true, service: null, beta_request: null };
+    state = { available: true, service: null };
     result = await runCli(['storage', 'status'], { apiBase, configDir });
     assert.match(result.stdout, /zenifra storage create/);
 
-    state = { available: true, service: STORAGE_SERVICE, beta_request: null };
+    state = { available: true, service: STORAGE_SERVICE };
     result = await runCli(['storage', 'status'], { apiBase, configDir });
     assert.match(result.stdout, /6650f1c2a1b2c3d4e5f60718/);
     assert.match(result.stdout, /https:\/\/armazem\.zenifra\.com/);
@@ -6318,15 +6316,15 @@ test('storage create sends the name and explains when the organization is not in
     invited = false;
     result = await runCli(['storage', 'create'], { apiBase, configDir });
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /beta para organizacoes convidadas/);
-    assert.match(result.stderr, /console, na pagina Armazem/);
+    assert.match(result.stderr, /ainda nao esta disponivel/);
+    assert.match(result.stderr, /fale com o suporte/);
     assert.doesNotMatch(result.stderr, /not available/);
   });
 });
 
 test('storage commands ask to create the service before using it', async () => {
   await withCliServer(async (req, res) => {
-    jsonResponse(res, 200, { status: 'success', data: { available: true, service: null, beta_request: null } });
+    jsonResponse(res, 200, { status: 'success', data: { available: true, service: null } });
   }, async ({ apiBase, configDir }) => {
     const result = await runCli(['storage', 'buckets'], { apiBase, configDir });
     assert.equal(result.code, 1);

@@ -135,7 +135,7 @@ zenifra deploy watch --project <project-id> --build <build-id>
 
 O Armazem e o armazenamento de objetos da Zenifra (endpoint `https://armazem.zenifra.com`, regiao `br-sp1`). Cada organizacao tem um Armazem, com buckets, arquivos e chaves de acesso. O grupo `zenifra storage` tem o alias `zenifra armazem`.
 
-O Armazem esta em beta para organizacoes convidadas. Se `zenifra storage status` disser que ele ainda nao esta disponivel, peca para participar pelo console, na pagina Armazem.
+O Armazem esta disponivel para todas as organizacoes cobradas em reais (BRL). Limites padrao por organizacao: 10 buckets, 50 GB guardados e arquivos de ate 20 GB; precisa de mais, fale com o suporte. A transferencia para a internet e gratis ate 20/12/2026 e custa R$ 0,80 por GB a partir de 21/12/2026.
 
 ```bash
 zenifra storage status
