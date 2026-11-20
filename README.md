@@ -168,6 +168,25 @@ zenifra storage usage --month 2026-09
 - `keys create` mostra o segredo da chave uma unica vez. O CLI nao grava o segredo em arquivo nem em log: guarde-o em um cofre de segredos. `--access` aceita `read`, `read_write` ou `full`; sem `--buckets`, a chave vale para todos os buckets.
 - `usage` mostra o consumo do mes atual ou de um dos 12 meses anteriores, em reais; no `--json`, os valores vem em centavos.
 
+## Maquinas virtuais (VPS)
+
+```bash
+zenifra vm plans
+zenifra vm images
+zenifra vm create --name web --plan 1vcpu-1gib --ssh-key ~/.ssh/id_ed25519.pub
+zenifra vm list
+zenifra vm status --project <project-id>
+zenifra vm stop --project <project-id>
+zenifra vm start --project <project-id>
+zenifra vm restart --project <project-id>
+zenifra vm delete --project <project-id> --yes
+```
+
+- `vm create` mostra a senha do console uma unica vez: guarde-a em um cofre de segredos. Se repetir a criacao com a mesma `--idempotency-key`, a resposta nao traz a senha: redefina-a pelo console.
+- `vm status` mostra o IPv6, o comando SSH, a banda e o trafego do mes. IPv6 e SSH aparecem como `-` enquanto a VM ainda esta sendo criada.
+- `vm delete` apaga a VM e o disco dela e exige `--yes`.
+- O console serial e a reinstalacao da VM ficam no console da Zenifra.
+
 ## Metricas de bancos Key Value, Cache e Queue
 
 O comando `zenifra project metrics` mostra as metricas do projeto e, para bancos Key Value, Cache e Queue, o snapshot da instancia selecionada:
