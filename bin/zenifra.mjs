@@ -95,6 +95,7 @@ const KNOWN_FLAG_NAMES = new Set([
   'run',
   'runId',
   'showValues',
+  'sshKey',
   'status',
   'tagPattern',
   'timeout',
@@ -237,7 +238,7 @@ Usage:
   zenifra git branches --connection <id> --repository <opaque-id> [--json]
   zenifra create project
   zenifra create project --name <name> --plan <plan> [--payment-mode <mode>] --config <json|@file> [--description <text>] [--org <id>] [--json]
-  zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|clickhouse|key-value|cache|queue|job>] [--page <n>] [--limit <n>]
+  zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|clickhouse|key-value|cache|queue|job|vm>] [--page <n>] [--limit <n>]
   zenifra database status --project <id> [--json]
   zenifra database connection --project <id> [--json]
   zenifra database credentials rotate --project <id> [--wait] [--idempotency-key <key>] [--interval <seconds>] [--timeout <seconds>] [--connection-file <path>] [--json]
@@ -259,6 +260,15 @@ Usage:
   zenifra storage keys create --name <name> [--buckets <a,b|*>] [--access <read|read_write|full>] [--allowed-ips <ip,cidr>] [--json]
   zenifra storage keys revoke --access-key <id> --yes [--json]
   zenifra storage usage [--month <YYYY-MM>] [--json]
+  zenifra vm create --name <name> --plan <plan> --ssh-key <file.pub> [--ssh-key <file.pub>] [--image <image>] [--idempotency-key <key>] [--json]
+  zenifra vm list [--page <n>] [--limit <n>] [--json]
+  zenifra vm status --project <id> [--json]
+  zenifra vm start --project <id> [--json]
+  zenifra vm stop --project <id> [--json]
+  zenifra vm restart --project <id> [--json]
+  zenifra vm delete --project <id> --yes [--json]
+  zenifra vm plans [--json]
+  zenifra vm images [--json]
   zenifra project info --project <id> [--json]
   zenifra project stop --project <id> [--json]
   zenifra project resume --project <id> [--json]
@@ -306,6 +316,7 @@ Environment:
 
 Aliases:
   zenifra armazem ...  Same as "zenifra storage ...".
+  zenifra vps ...      Same as "zenifra vm ...".
 
 Run "zenifra help <command>" or "zenifra <command> --help" for command-specific usage, examples, and output.
 `;
@@ -746,8 +757,92 @@ const HELP_SPECS = [
     notes: ['A franquia mensal inclui 5 GB de armazenamento e uma cota de requisicoes; o comando mostra quanto dela ja foi usado.'],
   },
   {
+    command: 'vm',
+    usage: 'zenifra vm\n  zenifra vm create --name <name> --plan <plan> --ssh-key <file.pub> [--ssh-key <file.pub>] [--image <image>] [--idempotency-key <key>] [--json]\n  zenifra vm list [--page <n>] [--limit <n>] [--json]\n  zenifra vm status|start|stop|restart --project <id> [--json]\n  zenifra vm delete --project <id> --yes [--json]\n  zenifra vm plans [--json]\n  zenifra vm images [--json]',
+    description: 'Gerencia maquinas virtuais (VPS) da organizacao: criacao, ciclo de vida, planos e imagens.',
+    examples: ['zenifra vm plans', 'zenifra vm create --name web --plan 1vcpu-1gib --ssh-key ~/.ssh/id_ed25519.pub', 'zenifra vm list', 'zenifra vps status --project proj_1'],
+    output: 'Zenifra CLI - vm',
+    notes: ['O alias "zenifra vps" aceita os mesmos subcomandos.', 'Console serial e reinstalacao ficam no console.'],
+  },
+  {
+    command: 'vm create',
+    usage: 'zenifra vm create --name <name> --plan <plan> --ssh-key <file.pub> [--ssh-key <file.pub>] [--image <image>] [--idempotency-key <key>] [--json]',
+    description: 'Cria uma maquina virtual com acesso por chave SSH.',
+    flags: ['--name <name>              Nome da VPS.', '--plan <plan>              Plano. Veja "zenifra vm plans".', '--ssh-key <file.pub>       Arquivo da chave publica SSH. Repita a flag para mais de uma chave.', '--image <image>            Imagem. Veja "zenifra vm images". Padrao: a imagem padrao do catalogo.', '--idempotency-key <key>    Chave para repetir a criacao sem duplicar a VPS.', '--json                     Imprime a resposta em JSON.'],
+    examples: ['zenifra vm create --name web --plan 1vcpu-1gib --ssh-key ~/.ssh/id_ed25519.pub', 'zenifra vm create --name api --plan 1vcpu-1gib --image ubuntu-24.04 --ssh-key ~/.ssh/id_ed25519.pub --ssh-key ./equipe.pub'],
+    output: 'Campo             Valor\n----------------  -----------------\nProjeto           proj_1\nStatus            creating\nImagem            ubuntu-24.04\nSenha do console  Zx9-exemplo-Senha\n\nGuarde a senha do console agora: ela nao sera exibida de novo.\nAcompanhe com: zenifra vm status --project proj_1',
+    notes: ['A senha do console aparece uma unica vez. Em uma criacao repetida com a mesma --idempotency-key, a resposta nao traz a senha: redefina-a pelo console.'],
+  },
+  {
+    command: 'vm list',
+    usage: 'zenifra vm list [--page <n>] [--limit <n>] [--json]',
+    description: 'Lista as maquinas virtuais da organizacao.',
+    flags: ['--page <n>   Pagina. Padrao: 1.', '--limit <n>  Itens por pagina. Padrao: 15.', '--json       Imprime a resposta em JSON.'],
+    examples: ['zenifra vm list', 'zenifra vm list --page 2 --limit 5'],
+    output: 'ID      Nome  Status   Plano       Tipo\n------  ----  -------  ----------  ----\nproj_1  web   running  1vcpu-1gib  vm',
+    jsonOutput: '{"projects":[{"id":"proj_1","name":"web","status":"running","plan":"1vcpu-1gib","type_project":"vm"}],"pagination":{"page":1,"pages":1,"total":1}}',
+  },
+  {
+    command: 'vm status',
+    usage: 'zenifra vm status --project <id> [--json]',
+    description: 'Mostra o estado e os dados de acesso da maquina virtual.',
+    flags: ['--project <id>  ID da VPS.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra vm status --project proj_1'],
+    output: 'Campo              Valor\n-----------------  -------------------------\nID                 proj_1\nNome               web\nStatus             running\nPlano              1vcpu-1gib\nImagem             ubuntu-24.04\nUsuario            ubuntu\nIPv6               2001:db8:40::a\nSSH                ssh ubuntu@2001:db8:40::a\nBanda              50 Mbps\nTrafego (2026-11)  1.5 GB de 50 GB',
+  },
+  {
+    command: 'vm start',
+    usage: 'zenifra vm start --project <id> [--json]',
+    description: 'Liga a maquina virtual.',
+    flags: ['--project <id>  ID da VPS.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra vm start --project proj_1'],
+    output: 'VM proj_1: running',
+  },
+  {
+    command: 'vm stop',
+    usage: 'zenifra vm stop --project <id> [--json]',
+    description: 'Desliga a maquina virtual.',
+    flags: ['--project <id>  ID da VPS.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra vm stop --project proj_1'],
+    output: 'VM proj_1: stopped',
+  },
+  {
+    command: 'vm restart',
+    usage: 'zenifra vm restart --project <id> [--json]',
+    description: 'Reinicia a maquina virtual.',
+    flags: ['--project <id>  ID da VPS.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra vm restart --project proj_1'],
+    output: 'VM proj_1: running',
+  },
+  {
+    command: 'vm delete',
+    usage: 'zenifra vm delete --project <id> --yes [--json]',
+    description: 'Apaga a maquina virtual e o disco dele. A acao nao pode ser desfeita.',
+    flags: ['--project <id>  ID da VPS.', '--yes           Confirma a exclusao.', '--json          Imprime a resposta em JSON.'],
+    examples: ['zenifra vm delete --project proj_1 --yes'],
+    output: 'Exclusao da VM solicitada: proj_1',
+  },
+  {
+    command: 'vm plans',
+    usage: 'zenifra vm plans [--json]',
+    description: 'Lista os planos de maquina virtual com recursos e precos. Nao exige login.',
+    flags: ['--json  Imprime a resposta em JSON.'],
+    examples: ['zenifra vm plans', 'zenifra vm plans --json'],
+    output: 'Plano       vCPU  Memoria  Disco  Banda    Trafego/mes  Hora       Mes\n----------  ----  -------  -----  -------  -----------  ---------  ---------\n1vcpu-1gib  1     1 GB     20 GB  50 Mbps  50 GB        R$ 0,0484  R$ 34,90',
+    jsonOutput: '[{"plan":"1vcpu-1gib","prices":{"hourly":4.84722222,"monthly":3490,"yearly":null},"features":[],"permissions":{"cpu":1,"memory_gib":1,"disk_gib":20,"bandwidth_mbps":50,"transfer_gib":50,"type_product":"vm"}}]',
+  },
+  {
+    command: 'vm images',
+    usage: 'zenifra vm images [--json]',
+    description: 'Lista as imagens de sistema disponiveis. Nao exige login.',
+    flags: ['--json  Imprime a resposta em JSON.'],
+    examples: ['zenifra vm images', 'zenifra vm images --json'],
+    output: 'ID            Nome    Versao     Usuario  Padrao\n------------  ------  ---------  -------  ------\nubuntu-24.04  Ubuntu  24.04 LTS  ubuntu   sim',
+    jsonOutput: '[{"id":"ubuntu-24.04","name":"Ubuntu","version":"24.04 LTS","default_user":"ubuntu","default":true}]',
+  },
+  {
     command: 'projects',
-    usage: 'zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|clickhouse|key-value|cache|queue|job>] [--page <n>] [--limit <n>]',
+    usage: 'zenifra projects [--json] [--org <id>] [--type <http|postgresql|mariadb|clickhouse|key-value|cache|queue|job|vm>] [--page <n>] [--limit <n>]',
     description: 'Lista projetos da organizacao ativa ou da API key.',
     flags: ['--json       Imprime a resposta em JSON.', '--org <id>   Usa uma organizacao especifica com sessao de usuario.', '--type <type> Filtra por tipo de projeto.', '--page <n>   Pagina. Padrao: 1.', '--limit <n>  Itens por pagina. Padrao: 15.'],
     examples: ['zenifra projects --type http --page 1 --limit 15', 'zenifra projects --json'],
@@ -1247,7 +1342,7 @@ function formatHelp(spec) {
   return `${sections.join('\n')}\n`;
 }
 
-const COMMAND_ALIASES = { armazem: 'storage', valkey: 'database' };
+const COMMAND_ALIASES = { armazem: 'storage', valkey: 'database', vps: 'vm' };
 
 function resolveCommandAliases(positionals) {
   const index = positionals[0] === 'help' ? 1 : 0;
@@ -1287,7 +1382,13 @@ function removedProjectsCreateMessage() {
 }
 
 function isNamespaceCommand(command) {
-  return ['auth', 'profile', 'project', 'org', 'database', 'git', 'storage'].includes(command);
+  return ['auth', 'profile', 'project', 'org', 'database', 'git', 'storage', 'vm'].includes(command);
+}
+
+// --ssh-key pode repetir: acumula em lista; as demais flags guardam o ultimo valor.
+function setParsedFlag(flags, key, value) {
+  if (key === 'sshKey') flags[key] = [...(Array.isArray(flags[key]) ? flags[key] : []), value];
+  else flags[key] = value;
 }
 
 function parseArgs(argv) {
@@ -1307,7 +1408,7 @@ function parseArgs(argv) {
     const key = rawKey.replace(/-([a-z])/g, (_, value) => value.toUpperCase());
 
     if (inlineValue !== undefined) {
-      flags[key] = inlineValue;
+      setParsedFlag(flags, key, inlineValue);
       continue;
     }
 
@@ -1317,7 +1418,7 @@ function parseArgs(argv) {
       continue;
     }
 
-    flags[key] = next;
+    setParsedFlag(flags, key, next);
     index += 1;
   }
 
@@ -2033,6 +2134,12 @@ function missingPermissionMessage(payload, credential) {
 }
 
 const PUBLIC_ERROR_CODE_MESSAGES = {
+  VM_ORGANIZATION_NOT_VERIFIED: 'Para criar maquinas virtuais, a organizacao precisa concluir a verificacao do cadastro (documento e, para CNPJ, o termo gov.br). Complete o cadastro no console.',
+  VM_LIMIT_REACHED: 'A organizacao atingiu o limite de maquinas virtuais. Para pedir mais, envie para support@zenifra.com a organizacao, seu e-mail e o motivo.',
+  VM_IMAGE_NOT_AVAILABLE: 'Imagem indisponivel. Veja as opcoes com "zenifra vm images".',
+  VM_SSH_KEY_INVALID: 'Chave SSH invalida. Use uma chave publica ssh-ed25519, ssh-rsa (2048 bits ou mais) ou ecdsa-sha2-nistp256/384/521.',
+  VM_CAPACITY_UNAVAILABLE: 'Nao ha capacidade para este plano agora. Tente outro plano ou tente mais tarde.',
+  VM_NETWORK_NOT_CONFIGURED: 'As maquinas virtuais ainda nao estao disponiveis. Tente mais tarde.',
   PROJECT_STATE_CONFLICT: 'Esta acao nao esta disponivel no estado atual do projeto.',
   PROJECT_OPERATION_IN_PROGRESS: 'Outra operacao esta em andamento neste projeto. Tente novamente em instantes.',
   ORGANIZATION_BILLING_BLOCKED: 'A organizacao tem pagamentos pendentes. Regularize para aumentar o uso.',
@@ -3870,6 +3977,167 @@ function printPlansCatalogs(payload, type) {
     if (type === 'all') process.stdout.write('\n');
     printManagedDatabaseCatalog(payload.valkey, managedDatabaseProfileFilter(type));
   }
+}
+
+// A taxa por hora (centavos fracionados) nunca arredonda para cima: trunca em 4 casas de real e mostra as 4.
+const hourlyBrl = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 4, maximumFractionDigits: 4 });
+const formatVmHourly = (value) => {
+  const number = Number(value);
+  if (value === undefined || value === null || value === '' || !Number.isFinite(number)) return '-';
+  return hourlyBrl.format(Math.trunc(Number((number * 100).toFixed(6))) / 10000);
+};
+
+const vmUnit = (value, unit) => (value === undefined || value === null ? '-' : `${value}${unit}`);
+
+async function handleVmPlans(session, flags) {
+  const plans = asArray(unwrapData(await request(session, flags, 'GET', '/project/vm/plans', { tokenRequired: false })));
+  if (flags.json) return printJson(plans);
+  printTable(plans, [
+    { label: 'Plano', value: (item) => item.plan },
+    { label: 'vCPU', value: (item) => vmUnit(item.permissions?.cpu, '') },
+    { label: 'Memoria', value: (item) => vmUnit(item.permissions?.memory_gib, ' GB') },
+    { label: 'Disco', value: (item) => vmUnit(item.permissions?.disk_gib, ' GB') },
+    { label: 'Banda', value: (item) => vmUnit(item.permissions?.bandwidth_mbps, ' Mbps') },
+    { label: 'Trafego/mes', value: (item) => vmUnit(item.permissions?.transfer_gib, ' GB') },
+    // hourly vem em centavos fracionados (4,847 = R$ 0,0484, truncado): 2 casas escondem o preco real.
+    { label: 'Hora', value: (item) => formatVmHourly(item.prices?.hourly) },
+    { label: 'Mes', value: (item) => formatBrlFromCents(item.prices?.monthly) },
+  ]);
+}
+
+async function handleVmImages(session, flags) {
+  const images = asArray(unwrapData(await request(session, flags, 'GET', '/project/vm/images', { tokenRequired: false })));
+  if (flags.json) return printJson(images);
+  printTable(images, [
+    { label: 'ID', value: (item) => item.id },
+    { label: 'Nome', value: (item) => item.name },
+    { label: 'Versao', value: (item) => item.version },
+    { label: 'Usuario', value: (item) => item.default_user },
+    { label: 'Padrao', value: (item) => (item.default ? 'sim' : '') },
+  ]);
+}
+
+async function readSshPublicKeys(paths) {
+  const keys = [];
+  for (const path of paths) {
+    let content;
+    try {
+      content = await readFile(path, 'utf8');
+    } catch {
+      throw new CliError(`Nao foi possivel ler o arquivo ${path}.`);
+    }
+    if (content.includes('PRIVATE KEY')) throw new CliError(`O arquivo ${path} e uma chave privada. Use o arquivo .pub.`);
+    const found = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith('#'));
+    if (found.length === 0) throw new CliError(`O arquivo ${path} nao tem nenhuma chave publica.`);
+    keys.push(...found);
+  }
+  return keys;
+}
+
+async function handleVmCreate(session, flags) {
+  const sshPaths = Array.isArray(flags.sshKey) ? flags.sshKey : [];
+  if (['name', 'plan'].some((name) => typeof flags[name] !== 'string' || !flags[name]) || sshPaths.length === 0) {
+    printCommandHelpAndFail('vm create');
+    return;
+  }
+  const idempotencyKey = flags.idempotencyKey === undefined ? randomUUID() : validateIdempotencyKey(flags.idempotencyKey);
+  const sshPublicKeys = await readSshPublicKeys(sshPaths);
+  const orgId = await resolveOrgId(session, flags);
+  let image = typeof flags.image === 'string' ? flags.image : undefined;
+  if (!image) {
+    const images = asArray(unwrapData(await request(session, flags, 'GET', '/project/vm/images', { tokenRequired: false })));
+    image = images.find((item) => item.default)?.id;
+    if (!image) throw new CliError('Nenhuma imagem padrao disponivel. Escolha uma com --image (veja "zenifra vm images").');
+  }
+  const payload = await request(session, flags, 'POST', '/project', {
+    orgId,
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: {
+      name: flags.name,
+      plan: flags.plan,
+      payment_mode: 'hourly',
+      config: { type_project: 'vm', vm: { image, ssh_public_keys: sshPublicKeys } },
+    },
+  });
+  if (flags.json) return printJson(payload);
+  const data = unwrapData(payload);
+  const consolePassword = data.vm?.console_password;
+  printFieldTable([
+    { field: 'Projeto', value: data.project_id },
+    { field: 'Status', value: data.status },
+    { field: 'Imagem', value: image },
+    ...(consolePassword ? [{ field: 'Senha do console', value: consolePassword }] : []),
+  ]);
+  const passwordNote = consolePassword
+    ? 'Guarde a senha do console agora: ela nao sera exibida de novo.'
+    : 'Esta resposta nao traz a senha do console (criacao repetida). Redefina a senha pelo console.';
+  process.stdout.write(`\n${passwordNote}\nAcompanhe com: zenifra vm status --project ${data.project_id}\n`);
+}
+
+async function requireVmProject(session, flags, commandKey) {
+  const projectId = requireProjectId(flags, commandKey);
+  if (!projectId) return null;
+  const orgId = await resolveOrgId(session, flags);
+  const project = await getProject(session, flags, projectId, orgId);
+  if (project?.type_project !== 'vm') {
+    throw new CliError(`O projeto ${projectId} nao e uma maquina virtual. Use os comandos de "zenifra project".`);
+  }
+  return { orgId, projectId, project };
+}
+
+async function handleVmStatus(session, flags) {
+  const found = await requireVmProject(session, flags, 'vm status');
+  if (!found) return;
+  const { projectId, project } = found;
+  const vm = project.vm ?? {};
+  if (flags.json) {
+    const { id, name, status, plan, type_project, vm: vmView } = project;
+    return printJson({ id, name, status, plan, type_project, vm: vmView });
+  }
+  const transfer = vm.transfer;
+  const bandwidth = vm.bandwidth_mbps === undefined || vm.bandwidth_mbps === null
+    ? undefined
+    : `${vm.bandwidth_mbps} Mbps${transfer?.throttled ? ' (franquia do mes esgotada)' : ''}`;
+  printFieldTable([
+    { field: 'ID', value: project.id ?? projectId },
+    { field: 'Nome', value: project.name },
+    { field: 'Status', value: project.status },
+    { field: 'Plano', value: project.plan },
+    { field: 'Imagem', value: vm.image },
+    { field: 'Usuario', value: vm.default_user },
+    { field: 'IPv6', value: vm.ipv6 || undefined },
+    { field: 'SSH', value: vm.ssh_command || undefined },
+    { field: 'Banda', value: bandwidth },
+    { field: transfer?.period ? `Trafego (${transfer.period})` : 'Trafego', value: transfer ? `${formatBytes(transfer.used_bytes)} de ${formatBytes(transfer.quota_bytes)}` : undefined },
+  ]);
+}
+
+const VM_POWER_ROUTES = {
+  start: ['PATCH', 'resume'],
+  stop: ['PATCH', 'stop'],
+  restart: ['POST', 'vm/restart'],
+};
+
+async function handleVmPower(session, flags, action) {
+  const found = await requireVmProject(session, flags, `vm ${action}`);
+  if (!found) return;
+  const { orgId, projectId } = found;
+  const [method, route] = VM_POWER_ROUTES[action];
+  const payload = await request(session, flags, method, `/project/${projectId}/${route}`, { orgId });
+  if (flags.json) return printJson(payload);
+  process.stdout.write(`VM ${projectId}: ${unwrapData(payload)?.status ?? '-'}\n`);
+}
+
+async function handleVmDelete(session, flags) {
+  if (flags.project && flags.project !== true && flags.yes !== true) {
+    throw new CliError('A remocao exige --yes. Nenhuma solicitacao foi enviada.');
+  }
+  const found = await requireVmProject(session, flags, 'vm delete');
+  if (!found) return;
+  const { orgId, projectId } = found;
+  const payload = await request(session, flags, 'DELETE', `/project/${projectId}`, { orgId });
+  if (flags.json) return printJson(payload);
+  process.stdout.write(`Exclusao da VM solicitada: ${projectId}\n`);
 }
 
 async function handlePlans(session, flags) {
@@ -6912,6 +7180,13 @@ async function main() {
     if (command === 'storage' && subcommand === 'keys' && positional[2] === 'revoke') return handleStorageKeyRevoke(session, flags);
     if (command === 'storage' && subcommand === 'keys' && positional.length === 2) return handleStorageKeys(session, flags);
     if (command === 'storage' && subcommand === 'usage') return handleStorageUsage(session, flags);
+    if (command === 'vm' && subcommand === 'plans') return handleVmPlans(session, flags);
+    if (command === 'vm' && subcommand === 'images') return handleVmImages(session, flags);
+    if (command === 'vm' && subcommand === 'list') return handleProjects(session, { ...flags, type: 'vm' });
+    if (command === 'vm' && subcommand === 'create') return handleVmCreate(session, flags);
+    if (command === 'vm' && subcommand === 'status') return handleVmStatus(session, flags);
+    if (command === 'vm' && ['start', 'stop', 'restart'].includes(subcommand)) return handleVmPower(session, flags, subcommand);
+    if (command === 'vm' && subcommand === 'delete') return handleVmDelete(session, flags);
     if (command === 'project' && subcommand === 'healthcheck' && positional.length === 2) {
       process.stdout.write(commandHelp(['project', 'healthcheck']));
       return;
